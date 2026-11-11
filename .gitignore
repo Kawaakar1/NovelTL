@@ -1,0 +1,24 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.spec
+
+# Rust (CARGO_TARGET_DIR вынесен из проекта, но на всякий случай)
+noveltl-rs/target/
+noveltl-rs/dist/
+
+# Установщики — выкладываются в Releases, не в репозиторий
+dist_installer/
+
+# Данные пользователя: профили, кэш, настройки (там зашифрованный ключ DeepL), отчёты
+data/
+
+# Служебные файлы снимков экрана
+shots/*.log
+shots_light/*.log
+shots/verify_*.png
+shots_light/verify_*.png
