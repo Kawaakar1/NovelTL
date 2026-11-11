@@ -111,7 +111,8 @@ fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
         }
     };
     let segoe = add("segoe", "segoeui.ttf");
-    let segoe_bold = add("segoe_bold", "segoeuib.ttf");
+    // «жирное» семейство — полужирный Segoe UI Semibold: обычный Bold выглядел слишком тяжёлым
+    let segoe_bold = add("segoe_bold", "seguisb.ttf") || add("segoe_bold", "segoeuib.ttf");
     let yu = needs.ja && add("yugothic", "YuGothM.ttc");
     let meiryo = needs.ja && !yu && add("meiryo", "meiryo.ttc");
     let malgun = needs.ko && add("malgun", "malgun.ttf");

@@ -20,8 +20,8 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowLongPtrW, GetWindowTextLengthW,
-    GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, GWL_EXSTYLE, SW_HIDE,
+    EnumWindows, GetClassNameW, GetClientRect, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
+    InternalGetWindowText, IsIconic, IsWindow, IsWindowVisible, GWL_EXSTYLE, SW_HIDE,
     WS_EX_TOOLWINDOW,
 };
 use windows::Win32::Graphics::Gdi::ClientToScreen;
@@ -74,16 +74,14 @@ pub fn window_pid(hwnd: isize) -> u32 {
     pid
 }
 
+/// Заголовок окна БЕЗ отправки сообщений окну.
+/// GetWindowText для окон своего процесса шлёт WM_GETTEXT потоку-владельцу и ждёт ответа —
+/// если фоновый поток зовёт его, держа замок контроллера, а поток интерфейса ждёт этот замок,
+/// программа зависает. InternalGetWindowText читает заголовок напрямую.
 pub fn window_title(hwnd: isize) -> String {
-    unsafe {
-        let n = GetWindowTextLengthW(hw(hwnd));
-        if n <= 0 {
-            return String::new();
-        }
-        let mut buf = vec![0u16; n as usize + 1];
-        let got = GetWindowTextW(hw(hwnd), &mut buf);
-        String::from_utf16_lossy(&buf[..got.max(0) as usize])
-    }
+    let mut buf = vec![0u16; 512];
+    let got = unsafe { InternalGetWindowText(hw(hwnd), &mut buf) };
+    String::from_utf16_lossy(&buf[..got.max(0) as usize])
 }
 
 pub fn window_class(hwnd: isize) -> String {

@@ -1188,13 +1188,10 @@ fn nav_item(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
     resp.on_hover_cursor(CursorIcon::PointingHand)
 }
 
-/// «Японский · 日本語»; для русского и «Авто» — без повтора.
+/// Название языка по-русски. Родные названия (日本語, 한국어) не показываем: шрифты для них
+/// грузятся лениво, и в окне настроек они превращались в квадратики.
 fn lang_label(l: Lang) -> String {
-    if l.native_title() == l.title() {
-        l.title().to_string()
-    } else {
-        format!("{} · {}", l.title(), l.native_title())
-    }
+    l.title().to_string()
 }
 
 fn wrap(ui: &mut Ui, text: RichText) {
