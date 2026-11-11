@@ -17,7 +17,10 @@ use std::time::Duration;
 use eframe::egui;
 use tray_icon::TrayIcon;
 
+use noveltl_core::langdetect::{is_han, is_hangul, is_kana, Lang};
+
 use crate::controller::Controller;
+use crate::FontNeeds;
 use crate::demo::{DemoSource, DEMO_TITLE};
 use crate::tray;
 
@@ -166,7 +169,8 @@ pub struct App {
     title: String,
     tray_hint_shown: bool,
     close_sent: bool,
-    cjk_loaded: bool,
+    /// какие восточные шрифты уже загружены
+    fonts_loaded: FontNeeds,
 }
 
 impl App {
@@ -201,7 +205,7 @@ impl App {
             title,
             tray_hint_shown: false,
             close_sent: false,
-            cjk_loaded: false,
+            fonts_loaded: FontNeeds::default(),
         }
     }
 
@@ -224,6 +228,54 @@ impl App {
         }
     }
 
+    /// Какие шрифты нужны сейчас: язык оригинала игры, язык перевода и сам показанный текст.
+    fn font_needs(&self) -> FontNeeds {
+        let c = lock_ctl(&self.shared.controller);
+        let wizard_open = self.wizard.is_some() || self.windows.wizard.is_some();
+        // японский — как раньше: демо, мастер, глоссарий или любая игра
+        let mut n = FontNeeds {
+            ja: self.game.is_some() || wizard_open || self.glossary.is_some() || c.session.is_some(),
+            ..FontNeeds::default()
+        };
+        let mut langs = vec![c.settings.target_lang];
+        if wizard_open {
+            langs.push(c.settings.default_source_lang);
+        }
+        let mut texts: Vec<&str> = Vec::new();
+        if let Some(s) = c.session.as_ref() {
+            langs.push(s.profile.lang);
+            if let Some(r) = s.last_result.as_ref() {
+                texts.extend([r.src_name.as_str(), r.src_text.as_str(), r.name.as_str(), r.text.as_str()]);
+            }
+        }
+        for l in langs {
+            match l {
+                Lang::Ja => n.ja = true,
+                Lang::Ko => n.ko = true,
+                Lang::Zh => n.zh = true,
+                _ => {}
+            }
+        }
+        let zh_game = c.session.as_ref().is_some_and(|s| s.profile.lang == Lang::Zh);
+        for t in texts {
+            for ch in t.chars() {
+                if is_hangul(ch) {
+                    n.ko = true;
+                } else if is_kana(ch) {
+                    n.ja = true;
+                } else if is_han(ch) {
+                    if zh_game {
+                        n.zh = true;
+                    } else {
+                        n.ja = true;
+                    }
+                }
+            }
+        }
+        n.zh_first = n.zh && zh_game;
+        n
+    }
+
     /// Выход: контроллер и поток-движок останавливаются (вызывается и при обычном закрытии окна).
     fn stop_engine(&mut self) {
         lock_ctl(&self.shared.controller).shutdown();
@@ -238,14 +290,11 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.find_windows();
 
-        // японский шрифт — только когда на экране может появиться японский текст
-        if !self.cjk_loaded {
-            let need = self.game.is_some() || self.wizard.is_some() || self.glossary.is_some()
-                || self.windows.wizard.is_some() || lock_ctl(&self.shared.controller).session.is_some();
-            if need {
-                crate::install_fonts(ctx, true);
-                self.cjk_loaded = true;
-            }
+        // восточные шрифты — только когда на экране может появиться текст этого письма
+        let want = self.fonts_loaded.union(self.font_needs());
+        if want != self.fonts_loaded {
+            crate::install_fonts(ctx, want);
+            self.fonts_loaded = want;
         }
 
         let setting = lock_ctl(&self.shared.controller).settings.theme.clone();
@@ -283,7 +332,7 @@ impl eframe::App for App {
         if std::mem::take(&mut self.windows.settings) {
             match &self.settings {
                 Some(w) => ctx.send_viewport_cmd_to(w.viewport_id(), egui::ViewportCommand::Focus),
-                None => self.settings = Some(settings::SettingsWindow::new(&self.shared, side_pos(580.0))),
+                None => self.settings = Some(settings::SettingsWindow::new(&self.shared, side_pos(800.0))),
             }
         }
         if let Some(id) = self.windows.glossary.take() {

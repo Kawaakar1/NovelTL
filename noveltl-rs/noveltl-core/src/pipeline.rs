@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use crate::langdetect::{resolve_language, Lang};
 use crate::profiles::GlossaryEntry;
-use crate::translators::{TranslateError, TranslatorManager};
+use crate::translators::{TranslateError, TranslatorManager, ENGINE_NONE};
 
 pub const CONTEXT_LINES: usize = 3;
 
@@ -81,6 +81,18 @@ impl TranslationPipeline {
 
     pub fn process(&mut self, name: &str, text: &str, use_cache: bool) -> Result<LineResult, TranslateError> {
         let lang = resolve_language(self.lang, text);
+        // язык оригинала совпал с целевым: отдаём как есть, без запросов
+        if lang.is_some() && lang == Some(self.manager.target()) {
+            return Ok(LineResult {
+                name: name.to_string(),
+                text: text.to_string(),
+                src_name: name.to_string(),
+                src_text: text.to_string(),
+                engine: ENGINE_NONE,
+                cached: false,
+                notice: String::new(),
+            });
+        }
         let context = self.context.iter().filter(|c| c.as_str() != text).cloned().collect::<Vec<_>>().join("\n");
         let prepared = apply_glossary(text, &self.glossary);
         let res = self.manager.translate(&prepared, lang, &context, use_cache)?;
@@ -183,6 +195,34 @@ mod tests {
         let sl: Vec<String> = s.gets().iter().map(|q| param(q, "sl").to_string()).collect();
         // только иероглифы без каны — язык определяет сам переводчик
         assert_eq!(sl, ["auto", "ja", "en"]);
+    }
+
+    #[test]
+    fn pipeline_same_language_skips_request() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("key", None, s.clone());
+        m.set_target(Lang::En);
+        let mut p = TranslationPipeline::new(m, Lang::En, vec![g("Kevin", "Кевин")]);
+        let r = p.process("Kevin", "Hello, Kevin", true).unwrap();
+        assert_eq!((r.name.as_str(), r.text.as_str(), r.engine), ("Kevin", "Hello, Kevin", "none"));
+        assert!(s.posts().is_empty() && s.gets().is_empty());
+        // авто: английский текст при цели en тоже не переводится, японский — переводится
+        p.lang = Lang::Auto;
+        p.process("", "Hello", true).unwrap();
+        assert!(s.posts().is_empty());
+        let r = p.process("", "おはよう", true).unwrap();
+        assert_eq!(r.engine, "deepl");
+        assert_eq!(s.posts()[0].json["target_lang"], "EN-US");
+    }
+
+    #[test]
+    fn pipeline_target_goes_to_google() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("", None, s.clone());
+        m.set_target(Lang::Ko);
+        let mut p = TranslationPipeline::new(m, Lang::Ru, vec![]);
+        p.process("", "Привет", true).unwrap();
+        assert_eq!((param(&s.gets()[0], "sl"), param(&s.gets()[0], "tl")), ("ru", "ko"));
     }
 
     #[test]

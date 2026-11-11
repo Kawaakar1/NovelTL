@@ -76,9 +76,28 @@ fn message_box(text: &str) {
     }
 }
 
-/// Шрифты: Segoe UI основной, Yu Gothic и Meiryo — для японского, Segoe UI Bold — семейство «bold».
-/// Японские шрифты занимают ~27 МБ памяти, поэтому грузятся только когда нужны (`with_cjk`).
-fn install_fonts(ctx: &egui::Context, with_cjk: bool) {
+/// Какие письма нужны на экране (шрифты грузятся лениво, чтобы не раздувать память).
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
+pub struct FontNeeds {
+    pub ja: bool,
+    pub ko: bool,
+    pub zh: bool,
+    /// китайский впереди японского (общие иероглифы рисуются китайскими начертаниями)
+    pub zh_first: bool,
+}
+
+impl FontNeeds {
+    /// Объединение: уже загруженное остаётся, новое добавляется.
+    pub fn union(self, o: FontNeeds) -> FontNeeds {
+        FontNeeds { ja: self.ja || o.ja, ko: self.ko || o.ko, zh: self.zh || o.zh, zh_first: self.zh_first || o.zh_first }
+    }
+}
+
+/// Шрифты: Segoe UI основной, Yu Gothic и Meiryo — для японского, Malgun Gothic — для корейского,
+/// Microsoft YaHei — для китайского, Segoe UI Bold — семейство «bold».
+/// Восточные шрифты занимают десятки МБ памяти, поэтому грузятся только когда нужны (`needs`);
+/// они стоят в конце цепочки, так что латиница и кириллица остаются Segoe UI.
+fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
     let dir = PathBuf::from(r"C:\Windows\Fonts");
     let mut fonts = FontDefinitions::default();
     let defaults = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
@@ -93,8 +112,12 @@ fn install_fonts(ctx: &egui::Context, with_cjk: bool) {
     };
     let segoe = add("segoe", "segoeui.ttf");
     let segoe_bold = add("segoe_bold", "segoeuib.ttf");
-    let yu = with_cjk && add("yugothic", "YuGothM.ttc");
-    let meiryo = with_cjk && !yu && add("meiryo", "meiryo.ttc");
+    let yu = needs.ja && add("yugothic", "YuGothM.ttc");
+    let meiryo = needs.ja && !yu && add("meiryo", "meiryo.ttc");
+    let malgun = needs.ko && add("malgun", "malgun.ttf");
+    let gulim = needs.ko && !malgun && add("gulim", "gulim.ttc");
+    let yahei = needs.zh && add("msyh", "msyh.ttc");
+    let simsun = needs.zh && !yahei && add("simsun", "simsun.ttc");
     let pick = |names: &[(&str, bool)]| -> Vec<String> {
         names.iter().filter(|(_, ok)| *ok).map(|(n, _)| n.to_string()).collect()
     };
@@ -103,13 +126,31 @@ fn install_fonts(ctx: &egui::Context, with_cjk: bool) {
         v.extend(defaults.iter().cloned());
         v
     };
-    let prop = compose(pick(&[("segoe", segoe), ("yugothic", yu), ("meiryo", meiryo)]));
-    let bold = compose(pick(&[
-        (if segoe_bold { "segoe_bold" } else { "segoe" }, segoe_bold || segoe),
-        ("yugothic", yu),
-        ("meiryo", meiryo),
-    ]));
-    let jp = compose(pick(&[("yugothic", yu), ("meiryo", meiryo), ("segoe", segoe)]));
+    // восточные шрифты: порядок зависит от того, чей язык главный (zh_first — китайский раньше японского)
+    let east = |first: bool| -> Vec<(&str, bool)> {
+        let ja = [("yugothic", yu), ("meiryo", meiryo)];
+        let zh = [("msyh", yahei), ("simsun", simsun)];
+        let ko = [("malgun", malgun), ("gulim", gulim)];
+        let mut v: Vec<(&str, bool)> = Vec::new();
+        if first {
+            v.extend(zh);
+            v.extend(ja);
+        } else {
+            v.extend(ja);
+            v.extend(zh);
+        }
+        v.extend(ko);
+        v
+    };
+    let mut prop_names = vec![("segoe", segoe)];
+    prop_names.extend(east(needs.zh_first));
+    let prop = compose(pick(&prop_names));
+    let mut bold_names = vec![(if segoe_bold { "segoe_bold" } else { "segoe" }, segoe_bold || segoe)];
+    bold_names.extend(east(needs.zh_first));
+    let bold = compose(pick(&bold_names));
+    let mut jp_names = east(needs.zh_first);
+    jp_names.push(("segoe", segoe));
+    let jp = compose(pick(&jp_names));
     fonts.families.insert(FontFamily::Proportional, prop);
     fonts.families.insert(theme::bold_family(), bold);
     fonts.families.insert(theme::jp_family(), jp);
@@ -187,7 +228,7 @@ fn main() {
         ui::APP_NAME,
         options,
         Box::new(move |cc| {
-            install_fonts(&cc.egui_ctx, false);
+            install_fonts(&cc.egui_ctx, FontNeeds::default());
             let ctx = cc.egui_ctx.clone();
             let waker: Waker = {
                 let ctx = ctx.clone();

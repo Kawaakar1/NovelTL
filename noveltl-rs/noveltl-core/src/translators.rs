@@ -11,10 +11,21 @@ use crate::langdetect::Lang;
 pub const ENGINE_DEEPL: &str = "deepl";
 pub const ENGINE_GOOGLE: &str = "google";
 
+/// Перевод не нужен: язык оригинала совпал с языком перевода.
+pub const ENGINE_NONE: &str = "none";
+
+/// Режимы выбора переводчика: (код, подпись).
+pub const ENGINE_MODES: [(&str, &str); 3] = [
+    ("auto", "Авто: DeepL, если указан ключ, иначе Google"),
+    ("deepl", "Только DeepL"),
+    ("google", "Только Google"),
+];
+
 pub fn engine_title(engine: &str) -> &'static str {
     match engine {
         ENGINE_DEEPL => "DeepL",
         ENGINE_GOOGLE => "Google",
+        ENGINE_NONE => "Без перевода (тот же язык)",
         _ => "",
     }
 }
@@ -118,18 +129,15 @@ impl DeepLTranslator {
         format!("https://{host}/v2/translate")
     }
 
-    fn lang_code(lang: Option<Lang>) -> Option<&'static str> {
-        match lang {
-            Some(Lang::Ja) => Some("JA"),
-            Some(Lang::Zh) => Some("ZH"),
-            Some(Lang::En) => Some("EN"),
-            _ => None,
-        }
-    }
-
-    pub fn translate(&self, text: &str, src_lang: Option<Lang>, context: &str) -> Result<String, TranslateError> {
-        let mut payload = serde_json::json!({"text": [text], "target_lang": "RU"});
-        if let Some(code) = Self::lang_code(src_lang) {
+    pub fn translate(
+        &self,
+        text: &str,
+        src_lang: Option<Lang>,
+        target: Lang,
+        context: &str,
+    ) -> Result<String, TranslateError> {
+        let mut payload = serde_json::json!({"text": [text], "target_lang": target.deepl_target()});
+        if let Some(code) = src_lang.and_then(Lang::deepl_source) {
             payload["source_lang"] = Value::from(code);
         }
         if !context.is_empty() {
@@ -232,36 +240,31 @@ impl GoogleTranslator {
     }
 
     fn lang_code(lang: Option<Lang>) -> &'static str {
-        match lang {
-            Some(Lang::Ja) => "ja",
-            Some(Lang::Zh) => "zh-CN",
-            Some(Lang::En) => "en",
-            _ => "auto",
-        }
+        lang.map(Lang::google_code).unwrap_or("auto")
     }
 
     /// Длинный текст режем на куски (GET с q раздувает URL), короткий — один запрос.
-    pub fn translate(&self, text: &str, src_lang: Option<Lang>) -> Result<String, TranslateError> {
+    pub fn translate(&self, text: &str, src_lang: Option<Lang>, target: Lang) -> Result<String, TranslateError> {
         if text.chars().count() <= GOOGLE_MAX_CHARS {
-            return self.translate_one(text, src_lang);
+            return self.translate_one(text, src_lang, target);
         }
         let mut out = String::new();
         for (chunk, sep) in split_for_google(text, GOOGLE_MAX_CHARS) {
             if chunk.trim().is_empty() {
                 out.push_str(&chunk);
             } else {
-                out.push_str(&self.translate_one(&chunk, src_lang)?);
+                out.push_str(&self.translate_one(&chunk, src_lang, target)?);
             }
             out.push_str(sep);
         }
         Ok(out)
     }
 
-    fn translate_one(&self, text: &str, src_lang: Option<Lang>) -> Result<String, TranslateError> {
+    fn translate_one(&self, text: &str, src_lang: Option<Lang>, target: Lang) -> Result<String, TranslateError> {
         let query = [
             ("client", "gtx"),
             ("sl", Self::lang_code(src_lang)),
-            ("tl", "ru"),
+            ("tl", target.google_code()),
             ("dt", "t"),
             ("q", text),
         ];
@@ -303,6 +306,8 @@ pub struct TranslatorManager {
     google: GoogleTranslator,
     deepl: Option<DeepLTranslator>,
     deepl_disabled_reason: String,
+    target: Lang,
+    mode: &'static str,
 }
 
 impl TranslatorManager {
@@ -313,9 +318,29 @@ impl TranslatorManager {
             cache,
             deepl: None,
             deepl_disabled_reason: String::new(),
+            target: Lang::Ru,
+            mode: "auto",
         };
         m.set_deepl_key(deepl_key);
         m
+    }
+
+    /// Язык перевода.
+    pub fn set_target(&mut self, lang: Lang) {
+        self.target = lang;
+    }
+
+    pub fn target(&self) -> Lang {
+        self.target
+    }
+
+    /// Режим выбора переводчика; неизвестное значение -> "auto".
+    pub fn set_mode(&mut self, mode: &str) {
+        self.mode = ENGINE_MODES.iter().map(|(m, _)| *m).find(|m| *m == mode).unwrap_or("auto");
+    }
+
+    pub fn mode(&self) -> &str {
+        self.mode
     }
 
     pub fn set_deepl_key(&mut self, key: &str) {
@@ -338,26 +363,41 @@ impl TranslatorManager {
     }
 
     pub fn active_engine(&self) -> &'static str {
-        if self.deepl.is_some() && self.deepl_disabled_reason.is_empty() {
-            ENGINE_DEEPL
-        } else {
-            ENGINE_GOOGLE
+        match self.mode {
+            "google" => ENGINE_GOOGLE,
+            "deepl" => ENGINE_DEEPL,
+            _ if self.deepl.is_some() && self.deepl_disabled_reason.is_empty() => ENGINE_DEEPL,
+            _ => ENGINE_GOOGLE,
         }
     }
 
     pub fn status_text(&self) -> String {
-        if self.active_engine() == ENGINE_DEEPL {
-            "DeepL".to_string()
-        } else if !self.deepl_disabled_reason.is_empty() {
-            format!("Google (DeepL недоступен: {})", self.deepl_disabled_reason)
-        } else {
-            "Google (ключ DeepL не задан)".to_string()
+        match self.mode {
+            "google" => "Google (выбран в настройках)".to_string(),
+            "deepl" => {
+                if self.deepl.is_none() {
+                    "DeepL недоступен: ключ не задан".to_string()
+                } else if !self.deepl_disabled_reason.is_empty() {
+                    format!("DeepL недоступен: {}", self.deepl_disabled_reason)
+                } else {
+                    "DeepL".to_string()
+                }
+            }
+            _ => {
+                if self.active_engine() == ENGINE_DEEPL {
+                    "DeepL".to_string()
+                } else if !self.deepl_disabled_reason.is_empty() {
+                    format!("Google (DeepL недоступен: {})", self.deepl_disabled_reason)
+                } else {
+                    "Google (ключ DeepL не задан)".to_string()
+                }
+            }
         }
     }
 
     fn cached(&self, text: &str, engine: &str, use_cache: bool) -> Option<String> {
         if use_cache {
-            self.cache.as_ref().and_then(|c| c.get(text, engine))
+            self.cache.as_ref().and_then(|c| c.get(text, engine, self.target.code()))
         } else {
             None
         }
@@ -366,7 +406,7 @@ impl TranslatorManager {
     fn store(&self, text: &str, engine: &str, result: &str) {
         if let Some(c) = &self.cache {
             if !result.is_empty() {
-                c.put(text, engine, result);
+                c.put(text, engine, self.target.code(), result);
             }
         }
     }
@@ -378,13 +418,25 @@ impl TranslatorManager {
         context: &str,
         use_cache: bool,
     ) -> Result<TranslateResult, TranslateError> {
+        // тот же язык: переводить нечего
+        if src_lang == Some(self.target) {
+            return Ok(TranslateResult {
+                text: text.to_string(),
+                engine: ENGINE_NONE,
+                cached: false,
+                notice: String::new(),
+            });
+        }
+        if self.mode == "deepl" {
+            return self.translate_deepl_only(text, src_lang, context, use_cache);
+        }
         let mut notice = String::new();
-        if self.active_engine() == ENGINE_DEEPL {
+        if self.mode == "auto" && self.active_engine() == ENGINE_DEEPL {
             if let Some(hit) = self.cached(text, ENGINE_DEEPL, use_cache) {
                 return Ok(TranslateResult { text: hit, engine: ENGINE_DEEPL, cached: true, notice });
             }
             let attempt = match &self.deepl {
-                Some(d) => d.translate(text, src_lang, context),
+                Some(d) => d.translate(text, src_lang, self.target, context),
                 None => Err(TranslateError::Failed(String::new())),
             };
             match attempt {
@@ -403,9 +455,40 @@ impl TranslatorManager {
         if let Some(hit) = self.cached(text, ENGINE_GOOGLE, use_cache) {
             return Ok(TranslateResult { text: hit, engine: ENGINE_GOOGLE, cached: true, notice });
         }
-        let out = self.google.translate(text, src_lang)?;
+        let out = self.google.translate(text, src_lang, self.target)?;
         self.store(text, ENGINE_GOOGLE, &out);
         Ok(TranslateResult { text: out, engine: ENGINE_GOOGLE, cached: false, notice })
+    }
+
+    /// Режим «только DeepL»: без ключа и при любой ошибке — ошибка, без перехода на Google.
+    fn translate_deepl_only(
+        &mut self,
+        text: &str,
+        src_lang: Option<Lang>,
+        context: &str,
+        use_cache: bool,
+    ) -> Result<TranslateResult, TranslateError> {
+        let Some(d) = &self.deepl else {
+            return Err(TranslateError::Failed(
+                "Ключ DeepL не задан — укажите его в настройках или выберите другой переводчик.".to_string(),
+            ));
+        };
+        if let Some(hit) = self.cached(text, ENGINE_DEEPL, use_cache) {
+            return Ok(TranslateResult { text: hit, engine: ENGINE_DEEPL, cached: true, notice: String::new() });
+        }
+        match d.translate(text, src_lang, self.target, context) {
+            Ok(out) => {
+                self.deepl_disabled_reason.clear();
+                self.store(text, ENGINE_DEEPL, &out);
+                Ok(TranslateResult { text: out, engine: ENGINE_DEEPL, cached: false, notice: String::new() })
+            }
+            Err(e) => {
+                if matches!(e, TranslateError::Denied(_)) {
+                    self.deepl_disabled_reason = e.to_string();
+                }
+                Err(e)
+            }
+        }
     }
 }
 
@@ -512,7 +595,7 @@ mod tests {
     fn deepl_request_shape() {
         let s = FakeHttp::new(200);
         let out = DeepLTranslator::new("key:fx", http(&s))
-            .translate("こんにちは", Some(Lang::Ja), "前の文")
+            .translate("こんにちは", Some(Lang::Ja), Lang::Ru, "前の文")
             .unwrap();
         assert_eq!(out, "D:こんにちは");
         let req = &s.posts()[0];
@@ -653,6 +736,128 @@ mod tests {
         m.set_deepl_key("");
         m.translate("b", Some(Lang::Ja), "", true).unwrap();
         assert!(first.gets().is_empty() && new.gets().len() == 1);
+    }
+
+    #[test]
+    fn target_codes_in_requests() {
+        // (цель, DeepL target_lang, Google tl)
+        for (t, d, g) in [(Lang::En, "EN-US", "en"), (Lang::Ko, "KO", "ko"), (Lang::Zh, "ZH-HANS", "zh-CN")] {
+            let s = FakeHttp::new(200);
+            let mut m = TranslatorManager::new("key", None, http(&s));
+            m.set_target(t);
+            assert_eq!(m.target(), t);
+            m.translate("こんにちは", Some(Lang::Ja), "", true).unwrap();
+            assert_eq!(s.posts()[0].json["target_lang"], d);
+            assert_eq!(s.posts()[0].json["source_lang"], "JA");
+            let s = FakeHttp::new(200);
+            let mut m = TranslatorManager::new("", None, http(&s));
+            m.set_target(t);
+            m.translate("こんにちは", Some(Lang::Ja), "", true).unwrap();
+            assert_eq!(param(&s.gets()[0], "tl"), g);
+            assert_eq!(param(&s.gets()[0], "sl"), "ja");
+        }
+        // источники: корейский, китайский, авто
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("key", None, http(&s));
+        m.translate("안녕", Some(Lang::Ko), "", true).unwrap();
+        m.translate("你好", None, "", true).unwrap();
+        assert_eq!(s.posts()[0].json["source_lang"], "KO");
+        assert_eq!(s.posts()[0].json["target_lang"], "RU");
+        assert!(s.posts()[1].json.get("source_lang").is_none());
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("", None, http(&s));
+        m.translate("你好", Some(Lang::Zh), "", true).unwrap();
+        m.translate("안녕", Some(Lang::Ko), "", true).unwrap();
+        assert_eq!((param(&s.gets()[0], "sl"), param(&s.gets()[1], "sl")), ("zh-CN", "ko"));
+        assert_eq!(param(&s.gets()[0], "tl"), "ru");
+    }
+
+    #[test]
+    fn mode_google_ignores_deepl() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("key", None, http(&s));
+        m.set_mode("google");
+        assert_eq!(m.mode(), "google");
+        let res = m.translate("テスト", Some(Lang::Ja), "", true).unwrap();
+        assert_eq!((res.engine, res.text.as_str()), ("google", "G:テスト"));
+        assert!(s.posts().is_empty() && s.gets().len() == 1);
+        assert_eq!(m.status_text(), "Google (выбран в настройках)");
+        assert_eq!(m.active_engine(), "google");
+    }
+
+    #[test]
+    fn mode_deepl_only() {
+        // без ключа — ошибка, в сеть не ходим
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("", None, http(&s));
+        m.set_mode("deepl");
+        let e = m.translate("テスト", Some(Lang::Ja), "", true).unwrap_err();
+        assert_eq!(
+            e.to_string(),
+            "Ключ DeepL не задан — укажите его в настройках или выберите другой переводчик."
+        );
+        assert!(s.posts().is_empty() && s.gets().is_empty());
+        // с ключом работает через DeepL
+        m.set_deepl_key("key");
+        let res = m.translate("テスト", Some(Lang::Ja), "", true).unwrap();
+        assert_eq!((res.engine, res.text.as_str()), ("deepl", "D:テスト"));
+        assert_eq!(m.status_text(), "DeepL");
+        // ошибка DeepL — ошибка, без Google
+        for status in [403u16, 500] {
+            let s = FakeHttp::new(status);
+            let mut m = TranslatorManager::new("key", None, http(&s));
+            m.set_mode("deepl");
+            assert!(m.translate("テスト", Some(Lang::Ja), "", true).is_err());
+            assert!(s.gets().is_empty());
+            if status == 403 {
+                assert!(m.status_text().starts_with("DeepL недоступен: ошибка 403"));
+            }
+        }
+    }
+
+    #[test]
+    fn mode_unknown_is_auto() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("", None, http(&s));
+        assert_eq!(m.mode(), "auto");
+        m.set_mode("google");
+        m.set_mode("bogus");
+        assert_eq!(m.mode(), "auto");
+        assert_eq!(ENGINE_MODES.map(|(c, _)| c), ["auto", "deepl", "google"]);
+    }
+
+    #[test]
+    fn same_language_not_translated() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("key", None, http(&s));
+        m.set_target(Lang::En);
+        let res = m.translate("Hello", Some(Lang::En), "", true).unwrap();
+        assert_eq!((res.text.as_str(), res.engine, res.cached), ("Hello", "none", false));
+        assert!(s.posts().is_empty() && s.gets().is_empty());
+        assert_eq!(engine_title("none"), "Без перевода (тот же язык)");
+        // неизвестный язык оригинала — переводим
+        m.translate("Hello", None, "", true).unwrap();
+        assert_eq!(s.posts().len(), 1);
+        // даже в режиме deepl без ключа тот же язык не даёт ошибки
+        let mut m = TranslatorManager::new("", None, http(&s));
+        m.set_mode("deepl");
+        assert_eq!(m.translate("Привет", Some(Lang::Ru), "", true).unwrap().engine, "none");
+    }
+
+    #[test]
+    fn cache_depends_on_target() {
+        let s = FakeHttp::new(200);
+        let cache = Arc::new(TranslationCache::in_memory().unwrap());
+        let mut m = TranslatorManager::new("", Some(cache.clone()), http(&s));
+        assert!(!m.translate("テスト", Some(Lang::Ja), "", true).unwrap().cached);
+        m.set_target(Lang::En);
+        // другая цель — кэш не подходит
+        assert!(!m.translate("テスト", Some(Lang::Ja), "", true).unwrap().cached);
+        assert!(m.translate("テスト", Some(Lang::Ja), "", true).unwrap().cached);
+        m.set_target(Lang::Ru);
+        assert!(m.translate("テスト", Some(Lang::Ja), "", true).unwrap().cached);
+        assert_eq!(s.gets().len(), 2);
+        assert_eq!(cache.count(), 2);
     }
 
     #[test]

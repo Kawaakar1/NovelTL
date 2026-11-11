@@ -259,6 +259,12 @@ pub struct AppSettings {
     pub bg_opacity: u32,
     pub hotkey_toggle: String,
     pub hotkey_retranslate: String,
+    /// Язык перевода.
+    pub target_lang: Lang,
+    /// Переводчик: auto / deepl / google
+    pub engine_mode: String,
+    /// Язык оригинала по умолчанию для новых игр.
+    pub default_source_lang: Lang,
 }
 
 impl Default for AppSettings {
@@ -280,6 +286,9 @@ impl Default for AppSettings {
             bg_opacity: 85,
             hotkey_toggle: "Ctrl+Alt+H".into(),
             hotkey_retranslate: "Ctrl+Alt+R".into(),
+            target_lang: Lang::Ru,
+            engine_mode: "auto".into(),
+            default_source_lang: Lang::Ja,
         }
     }
 }
@@ -491,6 +500,22 @@ mod tests {
         assert_eq!(s.theme, "system");
         assert_eq!(s.deepl_key, "k:fx");
         assert_eq!(s.font_size, 30);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_old_file_has_lang_defaults() {
+        let dir = tmp_dir("set");
+        let path = dir.join("settings.json");
+        fs::write(&path, r#"{"deepl_key": "k"}"#).unwrap();
+        let s = AppSettings::load(&path);
+        assert_eq!(s.target_lang, Lang::Ru);
+        assert_eq!(s.engine_mode, "auto");
+        assert_eq!(s.default_source_lang, Lang::Ja);
+        // новые значения читаются из файла
+        fs::write(&path, r#"{"target_lang": "en", "engine_mode": "google", "default_source_lang": "ko"}"#).unwrap();
+        let s = AppSettings::load(&path);
+        assert_eq!((s.target_lang, s.engine_mode.as_str(), s.default_source_lang), (Lang::En, "google", Lang::Ko));
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -62,6 +62,8 @@ pub struct Wizard {
     windows_at: Option<Instant>,
     selected: Option<isize>,
     lang: Lang,
+    /// название языка перевода (строчными) для подписи
+    target_title: String,
     show_others: bool,
     best_key: Option<HookKey>,
     messages: Vec<(String, String)>,
@@ -145,6 +147,10 @@ fn central_frame() -> Frame {
 
 impl Wizard {
     pub fn new(mode: WizardMode, shared: &Shared, pos: Option<[f32; 2]>) -> Wizard {
+        let (default_lang, target_lang) = {
+            let c = lock_ctl(&shared.controller);
+            (c.settings.default_source_lang, c.settings.target_lang)
+        };
         let mut w = Wizard {
             mode,
             id: ViewportId::from_hash_of("noveltl_wizard"),
@@ -157,7 +163,8 @@ impl Wizard {
             windows: Vec::new(),
             windows_at: None,
             selected: None,
-            lang: Lang::Ja,
+            lang: default_lang,
+            target_title: target_lang.title().to_lowercase(),
             show_others: false,
             best_key: None,
             messages: Vec::new(),
@@ -307,6 +314,7 @@ impl Wizard {
         self.reload_windows(shared, false);
         let snap = self.snapshot(shared);
         self.best_key = snap.rows.first().map(|r| r.key.clone());
+        self.target_title = lock_ctl(&shared.controller).settings.target_lang.title().to_lowercase();
 
         let mut builder = ViewportBuilder::default()
             .with_title(self.window_title())
@@ -418,7 +426,10 @@ impl Wizard {
                         }
                     });
             });
-            ui.label(theme::small("Перевод всегда на русский."));
+            ui.label(theme::small(format!(
+                "Перевод на: {} — меняется в настройках, раздел «Перевод».",
+                self.target_title
+            )));
             ui.horizontal(|ui| {
                 if button(ui, "Отмена", BtnKind::Normal, true, None).clicked() {
                     acts.push(Act::Cancel);

@@ -6,18 +6,34 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
+/// Ключ записи: текст + переводчик + язык перевода.
+const NEW_SCHEMA: &str = "CREATE TABLE tr (\
+     src TEXT NOT NULL, engine TEXT NOT NULL, target TEXT NOT NULL DEFAULT 'ru', \
+     dst TEXT NOT NULL, ts REAL NOT NULL, PRIMARY KEY (src, engine, target))";
+
 pub struct TranslationCache {
     db: Mutex<Connection>,
 }
 
 impl TranslationCache {
     fn init(db: Connection) -> rusqlite::Result<Self> {
-        // схема в точности как в Python-версии
-        db.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tr (\
-             src TEXT NOT NULL, engine TEXT NOT NULL, dst TEXT NOT NULL, ts REAL NOT NULL, \
-             PRIMARY KEY (src, engine))",
-        )?;
+        // есть ли уже колонка target (старые базы её не имеют)
+        let has_target = {
+            let mut st = db.prepare("PRAGMA table_info(tr)")?;
+            let names: Vec<String> = st.query_map([], |r| r.get::<_, String>(1))?.filter_map(Result::ok).collect();
+            (!names.is_empty()).then(|| names.iter().any(|n| n == "target"))
+        };
+        match has_target {
+            Some(true) => {}
+            None => db.execute_batch(NEW_SCHEMA)?,
+            // миграция: старые записи — перевод на русский; PRIMARY KEY меняем пересозданием таблицы
+            Some(false) => db.execute_batch(&format!(
+                "BEGIN; ALTER TABLE tr RENAME TO tr_old; {NEW_SCHEMA}; \
+                 INSERT INTO tr (src, engine, target, dst, ts) \
+                 SELECT src, engine, 'ru', dst, ts FROM tr_old; \
+                 DROP TABLE tr_old; COMMIT;"
+            ))?,
+        }
         Ok(TranslationCache { db: Mutex::new(db) })
     }
 
@@ -33,25 +49,25 @@ impl TranslationCache {
         self.db.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn get(&self, src: &str, engine: &str) -> Option<String> {
+    pub fn get(&self, src: &str, engine: &str, target: &str) -> Option<String> {
         self.lock()
             .query_row(
-                "SELECT dst FROM tr WHERE src = ?1 AND engine = ?2",
-                rusqlite::params![src, engine],
+                "SELECT dst FROM tr WHERE src = ?1 AND engine = ?2 AND target = ?3",
+                rusqlite::params![src, engine, target],
                 |r| r.get::<_, String>(0),
             )
             .ok()
     }
 
     /// Ошибки записи молча игнорируются.
-    pub fn put(&self, src: &str, engine: &str, dst: &str) {
+    pub fn put(&self, src: &str, engine: &str, target: &str, dst: &str) {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
         let _ = self.lock().execute(
-            "INSERT OR REPLACE INTO tr (src, engine, dst, ts) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![src, engine, dst, ts],
+            "INSERT OR REPLACE INTO tr (src, engine, target, dst, ts) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![src, engine, target, dst, ts],
         );
     }
 
@@ -95,16 +111,55 @@ mod tests {
     #[test]
     fn put_get_count_clear() {
         let c = TranslationCache::in_memory().unwrap();
-        assert_eq!(c.get("テスト", "deepl"), None);
-        c.put("テスト", "deepl", "тест");
-        assert_eq!(c.get("テスト", "deepl").as_deref(), Some("тест"));
-        assert_eq!(c.get("テスト", "other"), None);
+        assert_eq!(c.get("テスト", "deepl", "ru"), None);
+        c.put("テスト", "deepl", "ru", "тест");
+        assert_eq!(c.get("テスト", "deepl", "ru").as_deref(), Some("тест"));
+        assert_eq!(c.get("テスト", "other", "ru"), None);
         // тот же ключ заменяется, а не дублируется
-        c.put("テスト", "deepl", "тест2");
+        c.put("テスト", "deepl", "ru", "тест2");
         assert_eq!(c.count(), 1);
-        assert_eq!(c.get("テスト", "deepl").as_deref(), Some("тест2"));
+        assert_eq!(c.get("テスト", "deepl", "ru").as_deref(), Some("тест2"));
         c.clear();
         assert_eq!(c.count(), 0);
+    }
+
+    #[test]
+    fn different_targets_are_separate() {
+        let c = TranslationCache::in_memory().unwrap();
+        c.put("テスト", "google", "ru", "тест");
+        c.put("テスト", "google", "en", "test");
+        assert_eq!(c.count(), 2);
+        assert_eq!(c.get("テスト", "google", "ru").as_deref(), Some("тест"));
+        assert_eq!(c.get("テスト", "google", "en").as_deref(), Some("test"));
+        assert_eq!(c.get("テスト", "google", "ko"), None);
+    }
+
+    #[test]
+    fn old_schema_is_migrated() {
+        let dir = tmp_dir("mig");
+        let path = dir.join("old.sqlite");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(
+                "CREATE TABLE tr (src TEXT NOT NULL, engine TEXT NOT NULL, dst TEXT NOT NULL, \
+                 ts REAL NOT NULL, PRIMARY KEY (src, engine)); \
+                 INSERT INTO tr VALUES ('こんにちは', 'deepl', 'привет', 1.0);",
+            )
+            .unwrap();
+        }
+        {
+            let c = TranslationCache::open(&path).unwrap();
+            assert_eq!(c.count(), 1);
+            assert_eq!(c.get("こんにちは", "deepl", "ru").as_deref(), Some("привет"));
+            assert_eq!(c.get("こんにちは", "deepl", "en"), None);
+            c.put("こんにちは", "deepl", "en", "hello");
+            assert_eq!(c.count(), 2);
+        }
+        // повторное открытие уже новой базы ничего не ломает
+        let c = TranslationCache::open(&path).unwrap();
+        assert_eq!(c.count(), 2);
+        assert_eq!(c.get("こんにちは", "deepl", "en").as_deref(), Some("hello"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -113,9 +168,9 @@ mod tests {
         let path = dir.join("c.sqlite");
         {
             let c = TranslationCache::open(&path).unwrap();
-            c.put("a", "deepl", "б");
+            c.put("a", "deepl", "ru", "б");
         }
-        assert_eq!(TranslationCache::open(&path).unwrap().get("a", "deepl").as_deref(), Some("б"));
+        assert_eq!(TranslationCache::open(&path).unwrap().get("a", "deepl", "ru").as_deref(), Some("б"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

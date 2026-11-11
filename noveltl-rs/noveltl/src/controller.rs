@@ -39,12 +39,16 @@ fn now_secs() -> f64 {
 
 /// Подменяет сеть в демо: Google отвечает готовыми переводами сценария, DeepL — отказом.
 pub struct DemoHttp {
-    table: HashMap<&'static str, &'static str>,
+    table_ru: HashMap<&'static str, &'static str>,
+    table_en: HashMap<&'static str, &'static str>,
 }
 
 impl DemoHttp {
     pub fn new() -> Self {
-        DemoHttp { table: crate::demo::demo_translations() }
+        DemoHttp {
+            table_ru: crate::demo::demo_translations_for(Lang::Ru),
+            table_en: crate::demo::demo_translations_for(Lang::En),
+        }
     }
 }
 
@@ -66,7 +70,10 @@ impl Http for DemoHttp {
 
     fn get(&self, _url: &str, query: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
         let q = query.iter().find(|(k, _)| *k == "q").map(|(_, v)| *v).unwrap_or("");
-        let tr = match self.table.get(q) {
+        // язык ответа — по параметру tl: русский для "ru", иначе английский
+        let tl = query.iter().find(|(k, _)| *k == "tl").map(|(_, v)| *v).unwrap_or("ru");
+        let table = if tl == "ru" { &self.table_ru } else { &self.table_en };
+        let tr = match table.get(q) {
             Some(t) => (*t).to_string(),
             None => format!("[демо] {q}"),
         };
@@ -80,6 +87,10 @@ impl Http for DemoHttp {
 pub enum WorkerCmd {
     SetPipeline(Option<TranslationPipeline>),
     SetDeeplKey(String),
+    /// язык перевода
+    SetTarget(Lang),
+    /// режим выбора переводчика: "auto" | "deepl" | "google"
+    SetMode(String),
     SetHttp(Arc<dyn Http>),
     SetGlossary(Vec<GlossaryEntry>),
     Translate { seq: u64, name: String, text: String, use_cache: bool },
@@ -111,10 +122,14 @@ fn worker_loop(
     status: Arc<Mutex<String>>,
     applied: Arc<AtomicU64>,
     deepl_key: String,
+    target: Lang,
+    mode: String,
     http: Arc<dyn Http>,
 ) {
     // «запасной» переводчик: нужен, чтобы показывать состояние, пока игры нет
     let mut idle = TranslatorManager::new(&deepl_key, None, http);
+    idle.set_target(target);
+    idle.set_mode(&mode);
     let mut pipeline: Option<TranslationPipeline> = None;
     publish(&status, idle.status_text());
     loop {
@@ -134,6 +149,18 @@ fn worker_loop(
                     idle.set_deepl_key(&k);
                     if let Some(p) = pipeline.as_mut() {
                         p.manager.set_deepl_key(&k);
+                    }
+                }
+                WorkerCmd::SetTarget(t) => {
+                    idle.set_target(t);
+                    if let Some(p) = pipeline.as_mut() {
+                        p.manager.set_target(t);
+                    }
+                }
+                WorkerCmd::SetMode(m) => {
+                    idle.set_mode(&m);
+                    if let Some(p) = pipeline.as_mut() {
+                        p.manager.set_mode(&m);
                     }
                 }
                 WorkerCmd::SetHttp(h) => {
@@ -177,7 +204,7 @@ fn worker_loop(
 }
 
 impl Worker {
-    fn start(waker: Waker, deepl_key: String, http: Arc<dyn Http>) -> Worker {
+    fn start(waker: Waker, deepl_key: String, target: Lang, mode: String, http: Arc<dyn Http>) -> Worker {
         let (cmd_tx, cmd_rx) = channel();
         let (msg_tx, msg_rx) = channel();
         let status = Arc::new(Mutex::new(String::new()));
@@ -185,7 +212,7 @@ impl Worker {
         let (st, ap) = (status.clone(), applied.clone());
         let handle = std::thread::Builder::new()
             .name("translator".into())
-            .spawn(move || worker_loop(cmd_rx, msg_tx, waker, st, ap, deepl_key, http))
+            .spawn(move || worker_loop(cmd_rx, msg_tx, waker, st, ap, deepl_key, target, mode, http))
             .ok();
         Worker { tx: cmd_tx, rx: msg_rx, status, applied, sent: 0, handle }
     }
@@ -343,7 +370,13 @@ impl Controller {
                 None => Arc::new(DemoHttp::new()), // сеть собрать не удалось совсем — переводить нечем
             }
         };
-        let worker = Worker::start(waker.clone(), settings.deepl_key.clone(), http.clone());
+        let worker = Worker::start(
+            waker.clone(),
+            settings.deepl_key.clone(),
+            settings.target_lang,
+            settings.engine_mode.clone(),
+            http.clone(),
+        );
         let (overlay, overlay_rx) = Overlay::start();
         overlay.send(Cmd::Style(style_from(&settings)));
         let (hk_tx, hotkey_rx) = channel();
@@ -482,7 +515,9 @@ impl Controller {
     }
 
     fn make_pipeline(&self, lang: Lang, glossary: Vec<GlossaryEntry>) -> TranslationPipeline {
-        let manager = TranslatorManager::new(&self.settings.deepl_key, self.cache.clone(), self.http.clone());
+        let mut manager = TranslatorManager::new(&self.settings.deepl_key, self.cache.clone(), self.http.clone());
+        manager.set_target(self.settings.target_lang);
+        manager.set_mode(&self.settings.engine_mode);
         TranslationPipeline::new(manager, lang, glossary)
     }
 
@@ -858,6 +893,57 @@ impl Controller {
         }
     }
 
+    /// Меняет язык оригинала игры: в сессии и в хранилище. Для текущей сессии пересоздаётся pipeline;
+    /// если сменилась кодовая страница — игра переподключается.
+    pub fn set_profile_lang(&mut self, profile_id: &str, lang: Lang) {
+        let in_session = self.session.as_ref().is_some_and(|s| s.profile.id == profile_id);
+        if !in_session {
+            // игра не запущена: достаточно поправить профиль на диске
+            if let Some(mut p) = self.store.get(profile_id) {
+                if p.lang != lang {
+                    p.lang = lang;
+                    let _ = self.store.save(&p);
+                }
+            }
+            return;
+        }
+        let Some(s) = self.session.as_mut() else { return };
+        if s.profile.lang == lang {
+            return;
+        }
+        let codepage_changed = s.profile.lang.codepage() != lang.codepage();
+        s.profile.lang = lang;
+        let (saved, connected, has_hook) = (s.saved, s.connected, s.profile.hook.is_some());
+        if saved {
+            let _ = self.store.save(&s.profile);
+        }
+        let (profile, win_pid) = (s.profile.clone(), s.pid);
+        if codepage_changed && connected {
+            if saved && has_hook {
+                // профиль уже обновлён на диске: завершаем сессию, автопоиск подключится заново с новой кодовой
+                // страницей (пауза до следующего скана заодно пропускает запоздалый Disconnected от старой сессии)
+                self.end_session();
+                self.last_scan = Instant::now();
+                self.notice("Язык игры изменён — NovelTL переподключается к игре.");
+            } else {
+                // профиля для автопоиска нет — подключаемся явно к тому же окну
+                let win = self.windows().into_iter().find(|w| w.pid == win_pid);
+                match win {
+                    Some(win) => {
+                        let setup = self.session.as_ref().is_some_and(|s| s.setup);
+                        self.start_session(profile, &win, saved, setup);
+                    }
+                    None => self.end_session(),
+                }
+            }
+            return;
+        }
+        // кодовая страница та же: хватает нового pipeline
+        let pipeline = self.make_pipeline(lang, profile.glossary.clone());
+        self.worker.send(WorkerCmd::SetPipeline(Some(pipeline)));
+        self.retranslate();
+    }
+
     pub fn save_glossary(&mut self, profile_id: &str, entries: Vec<GlossaryEntry>) {
         let in_session = self.session.as_ref().is_some_and(|s| s.profile.id == profile_id);
         let profile = if in_session {
@@ -914,11 +1000,19 @@ impl Controller {
             Err(e) => self.notice(format!("Не удалось сохранить настройки: {e}")),
         }
         self.worker.send(WorkerCmd::SetDeeplKey(self.settings.deepl_key.clone()));
+        self.worker.send(WorkerCmd::SetTarget(self.settings.target_lang));
+        self.worker.send(WorkerCmd::SetMode(self.settings.engine_mode.clone()));
         let msg = self.apply_network();
         if !msg.is_empty() {
             self.notice(msg);
         }
         self.apply_overlay_style();
+        // цель или режим сменились — плашка сразу показывает перевод по-новому
+        if self.session.is_some()
+            && (old.target_lang != self.settings.target_lang || old.engine_mode != self.settings.engine_mode)
+        {
+            self.retranslate();
+        }
     }
 
     /// Стиль плашки из `self.settings` (для предпросмотра без сохранения).
@@ -1076,6 +1170,10 @@ mod tests {
         let r = h.get("x", &[("q", "неизвестно")]).unwrap();
         assert!(r.body.contains("[демо] неизвестно"));
         assert_eq!(h.post_json("x", &[], &serde_json::json!({})).unwrap().status, 403);
+        // цель en — английские варианты
+        let r = h.get("x", &[("q", "灯里"), ("sl", "ja"), ("tl", "en")]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+        assert_eq!(v[0][0][0], "Akari");
     }
 
     #[test]
@@ -1132,6 +1230,20 @@ mod tests {
         assert!(report["игра"]["подключено"].as_bool() == Some(true));
         assert!(report["профиль"].get("exe_path").is_none());
         assert!(c.translator_status().starts_with("Google"));
+
+        // 4а. смена цели на английский: плашка переводится заново на английский (SetTarget + retranslate)
+        let mut st = c.settings.clone();
+        st.target_lang = Lang::En;
+        c.save_settings(st);
+        let want_en = crate::demo::demo_translations_for(Lang::En)[SCRIPT[4].text];
+        let ok = pump(&mut c, 3000, |c| {
+            c.session.as_ref().and_then(|s| s.last_result.as_ref()).is_some_and(|r| r.text == want_en)
+        });
+        assert!(ok, "нет английского перевода: {:?}", c.session.as_ref().and_then(|s| s.last_result.clone()));
+        // возвращаем русский для дальнейших шагов
+        let mut st = c.settings.clone();
+        st.target_lang = Lang::Ru;
+        c.save_settings(st);
 
         // 5. перезапуск сессии с сохранённым профилем
         c.end_session();

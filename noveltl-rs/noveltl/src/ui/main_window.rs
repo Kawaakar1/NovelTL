@@ -6,6 +6,7 @@ use eframe::egui::{
     self, text::LayoutJob, Align, Color32, ColorImage, CornerRadius, FontId, Frame, Layout, Margin, RichText,
     Sense, TextureHandle, TextureOptions, Vec2,
 };
+use noveltl_core::langdetect::Lang;
 use noveltl_core::pipeline::LineResult;
 use noveltl_core::profiles::{Profile, ProfileStore};
 
@@ -35,6 +36,8 @@ struct Snap {
     hotkey_toggle: String,
     hotkey_retranslate: String,
     translator: String,
+    /// язык перевода со строчной буквы
+    target_title: String,
 }
 
 enum Action {
@@ -44,6 +47,7 @@ enum Action {
     Wizard(WizardMode),
     Glossary(String),
     Settings,
+    SetLang(String, Lang),
 }
 
 pub struct MainWindow {
@@ -113,6 +117,7 @@ impl MainWindow {
             hotkey_toggle: c.settings.hotkey_toggle.clone(),
             hotkey_retranslate: c.settings.hotkey_retranslate.clone(),
             translator: c.translator_status(),
+            target_title: c.settings.target_lang.title().to_lowercase(),
         }
     }
 
@@ -366,7 +371,29 @@ impl MainWindow {
         let p = pal();
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 12.0);
         ui.label(theme::h1(profile.name.as_str()));
-        ui.label(theme::dim(format!("{} → русский  ·  {}", profile.lang.title(), profile.exe_name)));
+        ui.horizontal(|ui| {
+            ui.label(theme::dim(format!(
+                "{} → {}  ·  {}",
+                profile.lang.title(),
+                snap.target_title,
+                profile.exe_name
+            )));
+            // компактный выбор языка оригинала для этой игры
+            let mut lang = profile.lang;
+            egui::ComboBox::from_id_salt("game_lang")
+                .width(110.0)
+                .selected_text(theme::small(profile.lang.title()))
+                .show_ui(ui, |ui| {
+                    for l in Lang::ALL {
+                        ui.selectable_value(&mut lang, l, l.title());
+                    }
+                })
+                .response
+                .on_hover_text("Язык оригинала этой игры");
+            if lang != profile.lang {
+                actions.push(Action::SetLang(profile.id.clone(), lang));
+            }
+        });
 
         // статус
         let (mut color, mut text, mut retry) =
@@ -499,6 +526,10 @@ impl MainWindow {
             match a {
                 Action::Wizard(mode) => windows.open_wizard(mode),
                 Action::Settings => windows.open_settings(),
+                Action::SetLang(id, lang) => {
+                    lock_ctl(&shared.controller).set_profile_lang(&id, lang);
+                    self.profiles_at = None;
+                }
                 Action::Glossary(id) => windows.open_glossary(id),
                 Action::AskDelete(id, name) => self.confirm_delete = Some((id, name)),
                 Action::Report => {

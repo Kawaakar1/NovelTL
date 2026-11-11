@@ -148,8 +148,8 @@ enum Stage {
     InGame,
     SettingsOpen,
     SettingsWait,
-    SettingsProxy,
-    SettingsProxyWait,
+    /// снимок раздела настроек с этим номером
+    SettingsSection(usize),
     SettingsClose,
     GlossaryOpen,
     GlossaryWait,
@@ -433,7 +433,7 @@ impl Shots {
             Stage::SettingsWait => match settings.as_ref() {
                 Some(w) => {
                     if w.frames() > 14 && waited > Duration::from_millis(1800) {
-                        self.shot_window(w.window_title(), "10_settings.png", Stage::SettingsProxy);
+                        self.go(Stage::SettingsSection(0));
                     }
                 }
                 None => {
@@ -442,16 +442,28 @@ impl Shots {
                     }
                 }
             },
-            Stage::SettingsProxy => {
-                if let Some(w) = settings.as_mut() {
-                    w.fill_net_for_shots(NET_PROXY, "socks5h://127.0.0.1:1080", "user", "secret");
+            Stage::SettingsSection(i) => {
+                const NAMES: [&str; 5] = [
+                    "10_settings_personal.png",
+                    "11_settings_translate.png",
+                    "12_settings_network.png",
+                    "13_settings_hotkeys.png",
+                    "14_settings_general.png",
+                ];
+                if !self.fronted {
+                    // выбрать раздел (для сети — ещё и подставить прокси-заглушки)
+                    if let Some(w) = settings.as_mut() {
+                        w.select_section_for_shots(i);
+                        if i == 2 {
+                            w.fill_net_for_shots(NET_PROXY, "socks5h://127.0.0.1:1080", "user", "secret");
+                        }
+                    }
+                    self.fronted = true;
                 }
-                self.go(Stage::SettingsProxyWait);
-            }
-            Stage::SettingsProxyWait => {
                 if waited > Duration::from_millis(700) {
+                    let next = if i + 1 < NAMES.len() { Stage::SettingsSection(i + 1) } else { Stage::SettingsClose };
                     if let Some(w) = settings.as_ref() {
-                        self.shot_window(w.window_title(), "12_settings_proxy.png", Stage::SettingsClose);
+                        self.shot_window(w.window_title(), NAMES[i], next);
                     } else {
                         self.go(Stage::SettingsClose);
                     }
@@ -492,7 +504,7 @@ impl Shots {
             Stage::GlossaryShot => {
                 if waited > Duration::from_millis(900) {
                     if let Some(g) = glossary.as_ref() {
-                        self.shot_window(g.window_title(), "11_glossary.png", Stage::GlossaryClose);
+                        self.shot_window(g.window_title(), "15_glossary.png", Stage::GlossaryClose);
                     } else {
                         self.go(Stage::GlossaryClose);
                     }

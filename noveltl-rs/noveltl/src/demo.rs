@@ -7,6 +7,8 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Duration;
 
+use noveltl_core::langdetect::Lang;
+
 use crate::source::{HookEvent, HookSource, ThreadInfo, Waker};
 
 pub struct ScriptLine {
@@ -14,18 +16,20 @@ pub struct ScriptLine {
     pub text: &'static str,
     pub name_ru: &'static str,
     pub text_ru: &'static str,
+    pub name_en: &'static str,
+    pub text_en: &'static str,
 }
 
 /// Собственный текст для демонстрации.
 pub const SCRIPT: &[ScriptLine] = &[
-    ScriptLine { name: "", text: "朝の境内は静かで、空気がひんやりと澄んでいた。", name_ru: "", text_ru: "Утром на территории храма было тихо, а воздух был прохладным и прозрачным." },
-    ScriptLine { name: "灯里", text: "「おはようございます。今日も早いですね」", name_ru: "Акари", text_ru: "«Доброе утро. Вы сегодня снова рано»." },
-    ScriptLine { name: "悠斗", text: "「ああ、おはよう。朝の掃除を手伝おうと思って」", name_ru: "Юто", text_ru: "«А, доброе утро. Я подумал, что помогу с утренней уборкой»." },
-    ScriptLine { name: "灯里", text: "「ふふ、ありがとうございます。それでは、箒をお願いしますね」", name_ru: "Акари", text_ru: "«Хе-хе, спасибо большое. Тогда возьмите, пожалуйста, метлу»." },
-    ScriptLine { name: "", text: "彼女は小さく微笑んで、箒を差し出した。", name_ru: "", text_ru: "Она слегка улыбнулась и протянула метлу." },
-    ScriptLine { name: "小春", text: "「お二人とも、朝ごはんの用意ができましたよ」", name_ru: "Кохару", text_ru: "«Вы оба, завтрак уже готов»." },
-    ScriptLine { name: "悠斗", text: "「もうそんな時間か。すぐ行くよ」", name_ru: "Юто", text_ru: "«Уже так поздно? Сейчас приду»." },
-    ScriptLine { name: "灯里", text: "「今日の朝ごはんは何でしょう。楽しみです」", name_ru: "Акари", text_ru: "«Интересно, что сегодня на завтрак. Жду с нетерпением»." },
+    ScriptLine { name: "", text: "朝の境内は静かで、空気がひんやりと澄んでいた。", name_ru: "", text_ru: "Утром на территории храма было тихо, а воздух был прохладным и прозрачным.", name_en: "", text_en: "The shrine grounds were quiet in the morning, and the air was cool and clear." },
+    ScriptLine { name: "灯里", text: "「おはようございます。今日も早いですね」", name_ru: "Акари", text_ru: "«Доброе утро. Вы сегодня снова рано».", name_en: "Akari", text_en: "\"Good morning. You're up early again today.\"" },
+    ScriptLine { name: "悠斗", text: "「ああ、おはよう。朝の掃除を手伝おうと思って」", name_ru: "Юто", text_ru: "«А, доброе утро. Я подумал, что помогу с утренней уборкой».", name_en: "Yuto", text_en: "\"Oh, good morning. I thought I'd help with the morning cleaning.\"" },
+    ScriptLine { name: "灯里", text: "「ふふ、ありがとうございます。それでは、箒をお願いしますね」", name_ru: "Акари", text_ru: "«Хе-хе, спасибо большое. Тогда возьмите, пожалуйста, метлу».", name_en: "Akari", text_en: "\"Hehe, thank you so much. Then please take the broom.\"" },
+    ScriptLine { name: "", text: "彼女は小さく微笑んで、箒を差し出した。", name_ru: "", text_ru: "Она слегка улыбнулась и протянула метлу.", name_en: "", text_en: "She smiled faintly and held out the broom." },
+    ScriptLine { name: "小春", text: "「お二人とも、朝ごはんの用意ができましたよ」", name_ru: "Кохару", text_ru: "«Вы оба, завтрак уже готов».", name_en: "Koharu", text_en: "\"You two, breakfast is ready.\"" },
+    ScriptLine { name: "悠斗", text: "「もうそんな時間か。すぐ行くよ」", name_ru: "Юто", text_ru: "«Уже так поздно? Сейчас приду».", name_en: "Yuto", text_en: "\"Is it that time already? I'll be right there.\"" },
+    ScriptLine { name: "灯里", text: "「今日の朝ごはんは何でしょう。楽しみです」", name_ru: "Акари", text_ru: "«Интересно, что сегодня на завтрак. Жду с нетерпением».", name_en: "Akari", text_en: "\"I wonder what's for breakfast today. I can't wait.\"" },
 ];
 
 pub const DEMO_TITLE: &str = "Kirinomori Lantern (демо NovelTL)";
@@ -153,11 +157,18 @@ impl HookSource for DemoSource {
 
 /// Готовые переводы сценария: текст -> перевод (демо работает без интернета).
 pub fn demo_translations() -> HashMap<&'static str, &'static str> {
+    demo_translations_for(Lang::Ru)
+}
+
+/// То же для выбранного языка перевода: английский — свой, для остальных целей запасной вариант — английский
+/// (русский только для Ru).
+pub fn demo_translations_for(target: Lang) -> HashMap<&'static str, &'static str> {
     let mut m = HashMap::new();
+    let ru = target == Lang::Ru;
     for l in SCRIPT {
-        m.insert(l.text, l.text_ru);
+        m.insert(l.text, if ru { l.text_ru } else { l.text_en });
         if !l.name.is_empty() {
-            m.insert(l.name, l.name_ru);
+            m.insert(l.name, if ru { l.name_ru } else { l.name_en });
         }
     }
     m

@@ -237,6 +237,73 @@ pub fn client_rect_on_screen(hwnd: isize) -> Option<(i32, i32, i32, i32)> {
     }
 }
 
+// ---------- автозапуск (HKCU\...\Run, значение NovelTL) ----------
+
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_VALUE: &str = "NovelTL";
+
+fn open_run_key(access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Option<windows::Win32::System::Registry::HKEY> {
+    use windows::Win32::System::Registry::{RegOpenKeyExW, HKEY, HKEY_CURRENT_USER};
+    let key = to_wide(RUN_KEY);
+    let mut h = HKEY::default();
+    let rc = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, PCWSTR(key.as_ptr()), 0, access, &mut h) };
+    if rc.0 == 0 {
+        Some(h)
+    } else {
+        None
+    }
+}
+
+/// Есть ли значение `NovelTL` в разделе автозапуска текущего пользователя.
+pub fn autostart_enabled() -> bool {
+    use windows::Win32::System::Registry::{RegCloseKey, RegQueryValueExW, KEY_QUERY_VALUE};
+    let Some(h) = open_run_key(KEY_QUERY_VALUE) else { return false };
+    let name = to_wide(RUN_VALUE);
+    let rc = unsafe { RegQueryValueExW(h, PCWSTR(name.as_ptr()), None, None, None, None) };
+    unsafe {
+        let _ = RegCloseKey(h);
+    }
+    rc.0 == 0
+}
+
+/// Включает/выключает автозапуск: пишет `"<путь к exe>"` в Run или удаляет значение.
+pub fn set_autostart(on: bool) -> Result<(), String> {
+    use windows::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegSetValueExW, KEY_SET_VALUE, REG_SZ,
+    };
+    let Some(h) = open_run_key(KEY_SET_VALUE) else {
+        return Err("Не удалось открыть раздел автозапуска в реестре".to_string());
+    };
+    let name = to_wide(RUN_VALUE);
+    let result = if on {
+        match std::env::current_exe() {
+            Ok(exe) => {
+                let value = to_wide(&format!("\"{}\"", exe.to_string_lossy()));
+                let bytes: Vec<u8> = value.iter().flat_map(|u| u.to_le_bytes()).collect();
+                let rc = unsafe { RegSetValueExW(h, PCWSTR(name.as_ptr()), 0, REG_SZ, Some(&bytes)) };
+                if rc.0 == 0 {
+                    Ok(())
+                } else {
+                    Err(format!("Не удалось записать автозапуск в реестр (код {})", rc.0))
+                }
+            }
+            Err(e) => Err(format!("Не удалось определить путь к программе: {e}")),
+        }
+    } else {
+        let rc = unsafe { RegDeleteValueW(h, PCWSTR(name.as_ptr())) };
+        // 2 — значения и так нет
+        if rc.0 == 0 || rc.0 == 2 {
+            Ok(())
+        } else {
+            Err(format!("Не удалось удалить автозапуск из реестра (код {})", rc.0))
+        }
+    };
+    unsafe {
+        let _ = RegCloseKey(h);
+    }
+    result
+}
+
 /// Запускает программу без окна консоли, возвращает код возврата (-1 при сбое/таймауте).
 pub fn run_hidden(exe: &str, args: &[&str], timeout_secs: u64) -> i32 {
     let Ok(mut child) = Command::new(exe)
@@ -388,6 +455,12 @@ mod tests {
             assert!(parts.iter().all(|p| p.parse::<u8>().is_ok()), "{ip}");
             assert!(!ip.starts_with("127."));
         }
+    }
+
+    #[test]
+    fn autostart_read_does_not_panic() {
+        // только чтение реестра; запись в тестах не трогаем
+        let _ = autostart_enabled();
     }
 
     #[test]

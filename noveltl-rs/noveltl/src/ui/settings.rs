@@ -10,8 +10,10 @@ use eframe::egui::{
     Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, ViewportBuilder,
     ViewportCommand, ViewportId,
 };
+use noveltl_core::langdetect::Lang;
 use noveltl_core::net::{self, NET_DIRECT, NET_PROXY, NET_SYSTEM};
 use noveltl_core::profiles::AppSettings;
+use noveltl_core::translators::ENGINE_MODES;
 
 use super::theme::{self, button, hline, pal, BtnKind};
 use super::{lock_ctl, Shared};
@@ -19,6 +21,11 @@ use crate::hotkeys::parse_hotkey;
 use crate::overlay::parse_color;
 
 pub const SETTINGS_TITLE: &str = "Настройки — NovelTL";
+
+/// Разделы окна (порядок = порядок в меню слева).
+const SECTIONS: [&str; 5] = ["Персонализация", "Перевод", "Сеть", "Горячие клавиши", "Общие"];
+
+const PROJECT_URL: &str = "https://github.com/Kawaakar1/NovelTL";
 
 const THEMES: [(&str, &str); 3] = [("system", "Как в Windows"), ("dark", "Тёмная"), ("light", "Светлая")];
 
@@ -133,6 +140,10 @@ pub struct SettingsWindow {
     /// что уже отправлено в плашку и тему
     applied: PreviewKey,
     status: String,
+    /// выбранный раздел (индекс в SECTIONS)
+    section: usize,
+    /// автозапуск с Windows (состояние в окне)
+    autostart: bool,
     key_show: bool,
     net_mode: String,
     proxy_addr: String,
@@ -201,6 +212,8 @@ impl SettingsWindow {
             bind_ip: orig.bind_ip.clone(),
             orig,
             status,
+            section: 0,
+            autostart: crate::winutil::autostart_enabled(),
             key_show: false,
             proxy_addr,
             proxy_user,
@@ -252,6 +265,11 @@ impl SettingsWindow {
         self.proxy_pass = pass.to_string();
     }
 
+    /// Для `--shots`: выбрать раздел по номеру.
+    pub fn select_section_for_shots(&mut self, i: usize) {
+        self.section = i.min(SECTIONS.len() - 1);
+    }
+
     /// Рисует окно; false — окно нужно закрыть (после этого вызвать `close`).
     pub fn show(&mut self, ctx: &egui::Context, shared: &Shared) -> bool {
         self.frames += 1;
@@ -268,8 +286,8 @@ impl SettingsWindow {
         let h0 = 900.0_f32.min(self.limit);
         let mut builder = ViewportBuilder::default()
             .with_title(SETTINGS_TITLE)
-            .with_inner_size([560.0, h0])
-            .with_min_inner_size([480.0, 320.0])
+            .with_inner_size([780.0, h0])
+            .with_min_inner_size([660.0, 320.0])
             .with_always_on_top()
             .with_icon(self.icon.clone());
         if let Some(pos) = self.pos {
@@ -361,6 +379,10 @@ impl SettingsWindow {
             self.warn("Для двух действий выбрано одно и то же сочетание.");
             return;
         }
+        if self.d.engine_mode == "deepl" && self.d.deepl_key.trim().is_empty() {
+            self.warn("Для режима «Только DeepL» нужен ключ.");
+            return;
+        }
         let mode = self.net_mode.clone();
         let mut proxy_text = self.proxy_addr.trim().to_string();
         let mut user = self.proxy_user.clone();
@@ -394,14 +416,26 @@ impl SettingsWindow {
         new.deepl_key = self.d.deepl_key.trim().to_string();
         new.hotkey_toggle = toggle;
         new.hotkey_retranslate = retr;
+        new.engine_mode = self.d.engine_mode.clone();
+        new.target_lang = self.d.target_lang;
+        new.default_source_lang = self.d.default_source_lang;
         self.saved = true;
         let errors = {
             let mut c = lock_ctl(&shared.controller);
             c.save_settings(new);
             c.hotkey_errors.clone()
         };
+        // автозапуск: ошибка не мешает остальным настройкам
+        let auto_err = crate::winutil::set_autostart(self.autostart).err();
+        if let Some(e) = &auto_err {
+            self.warn(format!("Не удалось изменить автозапуск: {e}\nОстальные настройки сохранены."));
+        }
         if errors.is_empty() {
-            self.closed = true;
+            if auto_err.is_some() {
+                self.close_after_message = true;
+            } else {
+                self.closed = true;
+            }
         } else {
             self.warn(format!(
                 "Не удалось занять сочетание: {}.\nСкорее всего, его уже использует другая программа — выберите другое.\nОстальные настройки сохранены.",
@@ -432,11 +466,25 @@ impl SettingsWindow {
                     }
                 });
             });
+        // меню разделов слева
+        egui::SidePanel::left("set_nav")
+            .exact_width(190.0)
+            .resizable(false)
+            .show_separator_line(true)
+            .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 12, right: 12, top: 20, bottom: 8 }))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 4.0;
+                for (i, title) in SECTIONS.iter().enumerate() {
+                    if nav_item(ui, title, self.section == i).clicked() {
+                        self.section = i;
+                    }
+                }
+            });
         let central = egui::CentralPanel::default().frame(Frame::new().fill(p.bg)).show(ctx, |ui| {
             egui::ScrollArea::vertical().id_salt("settings_scroll").auto_shrink([false, false]).show(ui, |ui| {
                 Frame::new().inner_margin(Margin { left: 24, right: 24, top: 20, bottom: 8 }).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    self.draw_form(ui, acts);
+                    self.draw_section(ui, acts);
                 });
             })
         });
@@ -444,7 +492,7 @@ impl SettingsWindow {
         // высота окна — по содержимому, но не больше рабочей области экрана минус 60 px
         let want = (self.content_h + foot.response.rect.height()).clamp(420.0_f32.min(self.limit), self.limit);
         if self.frames <= 12 && self.content_h > 0.0 && (want - self.sent_h).abs() > 1.5 {
-            let w = ctx.input(|i| i.viewport().inner_rect).map_or(560.0, |r| r.width());
+            let w = ctx.input(|i| i.viewport().inner_rect).map_or(780.0, |r| r.width());
             ctx.send_viewport_cmd(ViewportCommand::InnerSize(Vec2::new(w, want)));
             self.sent_h = want;
         }
@@ -558,13 +606,23 @@ impl SettingsWindow {
         }
     }
 
-    fn draw_form(&mut self, ui: &mut Ui, acts: &mut Vec<Act>) {
-        let p = pal();
+    /// Содержимое выбранного раздела.
+    fn draw_section(&mut self, ui: &mut Ui, acts: &mut Vec<Act>) {
         let label_w = 190.0;
         let gap = 18.0;
         let ctl_w = (ui.available_width() - label_w - gap).max(140.0);
         ui.spacing_mut().item_spacing.y = 12.0;
+        ui.label(theme::h1(SECTIONS[self.section]));
+        match self.section {
+            0 => self.draw_personal(ui, label_w, gap, ctl_w),
+            1 => self.draw_translate(ui, label_w, gap, ctl_w),
+            2 => self.draw_network(ui, acts, label_w, gap, ctl_w),
+            3 => self.draw_hotkeys(ui, label_w, gap, ctl_w),
+            _ => self.draw_general(ui),
+        }
+    }
 
+    fn draw_personal(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
         // --- тема ---
         ui.horizontal(|ui| {
             ui.label(theme::h2("Тема оформления"));
@@ -578,19 +636,33 @@ impl SettingsWindow {
             });
         });
         hline(ui);
+        self.draw_plate(ui, label_w, gap, ctl_w);
+    }
 
+    fn draw_translate(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
         // --- переводчик ---
         ui.label(theme::h2("Переводчик"));
+        let cur = ENGINE_MODES.iter().find(|(c, _)| *c == self.d.engine_mode).map_or(ENGINE_MODES[0].1, |m| m.1);
+        egui::ComboBox::from_id_salt("set_engine").width(ui.available_width().min(420.0)).selected_text(theme::body(cur)).show_ui(
+            ui,
+            |ui| {
+                for (code, title) in ENGINE_MODES {
+                    ui.selectable_value(&mut self.d.engine_mode, code.to_string(), title);
+                }
+            },
+        );
+        let key_on = self.d.engine_mode != "google";
         ui.horizontal(|ui| {
             let w = ui.available_width() - 110.0;
-            ui.add(
+            ui.add_enabled(
+                key_on,
                 egui::TextEdit::singleline(&mut self.d.deepl_key)
                     .password(!self.key_show)
                     .hint_text("Ключ DeepL API (необязательно)")
                     .margin(Margin::symmetric(8, 6))
                     .desired_width(w),
             );
-            if button(ui, "Показать", BtnKind::Normal, true, None).clicked() {
+            if button(ui, "Показать", BtnKind::Normal, key_on, None).clicked() {
                 self.key_show = !self.key_show;
             }
         });
@@ -604,8 +676,40 @@ impl SettingsWindow {
         );
         hline(ui);
 
-        // --- сеть ---
-        ui.label(theme::h2("Сеть"));
+        // --- языки ---
+        egui::Grid::new("set_lang_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
+            ui.label(theme::body("Переводить на"));
+            egui::ComboBox::from_id_salt("set_target_lang")
+                .width(ctl_w)
+                .selected_text(theme::body(lang_label(self.d.target_lang)))
+                .show_ui(ui, |ui| {
+                    for l in Lang::TARGETS {
+                        ui.selectable_value(&mut self.d.target_lang, l, lang_label(l));
+                    }
+                });
+            ui.end_row();
+
+            ui.label(theme::body("Язык игр по умолчанию"));
+            egui::ComboBox::from_id_salt("set_source_lang")
+                .width(ctl_w)
+                .selected_text(theme::body(lang_label(self.d.default_source_lang)))
+                .show_ui(ui, |ui| {
+                    for l in Lang::ALL {
+                        ui.selectable_value(&mut self.d.default_source_lang, l, lang_label(l));
+                    }
+                });
+            ui.end_row();
+        });
+        wrap(
+            ui,
+            theme::small(
+                "Подставляется в мастере для новых игр. Язык уже добавленной игры меняется в главном окне.",
+            ),
+        );
+    }
+
+    fn draw_network(&mut self, ui: &mut Ui, acts: &mut Vec<Act>, label_w: f32, gap: f32, ctl_w: f32) {
+        let p = pal();
         let proxy_on = self.net_mode == NET_PROXY;
         egui::Grid::new("set_net_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
             ui.label(theme::body("Подключение"));
@@ -698,8 +802,10 @@ impl SettingsWindow {
             };
             wrap(ui, rich);
         });
-        hline(ui);
+    }
 
+    fn draw_plate(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
+        let p = pal();
         // --- плашка ---
         ui.label(theme::h2("Плашка с переводом"));
         self.draw_preview(ui);
@@ -755,10 +861,9 @@ impl SettingsWindow {
             });
             ui.end_row();
         });
-        hline(ui);
+    }
 
-        // --- горячие клавиши ---
-        ui.label(theme::h2("Горячие клавиши"));
+    fn draw_hotkeys(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
         egui::Grid::new("set_keys_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
             for (i, title) in ["Скрыть / показать плашку", "Перевести заново без кэша"].into_iter().enumerate() {
                 ui.label(theme::body(title));
@@ -772,6 +877,21 @@ impl SettingsWindow {
             }
         });
         wrap(ui, theme::small("Щёлкните по полю и нажмите новое сочетание. Работают в любой программе."));
+    }
+
+    fn draw_general(&mut self, ui: &mut Ui) {
+        ui.checkbox(&mut self.autostart, theme::body("Запускать вместе с Windows"));
+        hline(ui);
+        if button(ui, "Открыть папку с данными", BtnKind::Normal, true, None).clicked() {
+            let _ = std::process::Command::new("explorer.exe").arg(crate::paths::data_dir()).spawn();
+        }
+        hline(ui);
+        ui.label(theme::h2("О программе"));
+        ui.label(theme::body(format!("NovelTL {}", env!("CARGO_PKG_VERSION"))));
+        wrap(ui, theme::small("Перехват текста — LunaHook (GPL-3.0). Лицензии — в папке files\\licenses."));
+        if button(ui, "Страница проекта", BtnKind::Link, true, None).clicked() {
+            let _ = std::process::Command::new("explorer.exe").arg(PROJECT_URL).spawn();
+        }
     }
 
     /// Предпросмотр плашки: картинка-градиент и плашка поверх (как `PlatePreview`).
@@ -815,6 +935,29 @@ impl SettingsWindow {
         let name_h = paint_outlined(&painter, Pos2::new(plate.left() + pad.x, y), name, name_font, name_c, outline_c, wrap_w);
         y += name_h + 2.0;
         paint_outlined(&painter, Pos2::new(plate.left() + pad.x, y), line, text_font, text_c, outline_c, wrap_w);
+    }
+}
+
+/// Пункт меню разделов: выбранный подсвечен.
+fn nav_item(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
+    let p = pal();
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 36.0), Sense::click());
+    if selected {
+        ui.painter().rect_filled(rect, CornerRadius::same(8), p.selected);
+    } else if resp.hovered() {
+        ui.painter().rect_filled(rect, CornerRadius::same(8), p.card);
+    }
+    let color = if selected { p.accent } else { p.text };
+    ui.painter().text(rect.left_center() + Vec2::new(12.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), color);
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// «Японский · 日本語»; для русского и «Авто» — без повтора.
+fn lang_label(l: Lang) -> String {
+    if l.native_title() == l.title() {
+        l.title().to_string()
+    } else {
+        format!("{} · {}", l.title(), l.native_title())
     }
 }
 
