@@ -28,6 +28,42 @@ use crate::{tray, winutil};
 use noveltl_core::net::NET_PROXY;
 use noveltl_core::profiles::OverlayFrac;
 
+/// Профиль для снимков: ник «Reader» и аватар-заглушка, нарисованная здесь же
+/// (чёрно-белые кольца) — никаких картинок пользователя. Пишется только в демо-папку данных.
+fn demo_profile(shared: &Shared) {
+    const N: u32 = 256;
+    let mut rgba = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let (dx, dy) = (x as f32 - 128.0, y as f32 - 100.0);
+            let r = (dx * dx + dy * dy).sqrt();
+            let v: u8 = if r < 46.0 {
+                235
+            } else if (dx.abs() < 70.0) && y > 160 {
+                200
+            } else if ((r / 18.0) as i32) % 2 == 0 {
+                40
+            } else {
+                70
+            };
+            rgba.extend_from_slice(&[v, v, v, 255]);
+        }
+    }
+    let src = std::env::temp_dir().join(format!("noveltl_demo_avatar_{}.png", std::process::id()));
+    if save_png(&src, N, N, &rgba).is_err() {
+        return;
+    }
+    let stored = super::avatar::store_avatar(&src);
+    let _ = std::fs::remove_file(&src);
+    let mut c = lock_ctl(&shared.controller);
+    let mut s = c.settings.clone();
+    s.nickname = "Reader".to_string();
+    if let Ok(name) = stored {
+        s.avatar = name;
+    }
+    c.save_settings(s);
+}
+
 /// Сохраняет RGBA-картинку в PNG.
 pub fn save_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
     let file = File::create(path).map_err(|e| e.to_string())?;
@@ -150,6 +186,8 @@ enum Stage {
     SettingsWait,
     /// снимок раздела настроек с этим номером
     SettingsSection(usize),
+    /// снимок «Персонализации» со своей темой
+    SettingsCustom,
     SettingsClose,
     GlossaryOpen,
     GlossaryWait,
@@ -289,6 +327,9 @@ impl Shots {
         let waited = self.since.elapsed();
         match self.stage {
             Stage::Start => {
+                if self.frames == 1 {
+                    demo_profile(shared);
+                }
                 if self.frames > 6 && waited > Duration::from_millis(1200) {
                     self.request(ctx, "01_main_empty.png", Stage::OpenWizard);
                 }
@@ -454,6 +495,9 @@ impl Shots {
                     // выбрать раздел (для сети — ещё и подставить прокси-заглушки)
                     if let Some(w) = settings.as_mut() {
                         w.select_section_for_shots(i);
+                        if i == 0 {
+                            w.fill_profile_for_shots("Reader");
+                        }
                         if i == 2 {
                             w.fill_net_for_shots(NET_PROXY, "socks5h://127.0.0.1:1080", "user", "secret");
                         }
@@ -461,9 +505,27 @@ impl Shots {
                     self.fronted = true;
                 }
                 if waited > Duration::from_millis(700) {
-                    let next = if i + 1 < NAMES.len() { Stage::SettingsSection(i + 1) } else { Stage::SettingsClose };
+                    let next = if i + 1 < NAMES.len() { Stage::SettingsSection(i + 1) } else { Stage::SettingsCustom };
                     if let Some(w) = settings.as_ref() {
                         self.shot_window(w.window_title(), NAMES[i], next);
+                    } else {
+                        self.go(Stage::SettingsClose);
+                    }
+                }
+            }
+            Stage::SettingsCustom => {
+                if !self.fronted {
+                    if let Some(w) = settings.as_mut() {
+                        w.select_section_for_shots(0);
+                        w.fill_profile_for_shots("Reader");
+                        w.fill_custom_theme_for_shots("#1B1020", "#2A1830", "#F5EAF8", "#FF7AC6");
+                    }
+                    self.fronted = true;
+                }
+                // тема применяется через предпросмотр — даём время на перерисовку
+                if waited > Duration::from_millis(1200) {
+                    if let Some(w) = settings.as_ref() {
+                        self.shot_window(w.window_title(), "16_settings_theme_custom.png", Stage::SettingsClose);
                     } else {
                         self.go(Stage::SettingsClose);
                     }

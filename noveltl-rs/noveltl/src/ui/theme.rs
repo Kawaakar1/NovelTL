@@ -1,17 +1,33 @@
-//! Темы оформления (тёмная, светлая, как в Windows) и значок приложения (перенос `noveltl/ui/theme.py`).
+//! Темы оформления (чёрно-белые, цветные, своя) и значок приложения (перенос `noveltl/ui/theme.py`).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::RwLock;
 
 use eframe::egui::{
     self, Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Response, RichText, Sense, Stroke,
     StrokeKind, Theme, ThemePreference, Ui, Vec2, Visuals,
 };
+use noveltl_core::profiles::AppSettings;
 
+#[allow(dead_code)]
 pub const THEME_DARK: &str = "dark";
+#[allow(dead_code)]
 pub const THEME_LIGHT: &str = "light";
+
+/// Готовые темы: (id, название).
+pub const PRESETS: [(&str, &str); 8] = [
+    ("system", "Как в Windows"),
+    ("dark", "Чёрно-белая тёмная"),
+    ("light", "Чёрно-белая светлая"),
+    ("violet", "Фиолетовая"),
+    ("midnight", "Полночь"),
+    ("sakura", "Сакура"),
+    ("forest", "Лес"),
+    ("custom", "Своя"),
+];
 
 // набор цветов целиком, как в theme.py (часть пока не используется)
 #[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub struct Palette {
     pub bg: Color32,
     pub panel: Color32,
@@ -39,7 +55,56 @@ const fn rgb(h: u32) -> Color32 {
     Color32::from_rgb((h >> 16) as u8, (h >> 8) as u8, h as u8)
 }
 
-pub static DARK: Palette = Palette {
+/// Чёрно-белая тёмная.
+const BW_DARK: Palette = Palette {
+    bg: rgb(0x0B0B0C),
+    panel: rgb(0x121214),
+    card: rgb(0x1A1A1D),
+    border: rgb(0x2C2C30),
+    text: rgb(0xF2F2F2),
+    dim: rgb(0x9A9A9F),
+    accent: rgb(0xFFFFFF),
+    accent_hover: rgb(0xD9D9D9),
+    on_accent: rgb(0x0B0B0C),
+    ok: rgb(0x5DD39E),
+    warn: rgb(0xF2B45A),
+    bad: rgb(0xF07178),
+    selected: rgb(0x26262A),
+    menu_selected: rgb(0x303034),
+    disabled_text: rgb(0x5A5A5F),
+    disabled_border: rgb(0x242428),
+    primary_disabled: rgb(0x3A3A3F),
+    primary_disabled_text: rgb(0x8A8A8F),
+    notice_bg: rgb(0x3A3120),
+    handle: rgb(0xF2F2F2),
+};
+
+/// Чёрно-белая светлая.
+const BW_LIGHT: Palette = Palette {
+    bg: rgb(0xF5F5F5),
+    panel: rgb(0xEBEBEB),
+    card: rgb(0xFFFFFF),
+    border: rgb(0xD4D4D4),
+    text: rgb(0x111111),
+    dim: rgb(0x666666),
+    accent: rgb(0x111111),
+    accent_hover: rgb(0x333333),
+    on_accent: rgb(0xFFFFFF),
+    ok: rgb(0x178A5B),
+    warn: rgb(0xA8660B),
+    bad: rgb(0xCF3B48),
+    selected: rgb(0xE2E2E2),
+    menu_selected: rgb(0xD8D8D8),
+    disabled_text: rgb(0xAAAAAA),
+    disabled_border: rgb(0xE0E0E0),
+    primary_disabled: rgb(0xC8C8C8),
+    primary_disabled_text: rgb(0xFFFFFF),
+    notice_bg: rgb(0xFFF1D0),
+    handle: rgb(0x111111),
+};
+
+/// Фиолетовая тёмная (прежняя тёмная тема).
+const VIOLET: Palette = Palette {
     bg: rgb(0x14151F),
     panel: rgb(0x1B1D2A),
     card: rgb(0x232537),
@@ -62,49 +127,183 @@ pub static DARK: Palette = Palette {
     handle: rgb(0xE9EAF4),
 };
 
-pub static LIGHT: Palette = Palette {
-    bg: rgb(0xF4F5FA),
-    panel: rgb(0xE8EAF3),
+/// Тёмно-синяя.
+const MIDNIGHT: Palette = Palette {
+    bg: rgb(0x0D1320),
+    panel: rgb(0x131A2B),
+    card: rgb(0x1A2338),
+    border: rgb(0x2A3753),
+    text: rgb(0xE6ECF7),
+    dim: rgb(0x8F9BB5),
+    accent: rgb(0x5AA9FF),
+    accent_hover: rgb(0x7DBBFF),
+    on_accent: rgb(0x08111F),
+    ok: rgb(0x5DD39E),
+    warn: rgb(0xF2B45A),
+    bad: rgb(0xF07178),
+    selected: rgb(0x1E2D4D),
+    menu_selected: rgb(0x273B66),
+    disabled_text: rgb(0x55617D),
+    disabled_border: rgb(0x222C44),
+    primary_disabled: rgb(0x25406B),
+    primary_disabled_text: rgb(0x7F93B5),
+    notice_bg: rgb(0x3A3120),
+    handle: rgb(0xE6ECF7),
+};
+
+/// Светлая с розовым.
+const SAKURA: Palette = Palette {
+    bg: rgb(0xFFF5F7),
+    panel: rgb(0xFCE8ED),
     card: rgb(0xFFFFFF),
-    border: rgb(0xD2D5E3),
-    text: rgb(0x1D1F2E),
-    dim: rgb(0x666A85),
-    accent: rgb(0x6C5CE7),
-    accent_hover: rgb(0x5747D1),
+    border: rgb(0xF0CCD6),
+    text: rgb(0x3A2530),
+    dim: rgb(0x8A6574),
+    accent: rgb(0xE0567A),
+    accent_hover: rgb(0xC94468),
     on_accent: rgb(0xFFFFFF),
     ok: rgb(0x178A5B),
     warn: rgb(0xA8660B),
     bad: rgb(0xCF3B48),
-    selected: rgb(0xE3DFFF),
-    menu_selected: rgb(0xDAD5FF),
-    disabled_text: rgb(0xA9ACC0),
-    disabled_border: rgb(0xE1E3EE),
-    primary_disabled: rgb(0xCFCBF3),
+    selected: rgb(0xFCDDE5),
+    menu_selected: rgb(0xF8CCD8),
+    disabled_text: rgb(0xC3A8B2),
+    disabled_border: rgb(0xF3DCE2),
+    primary_disabled: rgb(0xF1BCC9),
     primary_disabled_text: rgb(0xFFFFFF),
     notice_bg: rgb(0xFFF1D0),
-    handle: rgb(0x6C5CE7),
+    handle: rgb(0xE0567A),
 };
 
-static CURRENT_LIGHT: AtomicBool = AtomicBool::new(false);
+/// Тёмно-зелёная.
+const FOREST: Palette = Palette {
+    bg: rgb(0x0F1A14),
+    panel: rgb(0x15231B),
+    card: rgb(0x1B2C22),
+    border: rgb(0x2B4235),
+    text: rgb(0xE4F2EA),
+    dim: rgb(0x8DA89A),
+    accent: rgb(0x5FD39A),
+    accent_hover: rgb(0x83E0B2),
+    on_accent: rgb(0x0A1A11),
+    ok: rgb(0x5DD39E),
+    warn: rgb(0xF2B45A),
+    bad: rgb(0xF07178),
+    selected: rgb(0x21402F),
+    menu_selected: rgb(0x2B5640),
+    disabled_text: rgb(0x566B5F),
+    disabled_border: rgb(0x233529),
+    primary_disabled: rgb(0x2D5A44),
+    primary_disabled_text: rgb(0x8DB5A0),
+    notice_bg: rgb(0x3A3120),
+    handle: rgb(0xE4F2EA),
+};
 
-/// Палитра текущей темы.
-pub fn pal() -> &'static Palette {
-    if CURRENT_LIGHT.load(Ordering::Relaxed) {
-        &LIGHT
+/// Текущая палитра и признак «visuals уже выставлены».
+struct Current {
+    pal: Palette,
+    applied: bool,
+}
+
+static CURRENT: RwLock<Current> = RwLock::new(Current { pal: BW_DARK, applied: false });
+
+/// Текущая палитра (копия).
+pub fn pal() -> Palette {
+    CURRENT.read().unwrap_or_else(|e| e.into_inner()).pal
+}
+
+// ---------- вычисление цветов ----------
+
+/// Смесь двух цветов: `t` = 0 даёт `a`, 1 даёт `b`.
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+}
+
+/// Яркость цвета, 0..1.
+fn luma(c: Color32) -> f32 {
+    (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
+}
+
+/// Тёмная ли палитра — по яркости фона.
+pub fn is_dark(p: &Palette) -> bool {
+    luma(p.bg) < 0.5
+}
+
+/// Из четырёх основных цветов выводит остальные.
+pub fn custom_palette(bg: Color32, card: Color32, text: Color32, accent: Color32) -> Palette {
+    let dark = luma(bg) < 0.5;
+    let accent_hover = if luma(accent) > 0.5 { mix(accent, Color32::BLACK, 0.15) } else { mix(accent, Color32::WHITE, 0.2) };
+    let on_accent = if luma(accent) > 0.55 { rgb(0x0B0B0C) } else { Color32::WHITE };
+    let (ok, warn, bad) = if dark {
+        (rgb(0x5DD39E), rgb(0xF2B45A), rgb(0xF07178))
     } else {
-        &DARK
+        (rgb(0x178A5B), rgb(0xA8660B), rgb(0xCF3B48))
+    };
+    let notice_bg = if dark { mix(bg, rgb(0xF2B45A), 0.2) } else { mix(bg, rgb(0xFFD25A), 0.3) };
+    Palette {
+        bg,
+        panel: mix(bg, card, 0.5),
+        card,
+        border: mix(card, text, 0.15),
+        text,
+        dim: mix(text, bg, 0.4),
+        accent,
+        accent_hover,
+        on_accent,
+        ok,
+        warn,
+        bad,
+        selected: mix(bg, accent, 0.2),
+        menu_selected: mix(bg, accent, 0.3),
+        disabled_text: mix(text, bg, 0.65),
+        disabled_border: mix(bg, card, 0.6),
+        primary_disabled: mix(bg, accent, 0.35),
+        primary_disabled_text: mix(on_accent, bg, 0.3),
+        notice_bg,
+        handle: accent,
     }
 }
 
-/// Тема из настроек (`system`/`dark`/`light`) -> реальная светлая или тёмная.
-pub fn resolve(setting: &str, ctx: &egui::Context) -> Theme {
-    match setting {
-        THEME_LIGHT => Theme::Light,
-        THEME_DARK => Theme::Dark,
-        _ => match ctx.system_theme() {
-            Some(Theme::Light) => Theme::Light,
-            _ => Theme::Dark,
-        },
+/// "#RRGGBB" -> цвет; при ошибке — `fallback`.
+pub fn parse_hex(s: &str, fallback: Color32) -> Color32 {
+    let t = s.trim().trim_start_matches('#');
+    if t.len() != 6 || !t.is_ascii() {
+        return fallback;
+    }
+    match u32::from_str_radix(t, 16) {
+        Ok(v) => rgb(v),
+        Err(_) => fallback,
+    }
+}
+
+/// Цвет -> "#RRGGBB".
+pub fn to_hex(c: Color32) -> String {
+    format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b())
+}
+
+/// Палитра пресета; неизвестный id — как «system».
+pub fn palette_for(theme: &str, s: &AppSettings, system_dark: bool) -> Palette {
+    match theme {
+        "dark" => BW_DARK,
+        "light" => BW_LIGHT,
+        "violet" => VIOLET,
+        "midnight" => MIDNIGHT,
+        "sakura" => SAKURA,
+        "forest" => FOREST,
+        "custom" => custom_palette(
+            parse_hex(&s.custom_bg, rgb(0x101012)),
+            parse_hex(&s.custom_card, rgb(0x1C1C20)),
+            parse_hex(&s.custom_text, rgb(0xF2F2F2)),
+            parse_hex(&s.custom_accent, Color32::WHITE),
+        ),
+        _ => {
+            if system_dark {
+                BW_DARK
+            } else {
+                BW_LIGHT
+            }
+        }
     }
 }
 
@@ -150,8 +349,8 @@ fn visuals(p: &Palette, dark: bool) -> Visuals {
 
 /// Один раз при старте: стили обеих тем.
 pub fn install(ctx: &egui::Context) {
-    ctx.set_visuals_of(Theme::Dark, visuals(&DARK, true));
-    ctx.set_visuals_of(Theme::Light, visuals(&LIGHT, false));
+    ctx.set_visuals_of(Theme::Dark, visuals(&BW_DARK, true));
+    ctx.set_visuals_of(Theme::Light, visuals(&BW_LIGHT, false));
     ctx.all_styles_mut(|s| {
         s.text_styles.insert(egui::TextStyle::Body, FontId::new(14.0, FontFamily::Proportional));
         s.text_styles.insert(egui::TextStyle::Button, FontId::new(14.0, FontFamily::Proportional));
@@ -162,16 +361,24 @@ pub fn install(ctx: &egui::Context) {
     });
 }
 
-/// Применяет тему из настроек; возвращает true, если реальная тема сменилась.
-pub fn apply(ctx: &egui::Context, setting: &str) -> bool {
-    let want = resolve(setting, ctx);
-    let light = want == Theme::Light;
-    let changed = CURRENT_LIGHT.swap(light, Ordering::Relaxed) != light || ctx.theme() != want;
-    if changed {
-        ctx.set_theme(if light { ThemePreference::Light } else { ThemePreference::Dark });
+/// Применяет тему из настроек; возвращает true, если палитра изменилась.
+/// Visuals пересоздаются только при изменении.
+pub fn apply(ctx: &egui::Context, s: &AppSettings) -> bool {
+    let system_dark = !matches!(ctx.system_theme(), Some(Theme::Light));
+    let np = palette_for(&s.theme, s, system_dark);
+    let dark = is_dark(&np);
+    let want = if dark { Theme::Dark } else { Theme::Light };
+    let mut cur = CURRENT.write().unwrap_or_else(|e| e.into_inner());
+    let changed = cur.pal != np || !cur.applied;
+    if changed || ctx.theme() != want {
+        cur.pal = np;
+        cur.applied = true;
+        ctx.set_theme(if dark { ThemePreference::Dark } else { ThemePreference::Light });
+        ctx.set_visuals_of(want, visuals(&np, dark));
     }
     changed
 }
+
 
 // ---------- стили текста ----------
 

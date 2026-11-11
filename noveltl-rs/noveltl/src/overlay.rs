@@ -651,7 +651,8 @@ impl State {
                 self.outlined(rt, &l, x, y, 0xC9CBE0, small)?;
             }
             if self.edit {
-                let accent = rt.CreateSolidColorBrush(&color(0x8B7CFF, 1.0), None)?;
+                // рамка режима перемещения — белая, в тон чёрно-белому интерфейсу
+                let accent = rt.CreateSolidColorBrush(&color(0xFFFFFF, 0.9), None)?;
                 rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: 12.0, radiusY: 12.0 }, &accent, 2.0, &self.dashes);
                 let (l, t, r, b) = (full.left + 3.0, full.top + 3.0, full.right - 3.0, full.bottom - 3.0);
                 let (cx, cy) = ((l + r) / 2.0, (t + b) / 2.0);

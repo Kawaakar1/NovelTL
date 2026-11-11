@@ -1,5 +1,6 @@
 //! Интерфейс на egui: общее состояние, приложение `App` и заглушки для окон, которые будут позже.
 
+pub mod avatar;
 pub mod demo_game;
 pub mod glossary;
 pub mod main_window;
@@ -171,6 +172,8 @@ pub struct App {
     close_sent: bool,
     /// какие восточные шрифты уже загружены
     fonts_loaded: FontNeeds,
+    /// текстура аватара: (имя файла, текстура или None, если нет/не загрузилась)
+    avatar_tex: Option<(String, Option<egui::TextureHandle>)>,
 }
 
 impl App {
@@ -206,6 +209,7 @@ impl App {
             tray_hint_shown: false,
             close_sent: false,
             fonts_loaded: FontNeeds::default(),
+            avatar_tex: None,
         }
     }
 
@@ -297,8 +301,17 @@ impl eframe::App for App {
             self.fonts_loaded = want;
         }
 
-        let setting = lock_ctl(&self.shared.controller).settings.theme.clone();
-        theme::apply(ctx, &setting);
+        let settings = lock_ctl(&self.shared.controller).settings.clone();
+        theme::apply(ctx, &settings);
+
+        // аватар перезагружаем только при смене имени файла
+        if self.avatar_tex.as_ref().map(|(n, _)| n.as_str()) != Some(settings.avatar.as_str()) {
+            let tex = avatar::load_rgba(&settings.avatar).map(|(w, h, px)| {
+                let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
+                ctx.load_texture("avatar", img, egui::TextureOptions::LINEAR)
+            });
+            self.avatar_tex = Some((settings.avatar.clone(), tex));
+        }
 
         for r in self.shared.take_requests() {
             match r {
@@ -363,7 +376,8 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
-        self.main.show(ctx, &self.shared, &mut self.windows);
+        let avatar_tex = self.avatar_tex.as_ref().and_then(|(_, t)| t.as_ref());
+        self.main.show(ctx, &self.shared, &mut self.windows, avatar_tex);
 
         if let Some(game) = self.game.as_mut() {
             game.show(ctx);

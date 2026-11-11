@@ -38,6 +38,7 @@ struct Snap {
     translator: String,
     /// язык перевода со строчной буквы
     target_title: String,
+    nickname: String,
 }
 
 enum Action {
@@ -118,6 +119,7 @@ impl MainWindow {
             hotkey_retranslate: c.settings.hotkey_retranslate.clone(),
             translator: c.translator_status(),
             target_title: c.settings.target_lang.title().to_lowercase(),
+            nickname: c.settings.nickname.clone(),
         }
     }
 
@@ -132,7 +134,13 @@ impl MainWindow {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, shared: &Shared, windows: &mut Windows) {
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        shared: &Shared,
+        windows: &mut Windows,
+        avatar: Option<&TextureHandle>,
+    ) {
         self.ensure_logos(ctx);
         let snap = Self::snapshot(shared);
 
@@ -179,10 +187,22 @@ impl MainWindow {
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing = Vec2::new(8.0, 10.0);
                 ui.horizontal(|ui| {
-                    if let Some(t) = &self.logo {
+                    // аватар (круглый) или логотип
+                    if let Some(a) = avatar {
+                        ui.add(egui::Image::new((a.id(), Vec2::splat(40.0))).corner_radius(CornerRadius::same(20)));
+                    } else if let Some(t) = &self.logo {
                         ui.image((t.id(), Vec2::splat(32.0)));
                     }
-                    ui.label(theme::h1(super::APP_NAME));
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        let nick = snap.nickname.trim();
+                        if nick.is_empty() {
+                            ui.add(egui::Label::new(theme::h1(super::APP_NAME)).truncate());
+                        } else {
+                            ui.add(egui::Label::new(theme::h2(nick)).truncate());
+                            ui.add(egui::Label::new(theme::small(super::APP_NAME)).truncate());
+                        }
+                    });
                 });
                 ui.add_space(6.0);
                 ui.label(theme::step("МОИ ИГРЫ"));

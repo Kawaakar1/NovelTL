@@ -265,6 +265,15 @@ pub struct AppSettings {
     pub engine_mode: String,
     /// Язык оригинала по умолчанию для новых игр.
     pub default_source_lang: Lang,
+    /// Ник пользователя в главном окне (пусто — показывается «NovelTL»).
+    pub nickname: String,
+    /// Имя файла аватара в папке data (пусто — логотип программы).
+    pub avatar: String,
+    /// Цвета своей темы (тема "custom"): фон, панели/карточки, текст, акцент — "#RRGGBB".
+    pub custom_bg: String,
+    pub custom_card: String,
+    pub custom_text: String,
+    pub custom_accent: String,
 }
 
 impl Default for AppSettings {
@@ -289,6 +298,12 @@ impl Default for AppSettings {
             target_lang: Lang::Ru,
             engine_mode: "auto".into(),
             default_source_lang: Lang::Ja,
+            nickname: String::new(),
+            avatar: String::new(),
+            custom_bg: "#101012".into(),
+            custom_card: "#1C1C20".into(),
+            custom_text: "#F2F2F2".into(),
+            custom_accent: "#FFFFFF".into(),
         }
     }
 }

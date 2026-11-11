@@ -16,7 +16,7 @@ use noveltl_core::profiles::AppSettings;
 use noveltl_core::translators::ENGINE_MODES;
 
 use super::theme::{self, button, hline, pal, BtnKind};
-use super::{lock_ctl, Shared};
+use super::{avatar, lock_ctl, Shared};
 use crate::hotkeys::parse_hotkey;
 use crate::overlay::parse_color;
 
@@ -27,11 +27,22 @@ const SECTIONS: [&str; 5] = ["Персонализация", "Перевод", "
 
 const PROJECT_URL: &str = "https://github.com/Kawaakar1/NovelTL";
 
-const THEMES: [(&str, &str); 3] = [("system", "Как в Windows"), ("dark", "Тёмная"), ("light", "Светлая")];
-
 /// (подпись под цветом, подсказка)
 const COLORS: [(&str, &str); 4] =
     [("Текста", "Цвет текста"), ("Имени", "Цвет имени"), ("Контура", "Цвет контура"), ("Фона", "Цвет фона")];
+
+/// Цвета своей темы — слоты 4..8 (после цветов плашки).
+const CUSTOM_COLORS: [(&str, &str); 4] =
+    [("Фон", "Цвет фона окон"), ("Панели", "Цвет панелей и карточек"), ("Текст", "Цвет текста"), ("Акцент", "Акцентный цвет")];
+
+/// Подсказка для окна выбора цвета по номеру слота.
+fn slot_hint(i: usize) -> &'static str {
+    if i < 4 {
+        COLORS[i].1
+    } else {
+        CUSTOM_COLORS[(i - 4).min(3)].1
+    }
+}
 
 /// Семейства шрифтов: имя -> файлы в `C:\Windows\Fonts` (в список попадают те, у которых файл есть).
 const FONT_FILES: &[(&str, &[&str])] = &[
@@ -95,11 +106,19 @@ struct PreviewKey {
     outline_color: String,
     bg_color: String,
     bg_opacity: u32,
+    custom_bg: String,
+    custom_card: String,
+    custom_text: String,
+    custom_accent: String,
 }
 
 impl PreviewKey {
     fn of(s: &AppSettings) -> PreviewKey {
         PreviewKey {
+            custom_bg: s.custom_bg.clone(),
+            custom_card: s.custom_card.clone(),
+            custom_text: s.custom_text.clone(),
+            custom_accent: s.custom_accent.clone(),
             theme: s.theme.clone(),
             font_family: s.font_family.clone(),
             font_size: s.font_size,
@@ -112,6 +131,10 @@ impl PreviewKey {
     }
 
     fn put(&self, s: &mut AppSettings) {
+        s.custom_bg = self.custom_bg.clone();
+        s.custom_card = self.custom_card.clone();
+        s.custom_text = self.custom_text.clone();
+        s.custom_accent = self.custom_accent.clone();
         s.theme = self.theme.clone();
         s.font_family = self.font_family.clone();
         s.font_size = self.font_size;
@@ -156,6 +179,10 @@ pub struct SettingsWindow {
     hk: [String; 2],
     capturing: Option<usize>,
     picking: Option<(usize, Color32)>,
+    /// текст в поле HEX окна выбора цвета
+    hex_buf: String,
+    /// текстура превью аватара: (имя файла, текстура)
+    avatar_tex: Option<(String, TextureHandle)>,
     check_slot: Arc<Mutex<Option<(bool, String)>>>,
     checking: bool,
     check_result: Option<(bool, String)>,
@@ -223,6 +250,8 @@ impl SettingsWindow {
             fonts,
             capturing: None,
             picking: None,
+            hex_buf: String::new(),
+            avatar_tex: None,
             check_slot: Arc::new(Mutex::new(None)),
             checking: false,
             check_result: None,
@@ -268,6 +297,20 @@ impl SettingsWindow {
     /// Для `--shots`: выбрать раздел по номеру.
     pub fn select_section_for_shots(&mut self, i: usize) {
         self.section = i.min(SECTIONS.len() - 1);
+    }
+
+    /// Для `--shots`: подставить ник-заглушку (аватар — демо-заглушка из профиля снимков).
+    pub fn fill_profile_for_shots(&mut self, nick: &str) {
+        self.d.nickname = nick.to_string();
+    }
+
+    /// Для `--shots`: выбрать «Свою» тему с заданными цветами (только в окне).
+    pub fn fill_custom_theme_for_shots(&mut self, bg: &str, card: &str, text: &str, accent: &str) {
+        self.d.theme = "custom".to_string();
+        self.d.custom_bg = bg.to_string();
+        self.d.custom_card = card.to_string();
+        self.d.custom_text = text.to_string();
+        self.d.custom_accent = accent.to_string();
     }
 
     /// Рисует окно; false — окно нужно закрыть (после этого вызвать `close`).
@@ -317,6 +360,8 @@ impl SettingsWindow {
         if self.saved {
             return;
         }
+        // выбранные, но не сохранённые картинки удаляем
+        avatar::cleanup(&self.orig.avatar);
         let key = PreviewKey::of(&self.orig);
         {
             let mut c = lock_ctl(&shared.controller);
@@ -337,7 +382,9 @@ impl SettingsWindow {
             key.put(&mut c.settings);
             c.apply_overlay_style();
         }
-        theme::apply(ctx, &key.theme);
+        let mut tmp = self.orig.clone();
+        key.put(&mut tmp);
+        theme::apply(ctx, &tmp);
         ctx.request_repaint();
         self.applied = key;
     }
@@ -408,6 +455,8 @@ impl SettingsWindow {
         }
         let mut new = self.orig.clone();
         PreviewKey::of(&self.d).put(&mut new);
+        new.nickname = self.d.nickname.trim().to_string();
+        new.avatar = self.d.avatar.clone();
         new.net_mode = mode;
         new.proxy_url = proxy_text;
         new.proxy_user = user;
@@ -420,6 +469,7 @@ impl SettingsWindow {
         new.target_lang = self.d.target_lang;
         new.default_source_lang = self.d.default_source_lang;
         self.saved = true;
+        avatar::cleanup(&new.avatar);
         let errors = {
             let mut c = lock_ctl(&shared.controller);
             c.save_settings(new);
@@ -561,11 +611,24 @@ impl SettingsWindow {
             0 => &mut self.d.text_color,
             1 => &mut self.d.name_color,
             2 => &mut self.d.outline_color,
-            _ => &mut self.d.bg_color,
+            3 => &mut self.d.bg_color,
+            4 => &mut self.d.custom_bg,
+            5 => &mut self.d.custom_card,
+            6 => &mut self.d.custom_text,
+            _ => &mut self.d.custom_accent,
         }
     }
 
     fn color_value(&self, i: usize) -> Color32 {
+        if i >= 4 {
+            let s = match i {
+                4 => &self.d.custom_bg,
+                5 => &self.d.custom_card,
+                6 => &self.d.custom_text,
+                _ => &self.d.custom_accent,
+            };
+            return theme::parse_hex(s, Color32::GRAY);
+        }
         let (s, fb) = match i {
             0 => (&self.d.text_color, 0xFFFFFF),
             1 => (&self.d.name_color, 0xFFD27F),
@@ -588,8 +651,28 @@ impl SettingsWindow {
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(theme::body(COLORS[i].1));
+                ui.label(theme::body(slot_hint(i)));
                 changed = egui::color_picker::color_picker_color32(ui, &mut c, egui::color_picker::Alpha::Opaque);
+                if changed {
+                    self.hex_buf = theme::to_hex(c);
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(theme::body("HEX"));
+                    let r = ui.add(
+                        egui::TextEdit::singleline(&mut self.hex_buf)
+                            .char_limit(7)
+                            .margin(Margin::symmetric(8, 6))
+                            .desired_width(100.0),
+                    );
+                    if r.changed() {
+                        let t = self.hex_buf.trim().trim_start_matches('#');
+                        if t.len() == 6 && t.chars().all(|ch| ch.is_ascii_hexdigit()) {
+                            c = theme::parse_hex(&format!("#{t}"), c);
+                            changed = true;
+                        }
+                    }
+                });
                 ui.add_space(4.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if button(ui, "Готово", BtnKind::Primary, true, Some(90.0)).clicked() {
@@ -598,7 +681,7 @@ impl SettingsWindow {
                 });
             });
         if changed {
-            *self.color_slot(i) = format!("#{:02X}{:02X}{:02X}", c.r(), c.g(), c.b());
+            *self.color_slot(i) = theme::to_hex(c);
             self.picking = Some((i, c));
         }
         if done || !open {
@@ -622,21 +705,174 @@ impl SettingsWindow {
         }
     }
 
+    /// Открыть окно выбора цвета для слота.
+    fn open_picker(&mut self, i: usize) {
+        let c = self.color_value(i);
+        self.hex_buf = theme::to_hex(c);
+        self.picking = Some((i, c));
+    }
+
     fn draw_personal(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
-        // --- тема ---
-        ui.horizontal(|ui| {
-            ui.label(theme::h2("Тема оформления"));
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let cur = THEMES.iter().find(|(c, _)| *c == self.d.theme).map_or(THEMES[0].1, |t| t.1);
-                egui::ComboBox::from_id_salt("set_theme").width(180.0).selected_text(theme::body(cur)).show_ui(ui, |ui| {
-                    for (code, title) in THEMES {
-                        ui.selectable_value(&mut self.d.theme, code.to_string(), title);
-                    }
-                });
-            });
-        });
+        self.draw_profile(ui);
+        hline(ui);
+        self.draw_themes(ui);
         hline(ui);
         self.draw_plate(ui, label_w, gap, ctl_w);
+    }
+
+    /// Профиль: ник и аватар.
+    fn draw_profile(&mut self, ui: &mut Ui) {
+        let p = pal();
+        ui.label(theme::h2("Профиль"));
+        ui.horizontal(|ui| {
+            ui.label(theme::body("Ник"));
+            ui.add(
+                egui::TextEdit::singleline(&mut self.d.nickname)
+                    .char_limit(32)
+                    .hint_text("Как вас называть — показывается в главном окне")
+                    .margin(Margin::symmetric(8, 6))
+                    .desired_width((ui.available_width() - 20.0).clamp(160.0, 420.0)),
+            );
+        });
+        // текстура превью (перезагружается при смене файла)
+        let name = self.d.avatar.clone();
+        if name.is_empty() {
+            self.avatar_tex = None;
+        } else if self.avatar_tex.as_ref().map(|(n, _)| n.as_str()) != Some(name.as_str()) {
+            self.avatar_tex = avatar::load_rgba(&name).map(|(w, h, rgba)| {
+                let img = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                (name.clone(), ui.ctx().load_texture(format!("settings_avatar_{name}"), img, TextureOptions::LINEAR))
+            });
+        }
+        ui.horizontal(|ui| {
+            ui.label(theme::body("Аватар"));
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
+            let painter = ui.painter();
+            match &self.avatar_tex {
+                Some((_, t)) => {
+                    // круглая обрезка: картинка по кругу через сетку-веер
+                    let mut mesh = egui::Mesh::with_texture(t.id());
+                    let n = 48;
+                    let c = rect.center();
+                    let r = 32.0;
+                    mesh.vertices.push(egui::epaint::Vertex { pos: c, uv: Pos2::new(0.5, 0.5), color: Color32::WHITE });
+                    for k in 0..=n {
+                        let a = k as f32 / n as f32 * std::f32::consts::TAU;
+                        let (s, co) = a.sin_cos();
+                        mesh.vertices.push(egui::epaint::Vertex {
+                            pos: c + Vec2::new(co, s) * r,
+                            uv: Pos2::new(0.5 + co * 0.5, 0.5 + s * 0.5),
+                            color: Color32::WHITE,
+                        });
+                    }
+                    for k in 0..n {
+                        mesh.indices.extend_from_slice(&[0, k + 1, k + 2]);
+                    }
+                    painter.add(egui::Shape::mesh(mesh));
+                }
+                None => {
+                    painter.circle_filled(rect.center(), 32.0, p.border);
+                    let letter = self.d.nickname.trim().chars().next().map_or("N".to_string(), |ch| ch.to_uppercase().to_string());
+                    painter.text(rect.center(), Align2::CENTER_CENTER, letter, FontId::proportional(28.0), p.text);
+                }
+            }
+            painter.circle_stroke(rect.center(), 32.0, Stroke::new(1.0_f32, p.border));
+            if button(ui, "Выбрать картинку…", BtnKind::Normal, true, None).clicked() {
+                if let Some(path) = avatar::pick_image() {
+                    match avatar::store_avatar(&path) {
+                        Ok(n) => self.d.avatar = n,
+                        Err(e) => self.warn(format!("Не удалось загрузить картинку: {e}")),
+                    }
+                }
+            }
+            if !self.d.avatar.is_empty() && button(ui, "Убрать", BtnKind::Normal, true, None).clicked() {
+                self.d.avatar = String::new();
+            }
+        });
+    }
+
+    /// Сетка карточек-пресетов и, для «Своей», цвета темы.
+    fn draw_themes(&mut self, ui: &mut Ui) {
+        ui.label(theme::h2("Тема оформления"));
+        let sys_dark = ui.ctx().system_theme() != Some(egui::Theme::Light);
+        let cur_accent = pal().accent;
+        let (cw, ch) = (130.0_f32, 64.0_f32);
+        let (title_h, sp) = (20.0_f32, 10.0_f32);
+        let mut chosen: Option<String> = None;
+        for row in theme::PRESETS.chunks(4) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = sp;
+                for (id, title) in row {
+                    let pp = theme::palette_for(id, &self.d, sys_dark);
+                    let sel = self.d.theme == *id;
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(cw, ch), Sense::click());
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, CornerRadius::same(8), pp.bg);
+                        let card = Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(cw - 20.0, 28.0));
+                        painter.rect(card, CornerRadius::same(5), pp.card, Stroke::new(1.0_f32, pp.border), StrokeKind::Inside);
+                        let bar = Rect::from_min_size(card.min + Vec2::new(8.0, 8.0), Vec2::new(40.0, 6.0));
+                        painter.rect_filled(bar, CornerRadius::same(3), pp.accent);
+                        let line = Rect::from_min_size(card.min + Vec2::new(8.0, 18.0), Vec2::new(64.0, 4.0));
+                        painter.rect_filled(line, CornerRadius::same(2), pp.text);
+                        let stroke = if sel {
+                            Stroke::new(2.0_f32, cur_accent)
+                        } else {
+                            Stroke::new(1.0_f32, pp.border)
+                        };
+                        painter.rect_stroke(rect, CornerRadius::same(8), stroke, StrokeKind::Inside);
+                        let (tr, _) = ui.allocate_exact_size(Vec2::new(cw, title_h), Sense::hover());
+                        ui.painter().text(
+                            tr.left_center() + Vec2::new(2.0, 0.0),
+                            Align2::LEFT_CENTER,
+                            *title,
+                            FontId::proportional(13.0),
+                            if sel { cur_accent } else { pal().text },
+                        );
+                        if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                            chosen = Some(id.to_string());
+                        }
+                    });
+                }
+            });
+        }
+        if let Some(id) = chosen {
+            self.d.theme = id;
+        }
+        if self.d.theme == "custom" {
+            ui.add_space(4.0);
+            ui.label(theme::h2("Цвета своей темы"));
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 14.0;
+                for (k, (title, hint)) in CUSTOM_COLORS.iter().enumerate() {
+                    let i = 4 + k;
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 4.0;
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(44.0, 28.0), Sense::click());
+                        ui.painter().rect(
+                            rect,
+                            CornerRadius::same(6),
+                            self.color_value(i),
+                            Stroke::new(1.0_f32, pal().dim),
+                            StrokeKind::Inside,
+                        );
+                        let resp = resp.on_hover_text(*hint).on_hover_cursor(CursorIcon::PointingHand);
+                        if resp.clicked() {
+                            self.open_picker(i);
+                        }
+                        ui.label(theme::small(*title));
+                    });
+                }
+                if button(ui, "Сбросить", BtnKind::Normal, true, None).clicked() {
+                    let def = AppSettings::default();
+                    self.d.custom_bg = def.custom_bg;
+                    self.d.custom_card = def.custom_card;
+                    self.d.custom_text = def.custom_text;
+                    self.d.custom_accent = def.custom_accent;
+                }
+            });
+        }
     }
 
     fn draw_translate(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
@@ -845,7 +1081,7 @@ impl SettingsWindow {
                         );
                         let resp = resp.on_hover_text(*hint).on_hover_cursor(CursorIcon::PointingHand);
                         if resp.clicked() {
-                            self.picking = Some((i, self.color_value(i)));
+                            self.open_picker(i);
                         }
                         ui.label(theme::small(*title));
                     });
