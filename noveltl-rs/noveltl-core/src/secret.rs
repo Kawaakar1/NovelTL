@@ -152,6 +152,11 @@ pub fn unprotect(stored: &str) -> String {
     imp::unprotect(stored)
 }
 
+/// Значение зашифровано (а не сохранено открытым текстом из-за сбоя DPAPI).
+pub fn is_protected(stored: &str) -> bool {
+    stored.starts_with(PREFIX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

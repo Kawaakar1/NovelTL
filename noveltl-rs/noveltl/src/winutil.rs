@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, RECT, WAIT_TIMEOUT};
+use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::NetworkManagement::IpHelper::{
     GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST,
@@ -16,7 +16,7 @@ use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
 use windows::Win32::System::Threading::{
     GetExitCodeProcess, IsWow64Process, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, TerminateProcess,
 };
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -287,7 +287,12 @@ pub fn run_elevated(exe: &str, params: &str, timeout_ms: u32) -> i32 {
         if ShellExecuteExW(&mut info).is_err() || info.hProcess.is_invalid() {
             return -1;
         }
-        WaitForSingleObject(info.hProcess, timeout_ms);
+        if WaitForSingleObject(info.hProcess, timeout_ms) != WAIT_OBJECT_0 {
+            // таймаут или сбой ожидания — убиваем процесс, как run_hidden
+            let _ = TerminateProcess(info.hProcess, 1);
+            let _ = CloseHandle(info.hProcess);
+            return -1;
+        }
         let mut code = 0u32;
         let _ = GetExitCodeProcess(info.hProcess, &mut code);
         let _ = CloseHandle(info.hProcess);

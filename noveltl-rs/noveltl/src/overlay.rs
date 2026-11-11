@@ -98,6 +98,8 @@ pub enum Cmd {
 pub enum Event {
     /// Пользователь передвинул или растянул плашку в режиме настройки.
     Moved(Frac),
+    /// Не удалось создать плашку (сбой инициализации).
+    Failed(String),
 }
 
 /// Управление плашкой из любого потока.
@@ -176,7 +178,18 @@ thread_local! {
 fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
     unsafe {
         let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
-        let Ok(module) = GetModuleHandleW(None) else { return };
+        // ранний выход: сообщаем контроллеру и освобождаем COM
+        macro_rules! bail {
+            ($msg:expr) => {{
+                let _ = events.send(Event::Failed($msg));
+                windows::Win32::System::Com::CoUninitialize();
+                return;
+            }};
+        }
+        let module = match GetModuleHandleW(None) {
+            Ok(m) => m,
+            Err(e) => bail!(format!("GetModuleHandleW: {e}")),
+        };
         let class = WNDCLASSEXW {
             cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
             lpfnWndProc: Some(wndproc),
@@ -187,24 +200,25 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
         };
         RegisterClassExW(&class);
         let ex = WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT;
-        let Ok(hwnd) = CreateWindowExW(
+        let hwnd = match CreateWindowExW(
             ex,
             w!("NovelTLOverlay"),
             w!("NovelTL — плашка"),
             WS_POPUP,
             0, 0, 400, 120,
             None, None, module, None,
-        ) else {
-            return;
+        ) {
+            Ok(h) => h,
+            Err(e) => bail!(format!("CreateWindowExW: {e}")),
         };
 
         let d2d: ID2D1Factory = match D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None) {
             Ok(f) => f,
-            Err(_) => return,
+            Err(e) => bail!(format!("Direct2D: {e}")),
         };
         let dw: IDWriteFactory = match DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) {
             Ok(f) => f,
-            Err(_) => return,
+            Err(e) => bail!(format!("DirectWrite: {e}")),
         };
         let props = D2D1_RENDER_TARGET_PROPERTIES {
             r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
@@ -217,8 +231,11 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
             usage: D2D1_RENDER_TARGET_USAGE_NONE,
             minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
         };
-        let Ok(rt) = d2d.CreateDCRenderTarget(&props) else { return };
-        let Ok(dashes) = d2d.CreateStrokeStyle(
+        let rt = match d2d.CreateDCRenderTarget(&props) {
+            Ok(r) => r,
+            Err(e) => bail!(format!("CreateDCRenderTarget: {e}")),
+        };
+        let dashes = match d2d.CreateStrokeStyle(
             &D2D1_STROKE_STYLE_PROPERTIES {
                 startCap: D2D1_CAP_STYLE_ROUND,
                 endCap: D2D1_CAP_STYLE_ROUND,
@@ -229,8 +246,9 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 dashOffset: 0.0,
             },
             None,
-        ) else {
-            return;
+        ) {
+            Ok(d) => d,
+            Err(e) => bail!(format!("CreateStrokeStyle: {e}")),
         };
 
         STATE.with(|s| {

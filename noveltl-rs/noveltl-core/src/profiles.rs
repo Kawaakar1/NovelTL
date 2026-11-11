@@ -89,7 +89,7 @@ fn file_stem(name: &str) -> &str {
 }
 
 static RE_SLUG: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[^A-Za-z0-9А-Яа-я_\-]+").expect("regex"));
+    LazyLock::new(|| Regex::new(r"[^A-Za-z0-9А-Яа-яЁё_\-]+").expect("regex"));
 
 pub fn make_profile_id(exe_name: &str, version: &str) -> String {
     let stem = file_stem(exe_name);
@@ -103,16 +103,32 @@ pub fn make_profile_id(exe_name: &str, version: &str) -> String {
 fn load_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
     let text = fs::read_to_string(path).ok()?;
     // BOM на всякий случай
-    serde_json::from_str(text.trim_start_matches('\u{feff}')).ok()
+    match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
+        Ok(v) => Some(v),
+        Err(_) => {
+            // битый файл не теряем молча: копия рядом (уже существующую .broken не трогаем)
+            let mut bak = path.as_os_str().to_owned();
+            bak.push(".broken");
+            let bak = PathBuf::from(bak);
+            if !bak.exists() {
+                let _ = fs::copy(path, &bak);
+            }
+            None
+        }
+    }
 }
 
-/// Атомарная запись: во .tmp и rename. Кириллица не экранируется.
+/// Атомарная запись: во .tmp (с sync_all) и rename. Кириллица не экранируется.
 fn save_json<T: Serialize>(path: &Path, data: &T) -> std::io::Result<()> {
+    use std::io::Write;
     let text = serde_json::to_string_pretty(data).map_err(std::io::Error::other)?;
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, text)?;
+    let mut f = fs::File::create(&tmp)?;
+    f.write_all(text.as_bytes())?;
+    f.sync_all()?;
+    drop(f);
     fs::rename(&tmp, path)
 }
 
@@ -207,7 +223,10 @@ impl ProfileStore {
                 return Some(p);
             }
         }
-        let base = same_name.last()?;
+        // база для клона — профиль с самым поздним временем изменения файла (при равенстве/без времени — последний)
+        let base = same_name
+            .iter()
+            .max_by_key(|p| fs::metadata(self.path(&p.id)).and_then(|m| m.modified()).ok())?;
         let mut clone = base.clone();
         clone.id = make_profile_id(&base.exe_name, &version);
         clone.version = version;
@@ -293,10 +312,19 @@ impl AppSettings {
 
     /// Ключ DeepL и пароль прокси на диск пишутся зашифрованными (DPAPI).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        self.save_checked(path).map(|_| ())
+    }
+
+    /// Как `save`, но сообщает `true`, если шифрование не удалось и ключ DeepL или пароль прокси
+    /// пришлось записать открытым текстом (чтобы не потерять их) — об этом надо предупредить.
+    pub fn save_checked(&self, path: &Path) -> std::io::Result<bool> {
         let mut copy = self.clone();
         copy.deepl_key = secret::protect(&self.deepl_key);
         copy.proxy_pass = secret::protect(&self.proxy_pass);
-        save_json(path, &copy)
+        let plain = |v: &str| !v.is_empty() && !secret::is_protected(v);
+        let fallback = plain(&copy.deepl_key) || plain(&copy.proxy_pass);
+        save_json(path, &copy)?;
+        Ok(fallback)
     }
 }
 
@@ -358,6 +386,53 @@ mod tests {
         assert_eq!(store.all().len(), 2);
         assert!(store.find_for_exe(&dir.join("other.exe")).is_none());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clone_base_is_latest_modified() {
+        use std::time::{Duration, SystemTime};
+        let dir = tmp_dir("latest");
+        let exe = dir.join("game.exe");
+        fs::write(&exe, vec![b'x'; 7]).unwrap();
+        let store = ProfileStore::new(dir.join("profiles"));
+        let base = SystemTime::now() - Duration::from_secs(1000);
+        // по алфавиту последний — Game_20, но свежее всех Game_100
+        for (ver, age) in [("100", 0u64), ("20", 100), ("200", 200)] {
+            let p = Profile {
+                id: format!("Game_{ver}"),
+                name: format!("v{ver}"),
+                exe_name: "game.exe".into(),
+                version: ver.into(),
+                ..Profile::default()
+            };
+            store.save(&p).unwrap();
+            let f = fs::OpenOptions::new().write(true).open(store.path(&p.id)).unwrap();
+            f.set_modified(base + Duration::from_secs(500 - age)).unwrap();
+        }
+        let cloned = store.find_for_exe(&exe).unwrap();
+        assert_eq!(cloned.name, "v100");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn broken_settings_are_backed_up() {
+        let dir = tmp_dir("broken");
+        let path = dir.join("settings.json");
+        fs::write(&path, "{не json").unwrap();
+        assert_eq!(AppSettings::load(&path), AppSettings::default());
+        let bak = dir.join("settings.json.broken");
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "{не json");
+        // существующую копию не перезаписываем
+        fs::write(&path, "{ещё один").unwrap();
+        let _ = AppSettings::load(&path);
+        assert_eq!(fs::read_to_string(&bak).unwrap(), "{не json");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn slug_keeps_yo() {
+        assert_eq!(make_profile_id("Ёлка.exe", "1"), "Ёлка_1");
+        assert_eq!(make_profile_id("ёж.exe", "1"), "ёж_1");
     }
 
     #[test]

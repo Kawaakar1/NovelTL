@@ -14,9 +14,19 @@ pub fn apply_glossary(text: &str, glossary: &[GlossaryEntry]) -> String {
         glossary.iter().filter(|e| !e.src.is_empty() && !e.dst.is_empty()).collect();
     // сортировка устойчивая: при равной длине порядок как в глоссарии
     entries.sort_by(|a, b| b.src.chars().count().cmp(&a.src.chars().count()));
-    let mut out = text.to_string();
-    for e in entries {
-        out = out.replace(&e.src, &e.dst);
+    // один проход слева направо: результат замены повторно не сканируется
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        let rest = &text[i..];
+        if let Some(e) = entries.iter().find(|e| rest.starts_with(e.src.as_str())) {
+            out.push_str(&e.dst);
+            i += e.src.len();
+        } else {
+            let ch = rest.chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
     }
     out
 }
@@ -78,10 +88,20 @@ impl TranslationPipeline {
         let mut name_tr = String::new();
         if !name.is_empty() {
             // имя переводим всегда через кэш: оно не меняется от реплики к реплике
-            let (n, name_notice) = self.translate_name(name, lang, true)?;
-            name_tr = n;
-            if notice.is_empty() {
-                notice = name_notice;
+            match self.translate_name(name, lang, true) {
+                Ok((n, name_notice)) => {
+                    name_tr = n;
+                    if notice.is_empty() {
+                        notice = name_notice;
+                    }
+                }
+                Err(_) => {
+                    // ошибка имени не должна губить готовый перевод реплики
+                    name_tr = name.to_string();
+                    if notice.is_empty() {
+                        notice = "Имя не удалось перевести — показано как есть.".to_string();
+                    }
+                }
             }
         }
         if self.context.back().map(String::as_str) != Some(text) {
@@ -161,7 +181,48 @@ mod tests {
         p.process("", "おはよう", true).unwrap();
         p.process("", "Hello", true).unwrap();
         let sl: Vec<String> = s.gets().iter().map(|q| param(q, "sl").to_string()).collect();
-        assert_eq!(sl, ["zh-CN", "ja", "en"]);
+        // только иероглифы без каны — язык определяет сам переводчик
+        assert_eq!(sl, ["auto", "ja", "en"]);
+    }
+
+    #[test]
+    fn glossary_no_cascade() {
+        let gl = vec![g("Kevin", "Кевин"), g("Кевин", "Кэвин")];
+        assert_eq!(apply_glossary("Kevin", &gl), "Кевин");
+    }
+
+    #[test]
+    fn pipeline_name_error_keeps_line() {
+        use crate::translators::{Http, HttpError, HttpResponse};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // первый запрос (реплика) успешен, второй (имя) — ошибка
+        struct SecondFails(AtomicUsize);
+        impl Http for SecondFails {
+            fn post_json(
+                &self,
+                _: &str,
+                _: &[(&str, &str)],
+                body: &serde_json::Value,
+            ) -> Result<HttpResponse, HttpError> {
+                if self.0.fetch_add(1, Ordering::SeqCst) >= 1 {
+                    return Err(HttpError::Timeout);
+                }
+                let t = body["text"][0].as_str().unwrap_or("");
+                Ok(HttpResponse {
+                    status: 200,
+                    body: serde_json::json!({"translations": [{"text": format!("D:{t}")}]}).to_string(),
+                })
+            }
+            fn get(&self, _: &str, _: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+                Err(HttpError::Timeout)
+            }
+        }
+        let m = TranslatorManager::new("key", None, Arc::new(SecondFails(AtomicUsize::new(0))));
+        let mut p = TranslationPipeline::new(m, Lang::Ja, vec![]);
+        let r = p.process("将臣", "「おはよう」", true).unwrap();
+        assert_eq!(r.text, "D:「おはよう」");
+        assert_eq!(r.name, "将臣");
+        assert_eq!(r.notice, "Имя не удалось перевести — показано как есть.");
     }
 
     #[test]

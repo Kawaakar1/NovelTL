@@ -58,4 +58,6 @@ def resolve_language(profile_lang: str, text: str) -> str | None:
     """Язык из профиля, а для «авто» — по тексту."""
     if profile_lang in (LANG_JA, LANG_ZH, LANG_EN):
         return profile_lang
-    return detect_language(text)
+    lang = detect_language(text)
+    # иероглифы без каны — ja/zh неоднозначны, пусть переводчик определит сам
+    return None if lang == LANG_ZH else lang

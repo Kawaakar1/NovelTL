@@ -197,11 +197,13 @@ impl Worker {
     }
 
     /// Ждёт, пока поток переводчика разберёт все отправленные команды (но не дольше `timeout`).
-    fn flush(&self, timeout: Duration) {
+    /// Возвращает `true`, если все команды разобраны вовремя.
+    fn flush(&self, timeout: Duration) -> bool {
         let until = Instant::now() + timeout;
         while self.applied.load(Ordering::SeqCst) < self.sent && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(5));
         }
+        self.applied.load(Ordering::SeqCst) >= self.sent
     }
 
     fn stop(&mut self) {
@@ -311,6 +313,10 @@ pub struct Controller {
     pending: Vec<(Instant, String, f64)>,
     last_scan: Instant,
     closed: bool,
+    /// с какого момента окно игры потеряно, а новое не найдено
+    window_lost_since: Option<Instant>,
+    /// файлы кэша, которые не удалось удалить сразу
+    stale_caches: Vec<PathBuf>,
 }
 
 impl Controller {
@@ -368,6 +374,8 @@ impl Controller {
             pending: Vec::new(),
             last_scan: Instant::now(),
             closed: false,
+            window_lost_since: None,
+            stale_caches: Vec::new(),
         };
         c.register_hotkeys();
         c
@@ -387,8 +395,10 @@ impl Controller {
             }
         }
         while let Ok(ev) = self.overlay_rx.try_recv() {
-            let overlay::Event::Moved(f) = ev;
-            self.on_overlay_moved(f);
+            match ev {
+                overlay::Event::Moved(f) => self.on_overlay_moved(f),
+                overlay::Event::Failed(msg) => self.notice(format!("Не удалось создать плашку перевода: {msg}")),
+            }
         }
         while let Ok(ev) = self.hotkey_rx.try_recv() {
             match ev {
@@ -429,6 +439,11 @@ impl Controller {
     }
 
     fn scan(&mut self) {
+        // повторяем удаление файлов кэша, которые были заняты
+        self.stale_caches.retain(|p| match std::fs::remove_file(p) {
+            Ok(()) => false,
+            Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+        });
         if let Some(s) = &self.session {
             let (pid, hwnd) = (s.pid, s.hwnd);
             if !winutil::is_process_alive(pid) || (self.demo_hwnd != 0 && !winutil::is_window(hwnd)) {
@@ -437,11 +452,20 @@ impl Controller {
                 // окно пересоздано (например, смена режима экрана) — ищем новое
                 let found = self.windows().into_iter().find(|w| w.pid == pid);
                 if let Some(w) = found {
+                    self.window_lost_since = None;
                     if let Some(s) = self.session.as_mut() {
                         s.hwnd = w.hwnd;
                     }
                     self.overlay.send(Cmd::Target(w.hwnd, None));
+                } else {
+                    // окна нет уже давно — завершаем сессию, дальше сработает автопоиск
+                    let since = *self.window_lost_since.get_or_insert_with(Instant::now);
+                    if since.elapsed() > Duration::from_secs(5) {
+                        self.end_session();
+                    }
                 }
+            } else {
+                self.window_lost_since = None;
             }
             return;
         }
@@ -464,6 +488,7 @@ impl Controller {
 
     pub fn start_session(&mut self, profile: Profile, win: &WindowInfo, saved: bool, setup: bool) {
         self.end_session();
+        self.window_lost_since = None;
         self.tracker.clear();
         let cache_path = sub_data_dir("cache").join(format!("{}.sqlite", profile.id));
         self.cache = TranslationCache::open(&cache_path).ok().map(Arc::new);
@@ -496,6 +521,10 @@ impl Controller {
     }
 
     pub fn end_session(&mut self) {
+        // ответы воркера на реплики прошлой сессии больше не нужны
+        self.seq += 1;
+        self.pending.clear();
+        self.window_lost_since = None;
         let Some(s) = self.session.take() else { return };
         self.worker.send(WorkerCmd::SetPipeline(None));
         self.cache = None;
@@ -809,13 +838,24 @@ impl Controller {
     // ---------- профили и настройки ----------
 
     pub fn delete_profile(&mut self, id: &str) {
+        let mut flushed = true;
         if self.session.as_ref().is_some_and(|s| s.profile.id == id) {
             self.end_session();
             // кэш открыт у переводчика — дожидаемся, пока он его отпустит
-            self.worker.flush(Duration::from_secs(2));
+            flushed = self.worker.flush(Duration::from_secs(2));
         }
         self.store.delete(id);
-        let _ = std::fs::remove_file(sub_data_dir("cache").join(format!("{id}.sqlite")));
+        let path = sub_data_dir("cache").join(format!("{id}.sqlite"));
+        let removed = match std::fs::remove_file(&path) {
+            Ok(()) => true,
+            Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        };
+        if !flushed || !removed {
+            self.notice("Файл кэша этой игры занят — он будет удалён позже.");
+            if !self.stale_caches.contains(&path) {
+                self.stale_caches.push(path);
+            }
+        }
     }
 
     pub fn save_glossary(&mut self, profile_id: &str, entries: Vec<GlossaryEntry>) {
@@ -851,14 +891,33 @@ impl Controller {
     }
 
     pub fn save_settings(&mut self, new: AppSettings) {
+        let old = self.settings.clone();
         self.settings = new;
-        let _ = self.settings.save(&self.settings_path);
+        self.register_hotkeys();
+        // занятые другой программой сочетания откатываем на прежние, чтобы они продолжали работать
+        let attempted = std::mem::take(&mut self.hotkey_errors);
+        if !attempted.is_empty() {
+            if attempted.contains(&self.settings.hotkey_toggle) {
+                self.settings.hotkey_toggle = old.hotkey_toggle.clone();
+            }
+            if attempted.contains(&self.settings.hotkey_retranslate) {
+                self.settings.hotkey_retranslate = old.hotkey_retranslate.clone();
+            }
+            self.register_hotkeys();
+        }
+        self.hotkey_errors = attempted;
+        match self.settings.save_checked(&self.settings_path) {
+            Ok(true) => self.notice(
+                "Не удалось зашифровать ключ DeepL или пароль прокси — они сохранены открытым текстом в data\\settings.json.",
+            ),
+            Ok(false) => {}
+            Err(e) => self.notice(format!("Не удалось сохранить настройки: {e}")),
+        }
         self.worker.send(WorkerCmd::SetDeeplKey(self.settings.deepl_key.clone()));
         let msg = self.apply_network();
         if !msg.is_empty() {
             self.notice(msg);
         }
-        self.register_hotkeys();
         self.apply_overlay_style();
     }
 
@@ -1083,6 +1142,21 @@ mod tests {
         assert!(pump(&mut c, 3000, |c| c.session.as_ref().is_some_and(|s| s.selected.is_some())));
         assert_eq!(c.session.as_ref().unwrap().selected, Some(pick.key.clone()));
         assert!(!c.session.as_ref().unwrap().setup);
+
+        // ответ со старым seq (из прошлой сессии) не попадает в новую
+        let stale = LineResult {
+            name: String::new(),
+            text: "чужой".to_string(),
+            src_name: String::new(),
+            src_text: String::new(),
+            engine: "test",
+            cached: false,
+            notice: String::new(),
+        };
+        let old_seq = c.seq - 1;
+        c.session.as_mut().unwrap().last_result = None;
+        c.on_translated(old_seq, stale);
+        assert!(c.session.as_ref().unwrap().last_result.is_none(), "старый ответ протёк в новую сессию");
 
         // отчёт на диск
         let path = c.save_report().expect("отчёт не записан");

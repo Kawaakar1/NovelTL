@@ -83,6 +83,10 @@ def _looks_like_name(name: str, limit: int) -> bool:
     return not any(ch in _NAME_FORBIDDEN for ch in name)
 
 
+_NOT_NAMES = frozenset(
+    "note notes warning hint tip tips info chapter day time date location place objective quest task "
+    "mission tutorial example update result status rule rules q a ps p.s nb n.b ok error system".split()
+)
 _RE_BRACKET_NAME = re.compile(r"^\s*【([^【】\n]{1,24})】\s*(.+)$", re.S)
 _RE_QUOTE_NAME = re.compile(r"^([^\s「」『』（）()]{1,12})\s*([「『].+[」』])\s*$", re.S)
 _RE_COLON_NAME = re.compile(r"^([A-Z][A-Za-z'.\-]*(?: [A-Z?][A-Za-z'.\-]*){0,2}|[^\s:：]{1,10})\s*[:：]\s*(\S.*)$", re.S)
@@ -109,7 +113,11 @@ def split_name(text: str) -> tuple[str, str]:
     if m and _looks_like_name(m.group(1), 25) and not m.group(1).isdigit():
         # «http://», «12:30» и подобное именем не считаем
         if not m.group(2).startswith("//"):
-            return m.group(1).strip(), m.group(2).strip()
+            name, rest = m.group(1).strip(), m.group(2).strip()
+            # «Note: there is...» — это не имя говорящего
+            if not has_cjk(name) and (rest[0].islower() and rest[0].isascii() or name.lower() in _NOT_NAMES):
+                return "", s
+            return name, rest
     return "", s
 
 

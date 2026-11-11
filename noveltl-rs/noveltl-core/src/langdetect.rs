@@ -84,7 +84,11 @@ pub fn detect_language(s: &str) -> Option<Lang> {
 /// Язык из профиля, а для «авто» — по тексту.
 pub fn resolve_language(profile: Lang, text: &str) -> Option<Lang> {
     match profile {
-        Lang::Auto => detect_language(text),
+        // одни иероглифы без каны — может быть японский; пусть решает переводчик
+        Lang::Auto => match detect_language(text) {
+            Some(Lang::Zh) => None,
+            other => other,
+        },
         other => Some(other),
     }
 }
@@ -100,6 +104,13 @@ mod tests {
         assert_eq!(detect_language("Hello"), Some(Lang::En));
         assert_eq!(detect_language("123 ..."), None);
         assert_eq!(resolve_language(Lang::Zh, "おはよう"), Some(Lang::Zh));
+        assert_eq!(resolve_language(Lang::Auto, "おはよう"), Some(Lang::Ja));
+    }
+
+    #[test]
+    fn test_resolve_auto_han_only() {
+        assert_eq!(resolve_language(Lang::Auto, "大丈夫？"), None);
+        assert_eq!(resolve_language(Lang::Zh, "大丈夫"), Some(Lang::Zh));
         assert_eq!(resolve_language(Lang::Auto, "おはよう"), Some(Lang::Ja));
     }
 

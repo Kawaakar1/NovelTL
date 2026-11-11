@@ -159,6 +159,67 @@ impl DeepLTranslator {
 
 // ---------- Google ----------
 
+/// Максимум символов в одном GET-запросе Google.
+const GOOGLE_MAX_CHARS: usize = 1000;
+
+/// Делит текст на куски не длиннее `limit` символов. Возвращает (кусок, разделитель после него).
+/// Режем по `\n`, слишком длинную строку — по концу предложения, в крайнем случае жёстко.
+fn split_for_google(text: &str, limit: usize) -> Vec<(String, &'static str)> {
+    // элементарные части: (текст, разделитель после)
+    let mut units: Vec<(String, &'static str)> = Vec::new();
+    let lines: Vec<&str> = text.split('\n').collect();
+    for (i, line) in lines.iter().enumerate() {
+        let line_sep = if i + 1 < lines.len() { "\n" } else { "" };
+        if line.chars().count() <= limit {
+            units.push((line.to_string(), line_sep));
+            continue;
+        }
+        let mut cur = String::new();
+        let mut cur_len = 0;
+        for c in line.chars() {
+            cur.push(c);
+            cur_len += 1;
+            if cur_len == limit || "。！？!?.".contains(c) {
+                units.push((std::mem::take(&mut cur), ""));
+                cur_len = 0;
+            }
+        }
+        if !cur.is_empty() {
+            units.push((cur, ""));
+        }
+        if let Some(last) = units.last_mut() {
+            last.1 = line_sep;
+        }
+    }
+    // упаковка частей в куски
+    let mut chunks: Vec<(String, &'static str)> = Vec::new();
+    let mut cur = String::new();
+    let mut cur_len = 0;
+    let mut last_sep = "";
+    let mut started = false;
+    for (u, sep) in units {
+        let ulen = u.chars().count();
+        if !started {
+            cur = u;
+            cur_len = ulen;
+            started = true;
+        } else if cur_len + last_sep.len() + ulen <= limit {
+            cur.push_str(last_sep);
+            cur.push_str(&u);
+            cur_len += last_sep.len() + ulen;
+        } else {
+            chunks.push((std::mem::take(&mut cur), last_sep));
+            cur = u;
+            cur_len = ulen;
+        }
+        last_sep = sep;
+    }
+    if started {
+        chunks.push((cur, last_sep));
+    }
+    chunks
+}
+
 pub struct GoogleTranslator {
     http: Arc<dyn Http>,
 }
@@ -179,7 +240,24 @@ impl GoogleTranslator {
         }
     }
 
+    /// Длинный текст режем на куски (GET с q раздувает URL), короткий — один запрос.
     pub fn translate(&self, text: &str, src_lang: Option<Lang>) -> Result<String, TranslateError> {
+        if text.chars().count() <= GOOGLE_MAX_CHARS {
+            return self.translate_one(text, src_lang);
+        }
+        let mut out = String::new();
+        for (chunk, sep) in split_for_google(text, GOOGLE_MAX_CHARS) {
+            if chunk.trim().is_empty() {
+                out.push_str(&chunk);
+            } else {
+                out.push_str(&self.translate_one(&chunk, src_lang)?);
+            }
+            out.push_str(sep);
+        }
+        Ok(out)
+    }
+
+    fn translate_one(&self, text: &str, src_lang: Option<Lang>) -> Result<String, TranslateError> {
         let query = [
             ("client", "gtx"),
             ("sl", Self::lang_code(src_lang)),
@@ -504,6 +582,33 @@ mod tests {
         assert!(!m.translate("テスト", Some(Lang::Ja), "", false).unwrap().cached);
         assert_eq!(s.posts().len(), 2);
         assert_eq!(cache.count(), 1);
+    }
+
+    #[test]
+    fn google_long_text_is_split() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("", None, http(&s));
+        // 25 строк по 99 символов + переводы строк = 2499 символов
+        let line = "а".repeat(99);
+        let text = vec![line.as_str(); 25].join("\n");
+        let res = m.translate(&text, Some(Lang::Ja), "", true).unwrap();
+        let g = s.gets();
+        assert!(g.len() >= 3);
+        for q in &g {
+            assert!(param(q, "q").chars().count() <= 1000);
+        }
+        // фейк добавляет «G:» к каждому куску — убираем и сверяем склейку
+        let mut restored = res.text.clone();
+        for _ in 0..g.len() {
+            restored = restored.replacen("G:", "", 1);
+        }
+        assert_eq!(restored, text);
+        // одна очень длинная строка без разделителей режется по предложениям/жёстко
+        let long = "あ。".repeat(1200);
+        let s2 = FakeHttp::new(200);
+        let mut m2 = TranslatorManager::new("", None, http(&s2));
+        m2.translate(&long, Some(Lang::Ja), "", true).unwrap();
+        assert!(s2.gets().len() >= 3 && s2.gets().iter().all(|q| param(q, "q").chars().count() <= 1000));
     }
 
     #[test]

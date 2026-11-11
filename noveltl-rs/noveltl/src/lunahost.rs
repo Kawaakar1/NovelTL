@@ -79,6 +79,9 @@ struct Shared {
     waker: Waker,
     connected: HashMap<u32, ConnSignal>,
     attached: HashSet<u32>,
+    /// поколение подключения для каждого pid: поздние сигналы старого воркера игнорируются
+    gens: HashMap<u32, u64>,
+    next_gen: u64,
 }
 
 static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
@@ -104,8 +107,10 @@ unsafe fn wide_to_string(p: *const u16) -> String {
     if p.is_null() {
         return String::new();
     }
+    // ограничение длины, чтобы не бежать по памяти без конца
+    const MAX_LEN: usize = 1_048_576;
     let mut n = 0usize;
-    while *p.add(n) != 0 {
+    while n < MAX_LEN && *p.add(n) != 0 {
         n += 1;
     }
     String::from_utf16_lossy(std::slice::from_raw_parts(p, n))
@@ -178,14 +183,22 @@ fn to_wide(s: &str) -> Vec<u16> {
 pub struct LunaHost {
     api: Option<Api>,
     error: String,
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl LunaHost {
     pub fn start(events: Sender<HookEvent>, waker: Waker) -> LunaHost {
-        *lock_shared() = Some(Shared { tx: events, waker, connected: HashMap::new(), attached: HashSet::new() });
+        *lock_shared() = Some(Shared {
+            tx: events,
+            waker,
+            connected: HashMap::new(),
+            attached: HashSet::new(),
+            gens: HashMap::new(),
+            next_gen: 0,
+        });
         match Self::load() {
-            Ok(api) => LunaHost { api: Some(api), error: String::new() },
-            Err(e) => LunaHost { api: None, error: e },
+            Ok(api) => LunaHost { api: Some(api), error: String::new(), workers: Vec::new() },
+            Err(e) => LunaHost { api: None, error: e, workers: Vec::new() },
         }
     }
 
@@ -236,13 +249,21 @@ impl LunaHost {
     }
 }
 
-fn attach_worker(api: Api, pid: u32, codepage: u32, sig: ConnSignal) {
-    let fail = |text: String| {
-        if let Some(s) = lock_shared().as_mut() {
-            s.attached.remove(&pid);
+/// Сбой подключения: действует, только если поколение ещё актуально.
+fn fail_attach(pid: u32, my_gen: u64, text: String) {
+    {
+        let mut g = lock_shared();
+        let Some(s) = g.as_mut() else { return };
+        if s.gens.get(&pid) != Some(&my_gen) {
+            return;
         }
-        emit(HookEvent::AttachFailed(pid, text));
-    };
+        s.attached.remove(&pid);
+    }
+    emit(HookEvent::AttachFailed(pid, text));
+}
+
+fn attach_worker(api: Api, pid: u32, codepage: u32, sig: ConnSignal, my_gen: u64) {
+    let fail = |text: String| fail_attach(pid, my_gen, text);
     unsafe {
         (api.settings)(500, codepage as i32, 3000, 1_000_000, false);
         (api.connect_process)(pid);
@@ -285,7 +306,7 @@ impl HookSource for LunaHost {
             return;
         };
         let sig: ConnSignal = Arc::new((Mutex::new(false), Condvar::new()));
-        {
+        let my_gen = {
             let mut g = lock_shared();
             let Some(s) = g.as_mut() else { return };
             if s.attached.contains(&pid) {
@@ -295,21 +316,32 @@ impl HookSource for LunaHost {
             }
             s.attached.insert(pid);
             s.connected.insert(pid, sig.clone());
-        }
-        std::thread::spawn(move || {
-            let r = catch_unwind(std::panic::AssertUnwindSafe(|| attach_worker(api, pid, codepage, sig)));
+            s.next_gen += 1;
+            s.gens.insert(pid, s.next_gen);
+            s.next_gen
+        };
+        // убираем уже завершённые потоки
+        self.workers.retain(|h| !h.is_finished());
+        let handle = std::thread::spawn(move || {
+            let r = catch_unwind(std::panic::AssertUnwindSafe(|| attach_worker(api, pid, codepage, sig, my_gen)));
             if r.is_err() {
-                if let Some(s) = lock_shared().as_mut() {
-                    s.attached.remove(&pid);
-                }
-                emit(HookEvent::AttachFailed(pid, "Ошибка подключения: внутренний сбой".to_string()));
+                fail_attach(pid, my_gen, "Ошибка подключения: внутренний сбой".to_string());
             }
         });
+        self.workers.push(handle);
     }
 
     fn detach(&mut self, pid: u32) {
         let Some(api) = self.api else { return };
-        let was = lock_shared().as_mut().map(|s| s.attached.remove(&pid)).unwrap_or(false);
+        let was = lock_shared()
+            .as_mut()
+            .map(|s| {
+                // поколение и сигнал убираем: поздние сигналы старого воркера станут пустыми
+                s.gens.remove(&pid);
+                s.connected.remove(&pid);
+                s.attached.remove(&pid)
+            })
+            .unwrap_or(false);
         if was {
             unsafe { (api.detach_process)(pid) };
         }
@@ -326,6 +358,16 @@ impl HookSource for LunaHost {
         let pids: Vec<u32> = lock_shared().as_ref().map(|s| s.attached.iter().copied().collect()).unwrap_or_default();
         for pid in pids {
             self.detach(pid);
+        }
+        // ждём потоки подключения не дольше 3 секунд суммарно, незавершённые бросаем
+        let until = std::time::Instant::now() + Duration::from_secs(3);
+        while self.workers.iter().any(|h| !h.is_finished()) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        for h in std::mem::take(&mut self.workers) {
+            if h.is_finished() {
+                let _ = h.join();
+            }
         }
     }
 

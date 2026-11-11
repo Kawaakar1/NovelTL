@@ -36,6 +36,14 @@ const SENTENCE_END: &str = "。！？!?…」』）)\"”.~〜♪—―";
 const OPEN_QUOTES: &str = "「『（(“\"";
 const NAME_FORBIDDEN: &str = "。、！？!?…「」『』（）()【】,.:;：；\"“”";
 
+/// Служебные слова перед двоеточием, которые не являются именами.
+const COLON_STOP_WORDS: [&str; 33] = [
+    "note", "notes", "warning", "hint", "tip", "tips", "info", "chapter", "day", "time", "date",
+    "location", "place", "objective", "quest", "task", "mission", "tutorial", "example", "update",
+    "result", "status", "rule", "rules", "q", "a", "ps", "p.s", "nb", "n.b", "ok",
+    "error", "system",
+];
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CleanResult {
     pub name: String,
@@ -145,7 +153,12 @@ pub fn split_name(text: &str) -> (String, String) {
     if let Some(m) = RE_COLON_NAME.captures(s) {
         let name = &m[1];
         // «http://», «12:30» и подобное именем не считаем
+        // латинское имя не берём: служебное слово («Note:») или текст со строчной буквы
+        let latin_reject = !has_cjk(name)
+            && (m[2].chars().next().is_some_and(|c| c.is_ascii_lowercase())
+                || COLON_STOP_WORDS.contains(&name.trim().to_lowercase().as_str()));
         if looks_like_name(name, 25)
+            && !latin_reject
             && !name.chars().all(|c| c.is_numeric())
             && !m[2].starts_with("//")
         {
@@ -241,6 +254,10 @@ mod tests {
             ("彼は「そう」と言った。", "", "彼は「そう」と言った。"),
             ("ただの地の文です。", "", "ただの地の文です。"),
             ("It was 12:30 already.", "", "It was 12:30 already."),
+            ("Note: there is a door.", "", "Note: there is a door."),
+            ("Warning: Do not enter.", "", "Warning: Do not enter."),
+            ("Akari: hello there", "", "Akari: hello there"),
+            ("芳乃：「おはよう」", "芳乃", "「おはよう」"),
         ];
         for (src, name, text) in cases {
             assert_eq!(split_name(src), (name.to_string(), text.to_string()), "{src}");

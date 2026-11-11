@@ -11,12 +11,27 @@ CONTEXT_LINES = 3
 
 
 def apply_glossary(text: str, glossary: list) -> str:
-    """Подставляет в исходный текст готовые переводы имён и терминов (длинные — первыми)."""
+    """Подставляет готовые переводы имён и терминов за один проход, без каскада."""
     entries = [(e.get("src", ""), e.get("dst", "")) for e in glossary or []]
     entries = [(s, d) for s, d in entries if s and d]
-    for src, dst in sorted(entries, key=lambda e: len(e[0]), reverse=True):
-        text = text.replace(src, dst)
-    return text
+    if not entries:
+        return text
+    out: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        best = None
+        for src, dst in entries:
+            # самое длинное совпадение; при равной длине — первое в глоссарии
+            if text.startswith(src, i) and (best is None or len(src) > len(best[0])):
+                best = (src, dst)
+        if best:
+            out.append(best[1])
+            i += len(best[0])
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
 
 
 def glossary_exact(text: str, glossary: list) -> str | None:
@@ -63,8 +78,13 @@ class TranslationPipeline:
         name_tr = ""
         if name:
             # имя переводим всегда через кэш: оно не меняется от реплики к реплике
-            name_tr, name_notice = self._translate_name(name, lang, True)
-            notice = notice or name_notice
+            try:
+                name_tr, name_notice = self._translate_name(name, lang, True)
+                notice = notice or name_notice
+            except Exception:  # noqa: BLE001
+                # перевод текста готов — не теряем его из-за имени
+                name_tr = name
+                notice = notice or "Имя не удалось перевести — показано как есть."
         if not self._context or self._context[-1] != text:
             self._context.append(text)
         return LineResult(name_tr, res.text, name, text, res.engine, res.cached, notice)

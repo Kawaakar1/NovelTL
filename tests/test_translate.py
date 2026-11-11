@@ -136,7 +136,7 @@ def test_pipeline_auto_language():
     p.process("", "你好")
     p.process("", "おはよう")
     p.process("", "Hello")
-    assert [g["params"]["sl"] for g in s.gets] == ["zh-CN", "ja", "en"]
+    assert [g["params"]["sl"] for g in s.gets] == ["auto", "ja", "en"]  # китайский при авто — язык определяет сам переводчик
 
 
 def test_google_failure_raises():

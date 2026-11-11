@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
-use crate::cleaner::clean;
+use crate::cleaner::{clean, CleanResult};
 use crate::langdetect::is_cjk;
 
 /// (код хука, ctx & 0xFFFF, ctx2 & 0xFFFF)
@@ -168,6 +168,8 @@ pub struct ThreadStats {
     pub ctx2: u64,
     pub total: usize,
     pub lines: VecDeque<(f64, String)>, // (время, сырой текст)
+    /// Результат clean() для каждой строки из `lines` (считается один раз при добавлении).
+    pub cleaned: VecDeque<CleanResult>,
 }
 
 impl ThreadStats {
@@ -180,6 +182,7 @@ impl ThreadStats {
             ctx2,
             total: 0,
             lines: VecDeque::new(),
+            cleaned: VecDeque::new(),
         }
     }
 
@@ -191,8 +194,10 @@ impl ThreadStats {
         self.total += 1;
         if self.lines.len() >= MAX_LINES {
             self.lines.pop_front();
+            self.cleaned.pop_front();
         }
         self.lines.push_back((now.unwrap_or_else(now_secs), text.to_string()));
+        self.cleaned.push_back(clean(text));
     }
 
     pub fn last_raw(&self, n: usize) -> Vec<String> {
@@ -202,13 +207,15 @@ impl ThreadStats {
 
     pub fn last_clean(&self, n: usize) -> Vec<String> {
         let mut out: Vec<String> = Vec::new();
-        for (_, raw) in self.lines.iter().rev() {
-            let res = clean(raw);
+        if n == 0 {
+            return out;
+        }
+        for res in self.cleaned.iter().rev() {
             if res.text.is_empty() {
                 continue;
             }
             let line = if res.name.is_empty() {
-                res.text
+                res.text.clone()
             } else {
                 format!("{}: {}", res.name, res.text)
             };
@@ -247,10 +254,10 @@ fn peak_rate(times: &[f64]) -> usize {
 }
 
 pub fn score_thread(st: &ThreadStats) -> ScoreResult {
-    let cleaned: Vec<String> = st
-        .lines
+    let cleaned: Vec<&str> = st
+        .cleaned
         .iter()
-        .map(|(_, raw)| clean(raw).text)
+        .map(|c| c.text.as_str())
         .filter(|c| !c.is_empty())
         .collect();
     let name = st.hookname.to_lowercase();
@@ -359,16 +366,17 @@ pub fn find_name_thread(threads: &ThreadTracker, dialog_key: &HookKey) -> Option
         if peak_rate(&times) >= 4 {
             continue;
         }
-        let entries: Vec<(f64, String)> = st
+        let entries: Vec<(f64, &str)> = st
             .lines
             .iter()
-            .map(|(t, raw)| (*t, clean(raw).text))
+            .zip(st.cleaned.iter())
+            .map(|((t, _), c)| (*t, c.text.as_str()))
             .filter(|(_, c)| !c.is_empty())
             .collect();
         if entries.len() < 3 {
             continue;
         }
-        let texts: Vec<&String> = entries.iter().map(|(_, c)| c).collect();
+        let texts: Vec<&str> = entries.iter().map(|(_, c)| *c).collect();
         if texts.iter().collect::<HashSet<_>>().len() < 2 {
             continue; // одна и та же строка (заголовок окна и т. п.) — это не имена
         }
@@ -415,15 +423,24 @@ pub fn find_name_thread(threads: &ThreadTracker, dialog_key: &HookKey) -> Option
 pub struct ThreadTracker {
     list: Vec<ThreadStats>, // в порядке появления
     index: HashMap<HookKey, usize>,
+    /// Кэш ranked(): рейтинг не зависит от текущего времени; сбрасывается при любом изменении потоков.
+    ranked_cache: std::sync::Mutex<Option<Vec<ScoreResult>>>,
 }
 
 impl ThreadTracker {
+    fn invalidate(&mut self) {
+        *self.ranked_cache.get_mut().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
     pub fn clear(&mut self) {
+        self.invalidate();
         self.list.clear();
         self.index.clear();
     }
 
     pub fn ensure(&mut self, hookcode: &str, hookname: &str, addr: u64, ctx: u64, ctx2: u64) -> &mut ThreadStats {
+        // через &mut ThreadStats можно добавить текст — кэш рейтинга устарел
+        self.invalidate();
         let key = make_key(hookcode, ctx, ctx2);
         let idx = match self.index.get(&key) {
             Some(&i) => i,
@@ -469,7 +486,8 @@ impl ThreadTracker {
     }
 
     pub fn ranked(&self) -> Vec<ScoreResult> {
-        rank_threads(self.list.iter())
+        let mut cache = self.ranked_cache.lock().unwrap_or_else(|e| e.into_inner());
+        cache.get_or_insert_with(|| rank_threads(self.list.iter())).clone()
     }
 
     /// Ищет сохранённый хук среди живых потоков.
@@ -611,6 +629,24 @@ mod tests {
         let js = serde_json::to_string(&r).unwrap();
         let back: HookRef = serde_json::from_str(&js).unwrap();
         assert_eq!(back, r);
+    }
+
+    #[test]
+    fn last_clean_zero_and_cached_ranking() {
+        let mut st = ThreadStats::new("H", "n", 0, 0, 0);
+        st.add("こんにちは", Some(1.0));
+        assert!(st.last_clean(0).is_empty());
+        assert_eq!(st.last_clean(1), vec!["こんにちは".to_string()]);
+        assert_eq!(st.cleaned.len(), st.lines.len());
+        // кэш рейтинга сбрасывается при новом тексте
+        let mut t = ThreadTracker::default();
+        feed(&mut t, "A", "x", 1, &DIALOG[..2], 0.0, 2.0);
+        let before = t.ranked()[0].total;
+        assert_eq!(t.ranked()[0].total, before);
+        feed(&mut t, "A", "x", 1, &DIALOG[2..], 10.0, 2.0);
+        assert_eq!(t.ranked()[0].total, before + 2);
+        t.clear();
+        assert!(t.ranked().is_empty());
     }
 
     #[test]

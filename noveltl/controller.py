@@ -37,6 +37,18 @@ class TranslateWorker(QThread):
     def submit(self, seq: int, name: str, text: str, use_cache: bool) -> None:
         self._queue.put((seq, name, text, use_cache))
 
+    def clear_pending(self) -> None:
+        """Сбрасывает отложенные реплики (сигнал остановки не теряем)."""
+        stop = False
+        while True:
+            try:
+                if self._queue.get_nowait() is None:
+                    stop = True
+            except queue.Empty:
+                break
+        if stop:
+            self._queue.put(None)
+
     def stop(self) -> None:
         self._queue.put(None)
         self.wait(3000)
@@ -168,6 +180,9 @@ class Controller(QObject):
         self.stateChanged.emit()
 
     def end_session(self) -> None:
+        # перевод старой сессии не должен протечь в новую
+        self._seq += 1
+        self.worker.clear_pending()
         s = self.session
         if not s:
             return
@@ -233,7 +248,8 @@ class Controller(QObject):
         if s.selected is not None and st.key == s.selected:
             # небольшая пауза: имя говорящего может прийти из соседнего потока чуть позже
             t_line = st.lines[-1][0]
-            QTimer.singleShot(120, lambda: self._handle_line(text, t_line=t_line))
+            # за 120 мс сессия могла смениться — тогда строку старой игры не разбираем
+            QTimer.singleShot(120, lambda: self._handle_line(text, t_line=t_line) if self.session is s else None)
 
     def _select_hook(self, s: Session) -> None:
         key = self.tracker.find_saved(s.profile.hook)
