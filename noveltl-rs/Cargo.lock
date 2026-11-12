@@ -1809,7 +1809,7 @@ checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
 
 [[package]]
 name = "noveltl"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "eframe",
  "embed-resource",
@@ -1822,7 +1822,7 @@ dependencies = [
 
 [[package]]
 name = "noveltl-core"
-version = "0.4.1"
+version = "0.4.2"
 dependencies = [
  "base64 0.22.1",
  "regex",

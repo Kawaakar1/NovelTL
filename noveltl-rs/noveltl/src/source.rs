@@ -31,7 +31,6 @@ pub enum HookEvent {
 pub trait HookSource: Send {
     fn attach(&mut self, pid: u32, codepage: u32);
     fn detach(&mut self, pid: u32);
-    fn insert_hook(&mut self, pid: u32, code: &str);
     fn shutdown(&mut self);
     /// "" если всё хорошо
     fn error(&self) -> String;

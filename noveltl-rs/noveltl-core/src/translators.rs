@@ -340,6 +340,9 @@ fn lang_name_en(lang: Lang) -> &'static str {
     }
 }
 
+/// Ключ или регион Microsoft не приняты (401/403).
+const MS_KEY_ERROR: &str = "Microsoft: ключ не подходит (проверьте ключ и регион)";
+
 pub struct MicrosoftTranslator {
     pub key: String,
     pub region: String,
@@ -369,9 +372,7 @@ impl MicrosoftTranslator {
             .map_err(|e| TranslateError::Failed(format!("нет связи с Microsoft ({})", e.name())))?;
         match resp.status {
             200 => {}
-            401 | 403 => {
-                return Err(TranslateError::Failed("Microsoft: ключ не подходит (проверьте ключ и регион)".to_string()))
-            }
+            401 | 403 => return Err(TranslateError::Failed(MS_KEY_ERROR.to_string())),
             429 => return Err(TranslateError::Failed("Microsoft: исчерпан лимит запросов".to_string())),
             s => return Err(TranslateError::Failed(format!("Microsoft ответил кодом {s}"))),
         }
@@ -543,6 +544,8 @@ pub struct TranslatorManager {
     /// последняя ошибка Microsoft / локального ИИ: сообщение о переходе на Google показываем один раз
     selected_failure: String,
     microsoft: Option<MicrosoftTranslator>,
+    /// Microsoft не принял ключ: до смены ключа в сеть не ходим, сразу Google
+    microsoft_denied: bool,
     local_url: String,
     local_model: String,
     /// Отдельный клиент для локального ИИ (None — общий http).
@@ -561,6 +564,7 @@ impl TranslatorManager {
             deepl_disabled_reason: String::new(),
             selected_failure: String::new(),
             microsoft: None,
+            microsoft_denied: false,
             local_url: String::new(),
             local_model: String::new(),
             local_http: None,
@@ -601,6 +605,7 @@ impl TranslatorManager {
         let key = key.trim();
         self.microsoft =
             if key.is_empty() { None } else { Some(MicrosoftTranslator::new(key, region, self.http.clone())) };
+        self.microsoft_denied = false;
         self.selected_failure.clear();
     }
 
@@ -649,6 +654,8 @@ impl TranslatorManager {
             "microsoft" => {
                 if self.microsoft.is_none() {
                     "Microsoft недоступен: ключ не задан (используется Google)".to_string()
+                } else if self.microsoft_denied {
+                    "Microsoft недоступен: ключ не подходит (используется Google)".to_string()
                 } else {
                     "Microsoft Translator".to_string()
                 }
@@ -765,7 +772,7 @@ impl TranslatorManager {
 
     /// Режимы Microsoft / локальный ИИ: кэш, затем сам переводчик. Ошибку обрабатывает вызывающий (Google).
     fn translate_selected(
-        &self,
+        &mut self,
         engine: &'static str,
         text: &str,
         src_lang: Option<Lang>,
@@ -779,12 +786,19 @@ impl TranslatorManager {
             return Ok(TranslateResult { text: hit, engine, cached: true, notice: String::new() });
         }
         let out = if engine == ENGINE_MICROSOFT {
-            match &self.microsoft {
-                Some(m) => m.translate(text, src_lang, self.target)?,
+            if self.microsoft_denied {
+                return Err(TranslateError::Failed(MS_KEY_ERROR.to_string()));
+            }
+            let res = match &self.microsoft {
+                Some(m) => m.translate(text, src_lang, self.target),
                 None => {
                     return Err(TranslateError::Failed("ключ Microsoft не задан".to_string()));
                 }
+            };
+            if res.as_ref().is_err_and(|e| e.to_string() == MS_KEY_ERROR) {
+                self.microsoft_denied = true;
             }
+            res?
         } else {
             let http = self.local_http.clone().unwrap_or_else(|| self.http.clone());
             LocalAiTranslator::new(&self.local_url, &self.local_model, http).translate(
@@ -1328,7 +1342,7 @@ mod tests {
     #[test]
     fn microsoft_failure_falls_back_to_google() {
         let s = Script::new(Box::new(|_| resp(401, "")), no_get());
-        let mut m = TranslatorManager::new("", None, s);
+        let mut m = TranslatorManager::new("", None, s.clone());
         m.set_mode("microsoft");
         m.set_microsoft("bad", "");
         let res = m.translate("テスト", Some(Lang::Ja), "", true).unwrap();
@@ -1337,6 +1351,14 @@ mod tests {
             res.notice,
             "Microsoft не сработал (Microsoft: ключ не подходит (проверьте ключ и регион)) — перевод через Google."
         );
+        // ключ не принят: дальше Microsoft не дёргаем, сообщение не повторяем; новый ключ — снова пробуем
+        let res = m.translate("次", Some(Lang::Ja), "", true).unwrap();
+        assert_eq!((res.engine, res.notice.as_str()), ("google", ""));
+        assert_eq!(s.posts().len(), 1);
+        assert_eq!(m.status_text(), "Microsoft недоступен: ключ не подходит (используется Google)");
+        m.set_microsoft("new", "");
+        m.translate("三", Some(Lang::Ja), "", true).unwrap();
+        assert_eq!(s.posts().len(), 2);
         // без ключа тоже Google с пояснением
         let mut m = TranslatorManager::new("", None, Script::new(ms_ok(), no_get()));
         m.set_mode("microsoft");

@@ -1,5 +1,4 @@
 //! Источник текста: обёртка над LunaHost64.dll (движок LunaHook, GPL-3.0). Перенос `noveltl/lunahost.py`.
-#![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
@@ -58,7 +57,6 @@ type LunaStart = unsafe extern "C" fn(
 type LunaSettings = unsafe extern "C" fn(i32, i32, i32, i32, bool);
 type LunaConnectProcess = unsafe extern "C" fn(u32);
 type LunaCheckIfNeedInject = unsafe extern "C" fn(u32) -> bool;
-type LunaInsertHookCode = unsafe extern "C" fn(u32, *const u16);
 type LunaDetachProcess = unsafe extern "C" fn(u32);
 
 #[derive(Clone, Copy)]
@@ -66,7 +64,6 @@ struct Api {
     settings: LunaSettings,
     connect_process: LunaConnectProcess,
     check_if_need_inject: LunaCheckIfNeedInject,
-    insert_hook_code: LunaInsertHookCode,
     detach_process: LunaDetachProcess,
 }
 
@@ -229,7 +226,6 @@ impl LunaHost {
                 settings: func!(s!("Luna_Settings"), LunaSettings),
                 connect_process: func!(s!("Luna_ConnectProcess"), LunaConnectProcess),
                 check_if_need_inject: func!(s!("Luna_CheckIfNeedInject"), LunaCheckIfNeedInject),
-                insert_hook_code: func!(s!("Luna_InsertHookCode"), LunaInsertHookCode),
                 detach_process: func!(s!("Luna_DetachProcess"), LunaDetachProcess),
             };
             start(
@@ -347,13 +343,6 @@ impl HookSource for LunaHost {
         }
     }
 
-    fn insert_hook(&mut self, pid: u32, code: &str) {
-        if let (Some(api), false) = (self.api, code.is_empty()) {
-            let w = to_wide(code);
-            unsafe { (api.insert_hook_code)(pid, w.as_ptr()) };
-        }
-    }
-
     fn shutdown(&mut self) {
         let pids: Vec<u32> = lock_shared().as_ref().map(|s| s.attached.iter().copied().collect()).unwrap_or_default();
         for pid in pids {
@@ -396,12 +385,6 @@ def tick(i=0):
     ctypes.windll.gdi32.TextOutW(ctypes.c_void_p(hdc), 10, 120, s, len(s)); r.after(1200, tick, i + 1)
 r.after(1500, tick); r.mainloop()
 "#;
-
-    #[test]
-    fn hostinfo_constants() {
-        assert_eq!(HOSTINFO_WARNING, 1);
-        assert_eq!(HOSTINFO_ENGINE, 4);
-    }
 
     #[test]
     #[ignore]

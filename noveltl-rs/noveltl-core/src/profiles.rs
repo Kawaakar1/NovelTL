@@ -179,6 +179,18 @@ impl ProfileStore {
         let _ = fs::remove_file(self.path(id));
     }
 
+    /// Id для нового профиля; занятый (та же программа в другой папке) получает суффикс _2, _3…
+    pub fn new_id(&self, exe_name: &str, version: &str) -> String {
+        let base = make_profile_id(exe_name, version);
+        let mut id = base.clone();
+        let mut n = 2;
+        while self.path(&id).exists() {
+            id = format!("{base}_{n}");
+            n += 1;
+        }
+        id
+    }
+
     pub fn create(&self, name: &str, exe_path: &Path, lang: Lang) -> std::io::Result<Profile> {
         let exe_name = exe_path
             .file_name()
@@ -186,7 +198,7 @@ impl ProfileStore {
             .unwrap_or_default();
         let version = exe_version(exe_path);
         let profile = Profile {
-            id: make_profile_id(&exe_name, &version),
+            id: self.new_id(&exe_name, &version),
             name: name.to_string(),
             exe_name,
             exe_path: exe_path.to_string_lossy().into_owned(),
@@ -200,35 +212,44 @@ impl ProfileStore {
 
     /// Профиль для запущенного exe. Для новой версии игры копирует профиль старой.
     pub fn find_for_exe(&self, exe_path: &Path) -> Option<Profile> {
+        self.find_in(&self.all(), exe_path)
+    }
+
+    /// Как `find_for_exe`, но по уже прочитанному списку профилей (`all()`).
+    /// Игра узнаётся по имени exe И папке: у разных игр бывает одинаковый exe (например, Game.exe у RPG Maker).
+    pub fn find_in(&self, profiles: &[Profile], exe_path: &Path) -> Option<Profile> {
         let exe_name = exe_path
             .file_name()
             .map(|s| s.to_string_lossy().to_lowercase())
             .unwrap_or_default();
-        let version = exe_version(exe_path);
-        let exe_path_str = exe_path.to_string_lossy().into_owned();
-        let same_name: Vec<Profile> = self
-            .all()
-            .into_iter()
-            .filter(|p| p.exe_name.to_lowercase() == exe_name)
+        let dir = exe_path.parent().map(|d| d.to_string_lossy().to_lowercase());
+        let same_game: Vec<&Profile> = profiles
+            .iter()
+            .filter(|p| {
+                p.exe_name.to_lowercase() == exe_name
+                    && dir.is_some()
+                    && Path::new(&p.exe_path).parent().map(|d| d.to_string_lossy().to_lowercase()) == dir
+            })
             .collect();
-        if same_name.is_empty() {
+        if same_game.is_empty() {
             return None;
         }
-        for mut p in same_name.iter().cloned() {
-            if p.version == version {
-                if p.exe_path != exe_path_str {
-                    p.exe_path = exe_path_str;
-                    let _ = self.save(&p);
-                }
-                return Some(p);
+        let version = exe_version(exe_path);
+        let exe_path_str = exe_path.to_string_lossy().into_owned();
+        if let Some(p) = same_game.iter().find(|p| p.version == version) {
+            let mut p = (*p).clone();
+            if p.exe_path != exe_path_str {
+                p.exe_path = exe_path_str;
+                let _ = self.save(&p);
             }
+            return Some(p);
         }
         // база для клона — профиль с самым поздним временем изменения файла (при равенстве/без времени — последний)
-        let base = same_name
+        let base = same_game
             .iter()
             .max_by_key(|p| fs::metadata(self.path(&p.id)).and_then(|m| m.modified()).ok())?;
-        let mut clone = base.clone();
-        clone.id = make_profile_id(&base.exe_name, &version);
+        let mut clone = (*base).clone();
+        clone.id = self.new_id(&base.exe_name, &version);
         clone.version = version;
         clone.exe_path = exe_path_str;
         let _ = self.save(&clone);
@@ -438,6 +459,7 @@ mod tests {
                 id: format!("Game_{ver}"),
                 name: format!("v{ver}"),
                 exe_name: "game.exe".into(),
+                exe_path: exe.to_string_lossy().into_owned(),
                 version: ver.into(),
                 ..Profile::default()
             };
@@ -447,6 +469,33 @@ mod tests {
         }
         let cloned = store.find_for_exe(&exe).unwrap();
         assert_eq!(cloned.name, "v100");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn same_exe_name_in_other_folder_is_other_game() {
+        // две разные игры на RPG Maker: у обеих Game.exe, у второй — того же и другого размера
+        let dir = tmp_dir("rpgm");
+        let (a, b) = (dir.join("A"), dir.join("B"));
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("Game.exe"), vec![b'x'; 100]).unwrap();
+        let store = ProfileStore::new(dir.join("profiles"));
+        let mut p = store.create("Игра A", &a.join("Game.exe"), Lang::Ja).unwrap();
+        p.set_hook("H", "n", 1, 2);
+        store.save(&p).unwrap();
+        for size in [100usize, 200] {
+            fs::write(b.join("Game.exe"), vec![b'x'; size]).unwrap();
+            assert!(store.find_for_exe(&b.join("Game.exe")).is_none(), "чужая игра размера {size}");
+        }
+        assert_eq!(store.all().len(), 1, "профиль чужой игры не должен появиться");
+        // тот же размер: новый профиль получает свой id, старый не перезаписывается
+        fs::write(b.join("Game.exe"), vec![b'x'; 100]).unwrap();
+        let q = store.create("Игра B", &b.join("Game.exe"), Lang::Ja).unwrap();
+        assert_ne!(q.id, p.id);
+        assert_eq!(store.get(&p.id).unwrap().name, "Игра A");
+        assert_eq!(store.find_for_exe(&b.join("Game.exe")).unwrap().id, q.id);
+        assert_eq!(store.find_for_exe(&a.join("GAME.EXE")).unwrap().id, p.id);
         let _ = fs::remove_dir_all(&dir);
     }
 

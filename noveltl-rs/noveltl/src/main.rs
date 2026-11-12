@@ -14,7 +14,6 @@ mod demo;
 mod diag;
 #[allow(dead_code)]
 mod hotkeys;
-#[allow(dead_code)]
 mod lunahost;
 #[allow(dead_code)]
 mod overlay;

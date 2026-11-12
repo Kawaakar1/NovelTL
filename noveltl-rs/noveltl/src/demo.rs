@@ -144,7 +144,6 @@ impl HookSource for DemoSource {
         }
     }
 
-    fn insert_hook(&mut self, _pid: u32, _code: &str) {}
 
     fn shutdown(&mut self) {
         self.attached.store(false, Ordering::SeqCst);

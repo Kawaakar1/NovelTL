@@ -14,7 +14,7 @@ use noveltl_core::cleaner::clean;
 use noveltl_core::net::{make_http, make_local_http, NET_SYSTEM};
 use noveltl_core::pipeline::{LineResult, TranslationPipeline};
 use noveltl_core::profiles::{
-    exe_version, make_profile_id, AppSettings, GlossaryEntry, OverlayFrac, Profile, ProfileStore,
+    exe_version, AppSettings, GlossaryEntry, OverlayFrac, Profile, ProfileStore,
 };
 use noveltl_core::langdetect::Lang;
 use noveltl_core::scorer::{find_name_thread, HookKey, HookRef, ThreadTracker, NAME_PAIR_WINDOW};
@@ -99,11 +99,7 @@ impl Http for DemoHttp {
         let q = query.iter().find(|(k, _)| *k == "q").map(|(_, v)| *v).unwrap_or("");
         // язык ответа — по параметру tl: русский для "ru", иначе английский
         let tl = query.iter().find(|(k, _)| *k == "tl").map(|(_, v)| *v).unwrap_or("ru");
-        let table = if tl == "ru" { &self.table_ru } else { &self.table_en };
-        let tr = match table.get(q) {
-            Some(t) => (*t).to_string(),
-            None => format!("[демо] {q}"),
-        };
+        let tr = self.lookup(q, tl == "ru");
         let body = serde_json::json!([[[tr, q, null]], null, "ja"]).to_string();
         Ok(HttpResponse { status: 200, body })
     }
@@ -561,8 +557,17 @@ impl Controller {
             }
             return;
         }
+        // профили читаем с диска один раз за проход; у одной программы бывает несколько окон
+        let profiles = self.store.all();
+        if profiles.is_empty() {
+            return;
+        }
+        let mut seen = std::collections::HashSet::new();
         for w in self.windows() {
-            if let Some(profile) = self.store.find_for_exe(Path::new(&w.exe_path)) {
+            if !seen.insert(w.exe_path.to_lowercase()) {
+                continue;
+            }
+            if let Some(profile) = self.store.find_in(&profiles, Path::new(&w.exe_path)) {
                 if profile.hook.is_some() {
                     let name = profile.name.clone();
                     self.start_session(profile, &w, true, false);
@@ -659,9 +664,9 @@ impl Controller {
             }
             HookEvent::HostInfo(kind, text) => {
                 if let Some(s) = self.session.as_mut() {
-                    if kind == 4 {
+                    if kind == crate::lunahost::HOSTINFO_ENGINE {
                         s.engine = text;
-                    } else if kind == 1 && s.warnings.len() < 50 {
+                    } else if kind == crate::lunahost::HOSTINFO_WARNING && s.warnings.len() < 50 {
                         s.warnings.push(text);
                     }
                 }
@@ -833,7 +838,7 @@ impl Controller {
                 let version = exe_version(exe);
                 let exe_name = exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                 Profile {
-                    id: make_profile_id(&exe_name, &version),
+                    id: self.store.new_id(&exe_name, &version),
                     name: if name.is_empty() { win.title.clone() } else { name.to_string() },
                     exe_name,
                     exe_path: win.exe_path.clone(),
