@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use noveltl_core::cache::TranslationCache;
 use noveltl_core::cleaner::clean;
-use noveltl_core::net::{make_http, NET_SYSTEM};
+use noveltl_core::net::{make_http, make_local_http, NET_SYSTEM};
 use noveltl_core::pipeline::{LineResult, TranslationPipeline};
 use noveltl_core::profiles::{
     exe_version, make_profile_id, AppSettings, GlossaryEntry, OverlayFrac, Profile, ProfileStore,
@@ -50,6 +50,15 @@ impl DemoHttp {
             table_en: crate::demo::demo_translations_for(Lang::En),
         }
     }
+
+    /// Демо-перевод по тексту (русский или английский), для неизвестного — заглушка.
+    fn lookup(&self, q: &str, ru: bool) -> String {
+        let table = if ru { &self.table_ru } else { &self.table_en };
+        match table.get(q) {
+            Some(t) => (*t).to_string(),
+            None => format!("[демо] {q}"),
+        }
+    }
 }
 
 impl Default for DemoHttp {
@@ -61,10 +70,28 @@ impl Default for DemoHttp {
 impl Http for DemoHttp {
     fn post_json(
         &self,
-        _url: &str,
+        url: &str,
         _headers: &[(&str, &str)],
-        _body: &serde_json::Value,
+        body: &serde_json::Value,
     ) -> Result<HttpResponse, HttpError> {
+        // Microsoft: тело [{"Text": ...}], язык цели — в параметре to=
+        if url.contains("api.cognitive.microsofttranslator.com") {
+            let q = body.get(0).and_then(|t| t.get("Text")).and_then(|t| t.as_str()).unwrap_or("");
+            let en = url.contains("to=en");
+            let out = self.lookup(q, !en);
+            let body = serde_json::json!([{ "translations": [{ "text": out, "to": if en { "en" } else { "ru" } }] }]);
+            return Ok(HttpResponse { status: 200, body: body.to_string() });
+        }
+        // локальный ИИ: чат-запрос, текст реплики — в последнем сообщении пользователя
+        if url.ends_with("/v1/chat/completions") {
+            let msgs = body.get("messages").and_then(|m| m.as_array());
+            let sys = msgs.and_then(|m| m.first()).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or("");
+            let user = msgs.and_then(|m| m.last()).and_then(|m| m.get("content")).and_then(|c| c.as_str()).unwrap_or("");
+            let q = user.rsplit_once("Translate this line:\n").map_or(user, |(_, t)| t);
+            let out = self.lookup(q, !sys.contains("into English"));
+            let body = serde_json::json!({"choices": [{"message": {"role": "assistant", "content": out}}]});
+            return Ok(HttpResponse { status: 200, body: body.to_string() });
+        }
         Ok(HttpResponse { status: 403, body: "{}".to_string() })
     }
 
@@ -89,9 +116,15 @@ pub enum WorkerCmd {
     SetDeeplKey(String),
     /// язык перевода
     SetTarget(Lang),
-    /// режим выбора переводчика: "auto" | "deepl" | "google"
+    /// режим выбора переводчика (см. `ENGINE_MODES`)
     SetMode(String),
     SetHttp(Arc<dyn Http>),
+    /// клиент для локального ИИ (без прокси)
+    SetLocalHttp(Arc<dyn Http>),
+    /// ключ и регион Microsoft Translator
+    SetMicrosoft(String, String),
+    /// адрес и модель локального ИИ
+    SetLocalAi(String, String),
     SetGlossary(Vec<GlossaryEntry>),
     Translate { seq: u64, name: String, text: String, use_cache: bool },
     Stop,
@@ -167,6 +200,24 @@ fn worker_loop(
                     idle.set_http(h.clone());
                     if let Some(p) = pipeline.as_mut() {
                         p.manager.set_http(h);
+                    }
+                }
+                WorkerCmd::SetLocalHttp(h) => {
+                    idle.set_local_http(h.clone());
+                    if let Some(p) = pipeline.as_mut() {
+                        p.manager.set_local_http(h);
+                    }
+                }
+                WorkerCmd::SetMicrosoft(k, r) => {
+                    idle.set_microsoft(&k, &r);
+                    if let Some(p) = pipeline.as_mut() {
+                        p.manager.set_microsoft(&k, &r);
+                    }
+                }
+                WorkerCmd::SetLocalAi(u, m) => {
+                    idle.set_local_ai(&u, &m);
+                    if let Some(p) = pipeline.as_mut() {
+                        p.manager.set_local_ai(&u, &m);
                     }
                 }
                 WorkerCmd::SetGlossary(g) => {
@@ -332,6 +383,8 @@ pub struct Controller {
     worker: Worker,
     cache: Option<Arc<TranslationCache>>,
     http: Arc<dyn Http>,
+    /// клиент локального ИИ (без прокси; в демо — DemoHttp)
+    local_http: Arc<dyn Http>,
     demo: bool,
     demo_hwnd: isize,
     seq: u64,
@@ -370,13 +423,18 @@ impl Controller {
                 None => Arc::new(DemoHttp::new()), // сеть собрать не удалось совсем — переводить нечем
             }
         };
-        let worker = Worker::start(
+        // локальный ИИ ходит мимо прокси; в демо — тот же DemoHttp
+        let local_http: Arc<dyn Http> = if demo { http.clone() } else { make_local_http() };
+        let mut worker = Worker::start(
             waker.clone(),
             settings.deepl_key.clone(),
             settings.target_lang,
             settings.engine_mode.clone(),
             http.clone(),
         );
+        worker.send(WorkerCmd::SetLocalHttp(local_http.clone()));
+        worker.send(WorkerCmd::SetMicrosoft(settings.ms_key.clone(), settings.ms_region.clone()));
+        worker.send(WorkerCmd::SetLocalAi(settings.local_ai_url.clone(), settings.local_ai_model.clone()));
         let (overlay, overlay_rx) = Overlay::start();
         overlay.send(Cmd::Style(style_from(&settings)));
         let (hk_tx, hotkey_rx) = channel();
@@ -400,6 +458,7 @@ impl Controller {
             worker,
             cache: None,
             http,
+            local_http,
             demo,
             demo_hwnd,
             seq: 0,
@@ -518,6 +577,9 @@ impl Controller {
         let mut manager = TranslatorManager::new(&self.settings.deepl_key, self.cache.clone(), self.http.clone());
         manager.set_target(self.settings.target_lang);
         manager.set_mode(&self.settings.engine_mode);
+        manager.set_microsoft(&self.settings.ms_key, &self.settings.ms_region);
+        manager.set_local_ai(&self.settings.local_ai_url, &self.settings.local_ai_model);
+        manager.set_local_http(self.local_http.clone());
         TranslationPipeline::new(manager, lang, glossary)
     }
 
@@ -1002,14 +1064,25 @@ impl Controller {
         self.worker.send(WorkerCmd::SetDeeplKey(self.settings.deepl_key.clone()));
         self.worker.send(WorkerCmd::SetTarget(self.settings.target_lang));
         self.worker.send(WorkerCmd::SetMode(self.settings.engine_mode.clone()));
+        self.worker.send(WorkerCmd::SetMicrosoft(self.settings.ms_key.clone(), self.settings.ms_region.clone()));
+        self.worker
+            .send(WorkerCmd::SetLocalAi(self.settings.local_ai_url.clone(), self.settings.local_ai_model.clone()));
         let msg = self.apply_network();
         if !msg.is_empty() {
             self.notice(msg);
         }
         self.apply_overlay_style();
         // цель или режим сменились — плашка сразу показывает перевод по-новому
+        let mode = self.settings.engine_mode.as_str();
+        let ms_changed =
+            mode == "microsoft" && (old.ms_key != self.settings.ms_key || old.ms_region != self.settings.ms_region);
+        let ai_changed = mode == "local_ai"
+            && (old.local_ai_url != self.settings.local_ai_url || old.local_ai_model != self.settings.local_ai_model);
         if self.session.is_some()
-            && (old.target_lang != self.settings.target_lang || old.engine_mode != self.settings.engine_mode)
+            && (old.target_lang != self.settings.target_lang
+                || old.engine_mode != self.settings.engine_mode
+                || ms_changed
+                || ai_changed)
         {
             self.retranslate();
         }
@@ -1243,6 +1316,41 @@ mod tests {
         // возвращаем русский для дальнейших шагов
         let mut st = c.settings.clone();
         st.target_lang = Lang::Ru;
+        c.save_settings(st);
+        let want_ru = demo_translations()[SCRIPT[4].text];
+        pump(&mut c, 3000, |c| {
+            c.session.as_ref().and_then(|s| s.last_result.as_ref()).is_some_and(|r| r.text == want_ru)
+        });
+
+        // 4б. локальный ИИ (модель-заглушка) в демо: перевод на английский приходит от него, а не от Google
+        let mut st = c.settings.clone();
+        st.engine_mode = "local_ai".to_string();
+        st.local_ai_model = "qwen2.5:7b".to_string();
+        st.target_lang = Lang::En;
+        c.save_settings(st);
+        let ok = pump(&mut c, 3000, |c| {
+            c.session
+                .as_ref()
+                .and_then(|s| s.last_result.as_ref())
+                .is_some_and(|r| r.text == want_en && r.engine == "local_ai")
+        });
+        assert!(ok, "нет перевода локальным ИИ: {:?}", c.session.as_ref().and_then(|s| s.last_result.clone()));
+
+        // 4в. Microsoft (ключ-заглушка): русский перевод
+        let mut st = c.settings.clone();
+        st.engine_mode = "microsoft".to_string();
+        st.ms_key = "test-key".to_string();
+        st.target_lang = Lang::Ru;
+        c.save_settings(st);
+        let ok = pump(&mut c, 3000, |c| {
+            c.session
+                .as_ref()
+                .and_then(|s| s.last_result.as_ref())
+                .is_some_and(|r| r.text == want_ru && r.engine == "microsoft")
+        });
+        assert!(ok, "нет перевода Microsoft: {:?}", c.session.as_ref().and_then(|s| s.last_result.clone()));
+        let mut st = c.settings.clone();
+        st.engine_mode = "auto".to_string();
         c.save_settings(st);
 
         // 5. перезапуск сессии с сохранённым профилем

@@ -274,6 +274,12 @@ pub struct AppSettings {
     pub custom_card: String,
     pub custom_text: String,
     pub custom_accent: String,
+    /// Ключ и регион Microsoft Translator (ключ на диске шифруется).
+    pub ms_key: String,
+    pub ms_region: String,
+    /// Локальный ИИ (Ollama / LM Studio): адрес сервера и имя модели.
+    pub local_ai_url: String,
+    pub local_ai_model: String,
 }
 
 impl Default for AppSettings {
@@ -304,6 +310,10 @@ impl Default for AppSettings {
             custom_card: "#1C1C20".into(),
             custom_text: "#F2F2F2".into(),
             custom_accent: "#FFFFFF".into(),
+            ms_key: String::new(),
+            ms_region: String::new(),
+            local_ai_url: "http://localhost:11434".into(),
+            local_ai_model: String::new(),
         }
     }
 }
@@ -331,6 +341,7 @@ impl AppSettings {
         let mut s: Self = serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_default();
         s.deepl_key = secret::unprotect(&s.deepl_key);
         s.proxy_pass = secret::unprotect(&s.proxy_pass);
+        s.ms_key = secret::unprotect(&s.ms_key);
         s
     }
 
@@ -345,8 +356,9 @@ impl AppSettings {
         let mut copy = self.clone();
         copy.deepl_key = secret::protect(&self.deepl_key);
         copy.proxy_pass = secret::protect(&self.proxy_pass);
+        copy.ms_key = secret::protect(&self.ms_key);
         let plain = |v: &str| !v.is_empty() && !secret::is_protected(v);
-        let fallback = plain(&copy.deepl_key) || plain(&copy.proxy_pass);
+        let fallback = plain(&copy.deepl_key) || plain(&copy.proxy_pass) || plain(&copy.ms_key);
         save_json(path, &copy)?;
         Ok(fallback)
     }
@@ -492,6 +504,36 @@ mod tests {
         let s2 = AppSettings::load(&path);
         assert_eq!(s2.deepl_key, "секрет-ключ:fx");
         assert_eq!(s2.proxy_pass, "пароль123");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn settings_ms_key_encrypted_on_disk() {
+        let dir = tmp_dir("ms");
+        let path = dir.join("settings.json");
+        let mut s = AppSettings::default();
+        s.ms_key = "ms-секрет-ключ".into();
+        s.ms_region = "westeurope".into();
+        s.save(&path).unwrap();
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(!raw.contains("ms-секрет-ключ"));
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(v["ms_key"].as_str().unwrap().starts_with("dpapi:"));
+        let s2 = AppSettings::load(&path);
+        assert_eq!((s2.ms_key.as_str(), s2.ms_region.as_str()), ("ms-секрет-ключ", "westeurope"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_old_file_without_new_fields() {
+        let dir = tmp_dir("old");
+        let path = dir.join("settings.json");
+        fs::write(&path, r#"{"deepl_key": "k", "font_size": 30}"#).unwrap();
+        let s = AppSettings::load(&path);
+        assert_eq!(s.deepl_key, "k");
+        assert_eq!((s.ms_key.as_str(), s.ms_region.as_str()), ("", ""));
+        assert_eq!((s.local_ai_url.as_str(), s.local_ai_model.as_str()), ("http://localhost:11434", ""));
         let _ = fs::remove_dir_all(&dir);
     }
 

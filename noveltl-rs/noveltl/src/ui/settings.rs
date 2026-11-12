@@ -186,6 +186,13 @@ pub struct SettingsWindow {
     check_slot: Arc<Mutex<Option<(bool, String)>>>,
     checking: bool,
     check_result: Option<(bool, String)>,
+    /// список моделей локального ИИ: результат фонового запроса
+    models_slot: Arc<Mutex<Option<Result<Vec<String>, String>>>>,
+    models_loading: bool,
+    models: Vec<String>,
+    models_error: String,
+    /// показать ключ Microsoft
+    ms_key_show: bool,
     messages: Vec<(String, String)>,
     close_after_message: bool,
     saved: bool,
@@ -255,6 +262,11 @@ impl SettingsWindow {
             check_slot: Arc::new(Mutex::new(None)),
             checking: false,
             check_result: None,
+            models_slot: Arc::new(Mutex::new(None)),
+            models_loading: false,
+            models: Vec::new(),
+            models_error: String::new(),
+            ms_key_show: false,
             messages: Vec::new(),
             close_after_message: false,
             saved: false,
@@ -313,9 +325,32 @@ impl SettingsWindow {
         self.d.custom_accent = accent.to_string();
     }
 
+    /// Для `--shots`: выбрать «Локальный ИИ» с адресом и моделью-заглушкой (сеть не трогаем).
+    pub fn fill_local_ai_for_shots(&mut self, url: &str, model: &str) {
+        self.d.engine_mode = "local_ai".to_string();
+        self.d.local_ai_url = url.to_string();
+        self.d.local_ai_model = model.to_string();
+        self.models = vec![model.to_string()];
+    }
+
     /// Рисует окно; false — окно нужно закрыть (после этого вызвать `close`).
     pub fn show(&mut self, ctx: &egui::Context, shared: &Shared) -> bool {
         self.frames += 1;
+        if self.models_loading {
+            let got = self.models_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            match got {
+                Some(Ok(list)) => {
+                    self.models = list;
+                    self.models_error.clear();
+                    self.models_loading = false;
+                }
+                Some(Err(e)) => {
+                    self.models_error = e;
+                    self.models_loading = false;
+                }
+                None => ctx.request_repaint_after(Duration::from_millis(100)),
+            }
+        }
         if self.checking {
             let got = self.check_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
             match got {
@@ -413,6 +448,21 @@ impl SettingsWindow {
         });
     }
 
+    /// Запрашивает список моделей локального сервера в фоне.
+    fn start_models(&mut self, ctx: &egui::Context) {
+        self.models_loading = true;
+        self.models_error.clear();
+        let url = self.d.local_ai_url.trim().to_string();
+        let slot = self.models_slot.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let http = net::make_local_http();
+            let r = noveltl_core::translators::list_local_models(http.as_ref(), &url);
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            ctx.request_repaint();
+        });
+    }
+
     fn save(&mut self, shared: &Shared) {
         let toggle = self.hk[0].trim().to_string();
         let retr = self.hk[1].trim().to_string();
@@ -429,6 +479,21 @@ impl SettingsWindow {
         if self.d.engine_mode == "deepl" && self.d.deepl_key.trim().is_empty() {
             self.warn("Для режима «Только DeepL» нужен ключ.");
             return;
+        }
+        if self.d.engine_mode == "microsoft" && self.d.ms_key.trim().is_empty() {
+            self.warn("Для Microsoft Translator нужен ключ.");
+            return;
+        }
+        if self.d.engine_mode == "local_ai" {
+            if self.d.local_ai_model.trim().is_empty() {
+                self.warn("Выберите или впишите модель локального ИИ.");
+                return;
+            }
+            let u = self.d.local_ai_url.trim();
+            if !(u.starts_with("http://") || u.starts_with("https://")) {
+                self.warn("Адрес сервера локального ИИ должен начинаться с http:// или https://.");
+                return;
+            }
         }
         let mode = self.net_mode.clone();
         let mut proxy_text = self.proxy_addr.trim().to_string();
@@ -463,6 +528,10 @@ impl SettingsWindow {
         new.proxy_pass = pass;
         new.bind_ip = self.bind_ip.clone();
         new.deepl_key = self.d.deepl_key.trim().to_string();
+        new.ms_key = self.d.ms_key.trim().to_string();
+        new.ms_region = self.d.ms_region.trim().to_string();
+        new.local_ai_url = self.d.local_ai_url.trim().trim_end_matches('/').to_string();
+        new.local_ai_model = self.d.local_ai_model.trim().to_string();
         new.hotkey_toggle = toggle;
         new.hotkey_retranslate = retr;
         new.engine_mode = self.d.engine_mode.clone();
@@ -887,29 +956,109 @@ impl SettingsWindow {
                 }
             },
         );
-        let key_on = self.d.engine_mode != "google";
-        ui.horizontal(|ui| {
-            let w = ui.available_width() - 110.0;
-            ui.add_enabled(
-                key_on,
-                egui::TextEdit::singleline(&mut self.d.deepl_key)
-                    .password(!self.key_show)
-                    .hint_text("Ключ DeepL API (необязательно)")
-                    .margin(Margin::symmetric(8, 6))
-                    .desired_width(w),
-            );
-            if button(ui, "Показать", BtnKind::Normal, key_on, None).clicked() {
-                self.key_show = !self.key_show;
+        match self.d.engine_mode.as_str() {
+            "microsoft" => {
+                ui.horizontal(|ui| {
+                    let w = ui.available_width() - 110.0;
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.d.ms_key)
+                            .password(!self.ms_key_show)
+                            .hint_text("Ключ Microsoft")
+                            .margin(Margin::symmetric(8, 6))
+                            .desired_width(w),
+                    );
+                    if button(ui, "Показать", BtnKind::Normal, true, None).clicked() {
+                        self.ms_key_show = !self.ms_key_show;
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.d.ms_region)
+                        .hint_text("Регион, например, westeurope; если ресурс глобальный — оставьте пустым")
+                        .margin(Margin::symmetric(8, 6))
+                        .desired_width(ui.available_width().min(420.0)),
+                );
+                wrap(
+                    ui,
+                    theme::small(format!(
+                        "Бесплатный тариф F0 — 2 млн символов в месяц. Ключ: портал Azure → создать ресурс \
+                         «Translator» → «Ключи и конечная точка». Сейчас: {}.",
+                        self.status
+                    )),
+                );
             }
-        });
-        wrap(
-            ui,
-            theme::small(format!(
-                "С ключом переводит DeepL (ключ на «:fx» — бесплатный тариф). Без ключа или при ошибке \
-                 DeepL перевод идёт через Google. Сейчас: {}.",
-                self.status
-            )),
-        );
+            "local_ai" => {
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.d.local_ai_url)
+                        .hint_text("Адрес сервера: Ollama — http://localhost:11434, LM Studio — http://localhost:1234")
+                        .margin(Margin::symmetric(8, 6))
+                        .desired_width(ui.available_width().min(420.0)),
+                );
+                ui.horizontal(|ui| {
+                    let cur = if self.d.local_ai_model.is_empty() {
+                        "Выберите модель".to_string()
+                    } else {
+                        self.d.local_ai_model.clone()
+                    };
+                    egui::ComboBox::from_id_salt("set_local_model")
+                        .width(220.0)
+                        .selected_text(theme::body(cur))
+                        .show_ui(ui, |ui| {
+                            for m in &self.models {
+                                ui.selectable_value(&mut self.d.local_ai_model, m.clone(), m);
+                            }
+                        });
+                    if button(ui, "Обновить список", BtnKind::Normal, !self.models_loading, None).clicked() {
+                        self.start_models(ui.ctx());
+                    }
+                    if self.models_loading {
+                        ui.label(theme::body("Загрузка…"));
+                    }
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.d.local_ai_model)
+                        .hint_text("или впишите имя модели вручную")
+                        .margin(Margin::symmetric(8, 6))
+                        .desired_width(ui.available_width().min(420.0)),
+                );
+                if !self.models_error.is_empty() {
+                    wrap(ui, theme::small(self.models_error.clone()).color(pal().bad));
+                }
+                wrap(
+                    ui,
+                    theme::small(format!(
+                        "Бесплатно и без интернета. Установите Ollama (ollama.com) и скачайте модель командой \
+                         `ollama pull <модель>`; для перевода нужна видеокарта примерно от 6–8 ГБ. Первая реплика \
+                         может переводиться дольше — модель загружается в память. Сейчас: {}.",
+                        self.status
+                    )),
+                );
+            }
+            _ => {
+                let key_on = self.d.engine_mode != "google";
+                ui.horizontal(|ui| {
+                    let w = ui.available_width() - 110.0;
+                    ui.add_enabled(
+                        key_on,
+                        egui::TextEdit::singleline(&mut self.d.deepl_key)
+                            .password(!self.key_show)
+                            .hint_text("Ключ DeepL API (необязательно)")
+                            .margin(Margin::symmetric(8, 6))
+                            .desired_width(w),
+                    );
+                    if button(ui, "Показать", BtnKind::Normal, key_on, None).clicked() {
+                        self.key_show = !self.key_show;
+                    }
+                });
+                wrap(
+                    ui,
+                    theme::small(format!(
+                        "С ключом переводит DeepL (ключ на «:fx» — бесплатный тариф). Без ключа или при ошибке \
+                         DeepL перевод идёт через Google. Сейчас: {}.",
+                        self.status
+                    )),
+                );
+            }
+        }
         hline(ui);
 
         // --- языки ---

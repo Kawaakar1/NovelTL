@@ -68,6 +68,14 @@ fn hw(h: isize) -> HWND {
     HWND(h as _)
 }
 
+/// Только для проверок разработчиком: область экрана «x,y,ширина,высота» из переменной
+/// NOVELTL_TEST_AREA (например, второй монитор), где открывать окна программы.
+pub fn test_area() -> Option<[f32; 4]> {
+    let v = std::env::var("NOVELTL_TEST_AREA").ok()?;
+    let n: Vec<f32> = v.split(',').filter_map(|p| p.trim().parse().ok()).collect();
+    (n.len() == 4 && n[2] > 0.0 && n[3] > 0.0).then(|| [n[0], n[1], n[2], n[3]])
+}
+
 pub fn window_pid(hwnd: isize) -> u32 {
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(hw(hwnd), Some(&mut pid)) };

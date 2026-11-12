@@ -2,6 +2,7 @@
 
 use std::error::Error as StdError;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -236,6 +237,20 @@ impl Http for ReqwestHttp {
         self.finish(req.send())
     }
 
+    fn post_json_timeout(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        body: &Value,
+        timeout_secs: u64,
+    ) -> Result<HttpResponse, HttpError> {
+        let mut req = self.client.post(url).json(body).timeout(Duration::from_secs(timeout_secs));
+        for (k, v) in headers {
+            req = req.header(*k, *v);
+        }
+        self.finish(req.send())
+    }
+
     fn get(&self, url: &str, query: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
         self.finish(self.client.get(url).query(query).send())
     }
@@ -270,6 +285,16 @@ pub fn make_http(
     }
     let client = b.build().map_err(|e| format!("Не удалось настроить соединение: {e}"))?;
     Ok(ReqwestHttp { client, uses_proxy })
+}
+
+/// Клиент для локального ИИ (Ollama / LM Studio): без прокси, без привязки к интерфейсу, таймаут 120 с.
+pub fn make_local_http() -> Arc<dyn Http> {
+    let client = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .expect("не удалось создать HTTP-клиент");
+    Arc::new(ReqwestHttp { client, uses_proxy: false })
 }
 
 pub fn check_google(http: &dyn Http) -> (bool, String) {
@@ -504,6 +529,59 @@ mod tests {
         let http = make_http(NET_PROXY, &url, "", "юзер", "пароль@1").unwrap();
         assert_eq!(check_google(&http), (false, AUTH_ERROR.to_string()));
         assert_eq!(got.lock().unwrap().last().unwrap(), "юзер:пароль@1");
+    }
+
+    #[test]
+    fn local_ai_over_real_http() {
+        use crate::langdetect::Lang;
+        use crate::translators::LocalAiTranslator;
+        let got: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(vec![]));
+        let g2 = got.clone();
+        let port = serve(move |c| {
+            // читаем заголовки, затем тело по Content-Length
+            let mut data = Vec::new();
+            let mut buf = [0u8; 4096];
+            let mut need: Option<usize> = None;
+            loop {
+                if let Some(pos) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                    let head = String::from_utf8_lossy(&data[..pos]).to_lowercase();
+                    let len = *need.get_or_insert_with(|| {
+                        head.lines()
+                            .find_map(|l| l.strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0)))
+                            .unwrap_or(0)
+                    });
+                    if data.len() >= pos + 4 + len {
+                        break;
+                    }
+                }
+                match c.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => data.extend_from_slice(&buf[..n]),
+                }
+            }
+            g2.lock().unwrap().push(String::from_utf8_lossy(&data).into_owned());
+            let body = r#"{"choices":[{"message":{"role":"assistant","content":"«Привет, мир»"}}]}"#;
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = c.write_all(reply.as_bytes());
+        });
+        let tr = LocalAiTranslator::new(&format!("http://127.0.0.1:{port}/"), "test-model", make_local_http());
+        let out = tr.translate("こんにちは", Some(Lang::Ja), Lang::Ru, "前の文").unwrap();
+        assert_eq!(out, "Привет, мир");
+        let req = got.lock().unwrap().last().unwrap().clone();
+        assert!(req.starts_with("POST /v1/chat/completions HTTP/1.1"), "{req}");
+        assert!(req.contains("\"model\":\"test-model\"") && req.contains("前の文"));
+    }
+
+    #[test]
+    fn local_ai_server_down_message() {
+        use crate::langdetect::Lang;
+        use crate::translators::LocalAiTranslator;
+        let url = "http://127.0.0.1:9";
+        let e = LocalAiTranslator::new(url, "m", make_local_http()).translate("a", None, Lang::Ru, "").unwrap_err();
+        assert_eq!(e.to_string(), format!("Локальный ИИ не отвечает по адресу {url}. Запустите Ollama или LM Studio."));
     }
 
     #[test]

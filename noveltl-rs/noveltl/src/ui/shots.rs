@@ -188,6 +188,7 @@ enum Stage {
     SettingsSection(usize),
     /// снимок «Персонализации» со своей темой
     SettingsCustom,
+    SettingsLocalAi,
     SettingsClose,
     GlossaryOpen,
     GlossaryWait,
@@ -505,7 +506,8 @@ impl Shots {
                     self.fronted = true;
                 }
                 if waited > Duration::from_millis(700) {
-                    let next = if i + 1 < NAMES.len() { Stage::SettingsSection(i + 1) } else { Stage::SettingsCustom };
+                    // локальный ИИ снимаем до «своей» темы, чтобы он был в обычной теме
+                    let next = if i + 1 < NAMES.len() { Stage::SettingsSection(i + 1) } else { Stage::SettingsLocalAi };
                     if let Some(w) = settings.as_ref() {
                         self.shot_window(w.window_title(), NAMES[i], next);
                     } else {
@@ -526,6 +528,22 @@ impl Shots {
                 if waited > Duration::from_millis(1200) {
                     if let Some(w) = settings.as_ref() {
                         self.shot_window(w.window_title(), "16_settings_theme_custom.png", Stage::SettingsClose);
+                    } else {
+                        self.go(Stage::SettingsClose);
+                    }
+                }
+            }
+            Stage::SettingsLocalAi => {
+                if !self.fronted {
+                    if let Some(w) = settings.as_mut() {
+                        w.select_section_for_shots(1);
+                        w.fill_local_ai_for_shots("http://localhost:11434", "qwen2.5:7b");
+                    }
+                    self.fronted = true;
+                }
+                if waited > Duration::from_millis(1200) {
+                    if let Some(w) = settings.as_ref() {
+                        self.shot_window(w.window_title(), "17_settings_local_ai.png", Stage::SettingsCustom);
                     } else {
                         self.go(Stage::SettingsClose);
                     }

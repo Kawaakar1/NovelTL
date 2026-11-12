@@ -326,21 +326,25 @@ impl eframe::App for App {
                 Some(w) => ctx.send_viewport_cmd_to(w.viewport_id(), egui::ViewportCommand::Focus),
                 None => {
                     // в режиме снимков окно мастера ставим справа, чтобы оно не закрывало «игру»
-                    let pos = self.shots.as_ref().map(|_| {
-                        let w = ctx.input(|i| i.viewport().monitor_size).map_or(1920.0, |s| s.x);
-                        [(w - 590.0).max(0.0), 20.0]
-                    });
+                    let pos = match crate::winutil::test_area() {
+                        Some([x, y, w, _]) => Some([x + w - 600.0, y + 20.0]),
+                        None => self.shots.as_ref().map(|_| {
+                            let w = ctx.input(|i| i.viewport().monitor_size).map_or(1920.0, |s| s.x);
+                            [(w - 590.0).max(0.0), 20.0]
+                        }),
+                    };
                     self.wizard = Some(wizard::Wizard::new(mode, &self.shared, pos));
                 }
             }
         }
 
         // в режиме снимков окна настроек и глоссария ставим справа, чтобы они не закрывали «игру»
-        let side_pos = |w: f32| {
-            self.shots.as_ref().map(|_| {
+        let side_pos = |w: f32| match crate::winutil::test_area() {
+            Some([x, y, aw, _]) => Some([x + aw - w, y + 10.0]),
+            None => self.shots.as_ref().map(|_| {
                 let sw = ctx.input(|i| i.viewport().monitor_size).map_or(1920.0, |s| s.x);
                 [(sw - w).max(0.0), 10.0]
-            })
+            }),
         };
         if std::mem::take(&mut self.windows.settings) {
             match &self.settings {

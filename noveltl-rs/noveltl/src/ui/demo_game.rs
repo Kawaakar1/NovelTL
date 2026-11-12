@@ -54,7 +54,10 @@ impl DemoGame {
             .with_inner_size([GAME_W, GAME_H])
             .with_resizable(false)
             .with_maximize_button(false)
-            .with_position([80.0, 60.0]);
+            .with_position(match crate::winutil::test_area() {
+                Some([x, y, _, _]) => [x + 40.0, y + 40.0],
+                None => [80.0, 60.0],
+            });
         ctx.show_viewport_immediate(ViewportId::from_hash_of("noveltl_demo_game"), builder, |ctx, _class| {
             let mut clicked = false;
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {

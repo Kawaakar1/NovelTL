@@ -215,14 +215,16 @@ fn main() {
 
     let icon = theme::icon_data(64);
     let title = if demo { format!("{} — демо-режим", ui::APP_NAME) } else { ui::APP_NAME.to_string() };
-    let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(title)
-            .with_inner_size([900.0, 600.0])
-            .with_min_inner_size([780.0, 520.0])
-            .with_icon(Arc::new(icon)),
-        ..Default::default()
-    };
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title(title)
+        .with_inner_size([900.0, 600.0])
+        .with_min_inner_size([780.0, 520.0])
+        .with_icon(Arc::new(icon));
+    // проверки разработчиком: окно в заданной области (например, на втором мониторе)
+    if let Some([x, y, _, _]) = winutil::test_area() {
+        viewport = viewport.with_position([x + 20.0, y + 20.0]);
+    }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     let cfg = Config { demo, shots: args.shots.clone() };
     let theme_arg = args.theme.clone();
     let result = eframe::run_native(
