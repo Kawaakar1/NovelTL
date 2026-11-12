@@ -11,6 +11,7 @@
 mod controller;
 #[allow(dead_code)]
 mod demo;
+mod diag;
 #[allow(dead_code)]
 mod hotkeys;
 #[allow(dead_code)]

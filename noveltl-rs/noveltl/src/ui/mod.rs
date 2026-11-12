@@ -11,7 +11,7 @@ pub mod wizard;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -29,8 +29,10 @@ pub const APP_NAME: &str = "NovelTL";
 const TRAY_HINT: &str = "NovelTL продолжает работать в трее. Выход — через меню значка.";
 
 /// Замок контроллера: короткое обращение; отравленный замок (паника в другом потоке) не мешает.
-pub fn lock_ctl(c: &Arc<Mutex<Controller>>) -> MutexGuard<'_, Controller> {
-    c.lock().unwrap_or_else(|e| e.into_inner())
+/// Место вызова запоминается — оно попадёт в отчёт, если программа зависнет.
+#[track_caller]
+pub fn lock_ctl(c: &Arc<Mutex<Controller>>) -> crate::diag::Tracked<'_, Controller> {
+    crate::diag::lock(c)
 }
 
 /// Просьбы к интерфейсу из других потоков (например, из меню трея).
@@ -192,11 +194,22 @@ impl App {
         if !start_error.is_empty() {
             main.add_message(APP_NAME, &format!("{start_error}\n\nПроверьте, что папка files лежит рядом с программой."));
         }
+        // сторож зависаний: отчёт в data\reports, если окно перестанет отвечать
+        let sh = shared.clone();
+        crate::diag::start_watchdog(
+            move || sh.main_hwnd.load(Ordering::SeqCst),
+            crate::paths::data_dir().join("reports"),
+        );
         let game = demo_source.map(demo_game::DemoGame::new);
         let shots = cfg.shots.map(shots::Shots::new);
         App {
             shared,
-            windows: Windows::default(),
+            // только для проверок разработчиком: NOVELTL_TEST_OPEN=settings|wizard открывает окно сразу
+            windows: Windows {
+                settings: std::env::var("NOVELTL_TEST_OPEN").is_ok_and(|v| v == "settings"),
+                wizard: std::env::var("NOVELTL_TEST_OPEN").is_ok_and(|v| v == "wizard").then_some(WizardMode::New),
+                ..Windows::default()
+            },
             main,
             game,
             shots,
@@ -292,6 +305,7 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        crate::diag::ui_phase("начало кадра: поиск окон, шрифты, тема");
         self.find_windows();
 
         // восточные шрифты — только когда на экране может появиться текст этого письма
@@ -381,12 +395,15 @@ impl eframe::App for App {
         }
 
         let avatar_tex = self.avatar_tex.as_ref().and_then(|(_, t)| t.as_ref());
+        crate::diag::ui_phase("главное окно");
         self.main.show(ctx, &self.shared, &mut self.windows, avatar_tex);
 
         if let Some(game) = self.game.as_mut() {
+            crate::diag::ui_phase("демо-игра");
             game.show(ctx);
         }
         if let Some(w) = self.wizard.as_mut() {
+            crate::diag::ui_phase("мастер");
             let keep = w.show(ctx, &self.shared);
             if !keep {
                 w.close(&self.shared);
@@ -395,6 +412,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
         if let Some(w) = self.settings.as_mut() {
+            crate::diag::ui_phase("окно настроек");
             let keep = w.show(ctx, &self.shared);
             if !keep {
                 w.close(&self.shared);
@@ -403,6 +421,7 @@ impl eframe::App for App {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
         if let Some(w) = self.glossary.as_mut() {
+            crate::diag::ui_phase("глоссарий");
             let keep = w.show(ctx, &self.shared);
             if !keep {
                 self.glossary = None;
