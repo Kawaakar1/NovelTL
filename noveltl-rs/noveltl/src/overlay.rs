@@ -4,6 +4,7 @@
 //! через Direct2D (системный подбор шрифтов, японский, контур). Своё окно и свой поток: плашка
 //! не забирает фокус, клики проходят сквозь неё в игру. В режиме настройки и при открытом замочке
 //! (значок в углу плашки) её можно двигать и растягивать мышью средствами самой Windows (WM_NCHITTEST).
+//! Рядом с замочком — кнопка меню: те же пункты, что у значка в трее.
 
 use std::cell::RefCell;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -13,14 +14,16 @@ use std::sync::Arc;
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{BOOL, COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F,
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN,
+    D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_F,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1RenderTarget, ID2D1StrokeStyle,
     D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_DASH, D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_ELLIPSE,
     D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_LINE_JOIN_ROUND,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
-    D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES,
+    D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
+    D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_DASH_STYLE_SOLID,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextLayout, DWRITE_FACTORY_TYPE_SHARED,
@@ -100,6 +103,8 @@ pub enum Event {
     Moved(Frac),
     /// Не удалось создать плашку (сбой инициализации).
     Failed(String),
+    /// Выбран пункт меню плашки (id пункта меню трея).
+    Menu(&'static str),
 }
 
 /// Управление плашкой из любого потока.
@@ -144,9 +149,22 @@ const MIN_W: i32 = 220;
 const MIN_H: i32 = 70;
 const PAD: f32 = 18.0;
 const MIN_FONT: f32 = 11.0;
-/// замочек в правом верхнем углу: размер и отступ от краёв
+/// кнопки в правом верхнем углу (замочек, меню): размер, отступ от краёв и между кнопками
 const LOCK: i32 = 22;
 const LOCK_INSET: i32 = 12;
+const BTN_GAP: i32 = 10;
+const BTN_LOCK: usize = 0;
+const BTN_MENU: usize = 1;
+const BUTTONS: usize = 2;
+/// пункты меню плашки: (команда, id пункта меню трея, подпись); 0 — разделитель
+const MENU: [(u32, &str, &str); 6] = [
+    (1, crate::tray::ID_OPEN, "Открыть NovelTL"),
+    (0, "", ""),
+    (2, crate::tray::ID_TOGGLE, "Скрыть плашку"),
+    (3, crate::tray::ID_RETR, "Перевести заново без кэша"),
+    (4, crate::tray::ID_SETTINGS, "Настройки"),
+    (5, crate::tray::ID_QUIT, "Выход"),
+];
 const SAMPLE_NAME: &str = "Акари";
 const SAMPLE_TEXT: &str =
     "«Так будет выглядеть перевод. Перетащите плашку на окно диалога игры и растяните по размеру».";
@@ -159,6 +177,8 @@ struct State {
     dw: IDWriteFactory,
     rt: ID2D1DCRenderTarget,
     dashes: ID2D1StrokeStyle,
+    /// сплошная линия с круглыми концами (дужка замка, полоски меню)
+    round: ID2D1StrokeStyle,
     target: isize,
     frac: Frac,
     style: Style,
@@ -168,9 +188,9 @@ struct State {
     edit: bool,
     /// замочек открыт: плашку можно двигать во время игры
     unlocked: bool,
-    /// курсор над плашкой / над замочком
+    /// курсор над плашкой / над кнопкой (замочек или меню)
     hover: bool,
-    hover_lock: bool,
+    hover_btn: Option<usize>,
     user_hidden: bool,
     force_active: bool,
     visible: bool,
@@ -258,6 +278,21 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
             Ok(d) => d,
             Err(e) => bail!(format!("CreateStrokeStyle: {e}")),
         };
+        let round = match d2d.CreateStrokeStyle(
+            &D2D1_STROKE_STYLE_PROPERTIES {
+                startCap: D2D1_CAP_STYLE_ROUND,
+                endCap: D2D1_CAP_STYLE_ROUND,
+                dashCap: D2D1_CAP_STYLE_ROUND,
+                lineJoin: D2D1_LINE_JOIN_ROUND,
+                miterLimit: 10.0,
+                dashStyle: D2D1_DASH_STYLE_SOLID,
+                dashOffset: 0.0,
+            },
+            None,
+        ) {
+            Ok(d) => d,
+            Err(e) => bail!(format!("CreateStrokeStyle: {e}")),
+        };
 
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
@@ -268,6 +303,7 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 dw,
                 rt,
                 dashes,
+                round,
                 target: 0,
                 frac: Frac::default(),
                 style: Style::default(),
@@ -277,7 +313,7 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 edit: false,
                 unlocked: false,
                 hover: false,
-                hover_lock: false,
+                hover_btn: None,
                 user_hidden: false,
                 force_active: false,
                 visible: false,
@@ -325,7 +361,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut r = RECT::default();
             let _ = GetWindowRect(hwnd, &mut r);
             let (movable, lock_shown) = with_state(|st| (st.movable(), st.lock_shown())).unwrap_or((false, false));
-            if lock_shown && in_lock(&r, x, y) {
+            if lock_shown && button_at(r.right - r.left, x - r.left, y - r.top).is_some() {
                 return LRESULT(HTCLIENT as isize);
             }
             if !movable {
@@ -347,12 +383,31 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
-            // над замочком — «рука»
+            // над кнопками — «рука»
             SetCursor(LoadCursorW(None, IDC_HAND).unwrap_or_default());
             LRESULT(1)
         }
         WM_LBUTTONDOWN => {
-            with_state(|st| st.toggle_lock());
+            let (x, y) = ((lp.0 & 0xFFFF) as i16 as i32, ((lp.0 >> 16) & 0xFFFF) as i16 as i32);
+            let mut r = RECT::default();
+            let _ = GetClientRect(hwnd, &mut r);
+            let shown = with_state(|st| st.lock_shown()).unwrap_or(false);
+            match button_at(r.right, x, y).filter(|_| shown) {
+                Some(BTN_LOCK) => {
+                    with_state(|st| st.toggle_lock());
+                }
+                Some(BTN_MENU) => {
+                    // меню показываем вне заимствования состояния: у него свой цикл сообщений
+                    if let Some((target, events)) = with_state(|st| (st.target, st.events.clone())) {
+                        let mut p = POINT { x: r.right - LOCK_INSET - LOCK, y: LOCK_INSET + LOCK + 4 };
+                        let _ = ClientToScreen(hwnd, &mut p);
+                        if let Some(id) = show_menu(hwnd, target, p) {
+                            let _ = events.send(Event::Menu(id));
+                        }
+                    }
+                }
+                _ => {}
+            }
             LRESULT(0)
         }
         WM_ENTERSIZEMOVE => {
@@ -465,9 +520,9 @@ impl State {
         self.render(false);
     }
 
-    /// Клики проходят сквозь плашку, кроме режима перемещения и наведения на замочек.
+    /// Клики проходят сквозь плашку, кроме режима перемещения и наведения на кнопки.
     fn update_click_through(&self) {
-        self.set_click_through(!(self.movable() || (self.lock_shown() && self.hover_lock)));
+        self.set_click_through(!(self.movable() || (self.lock_shown() && self.hover_btn.is_some())));
     }
 
     /// Следит за курсором: подсветка замочка и кликабельность только над ним.
@@ -479,10 +534,10 @@ impl State {
             let _ = GetWindowRect(self.hwnd, &mut r);
         }
         let hover = self.visible && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
-        let hover_lock = hover && in_lock(&r, p.x, p.y);
-        if (hover, hover_lock) != (self.hover, self.hover_lock) {
+        let hover_btn = if hover { button_at(r.right - r.left, p.x - r.left, p.y - r.top) } else { None };
+        if (hover, hover_btn) != (self.hover, self.hover_btn) {
             self.hover = hover;
-            self.hover_lock = hover_lock;
+            self.hover_btn = hover_btn;
             self.update_click_through();
         }
     }
@@ -598,7 +653,7 @@ impl State {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&self.name, &self.text, &self.note, self.edit, &self.style.font_family).hash(&mut h);
-        (self.unlocked, self.hover, self.hover_lock).hash(&mut h);
+        (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
         (self.style.font_size as u32, self.style.text_color, self.style.name_color).hash(&mut h);
         (self.style.outline_color, self.style.bg_color, self.style.bg_opacity).hash(&mut h);
         h.finish()
@@ -679,8 +734,8 @@ impl State {
             } else {
                 (self.name.as_str(), self.text.as_str())
             };
-            // справа место под замочек, чтобы он не закрывал конец первой строки
-            let right_pad = if self.lock_shown() { (LOCK_INSET + LOCK + 6) as f32 } else { PAD };
+            // справа место под кнопки, чтобы они не закрывали конец первой строки
+            let right_pad = if self.lock_shown() { (LOCK_INSET + BUTTONS as i32 * (LOCK + BTN_GAP)) as f32 } else { PAD };
             let inner_w = (w as f32 - PAD - right_pad).max(10.0);
             let inner_h = (h as f32 - 1.2 * PAD).max(10.0);
             let (left, top) = (PAD, 0.6 * PAD);
@@ -718,7 +773,7 @@ impl State {
                 self.outlined(rt, &l, x, y, 0xC9CBE0, small)?;
             }
             if self.lock_shown() {
-                self.draw_lock(rt, w)?;
+                self.draw_buttons(rt, w)?;
             }
             if self.movable() {
                 // рамка режима перемещения — белая, в тон чёрно-белому интерфейсу
@@ -734,28 +789,58 @@ impl State {
         }
     }
 
-    /// Замочек: закрытый — плашка закреплена, открытый — её можно двигать и растягивать.
-    fn draw_lock(&self, rt: &ID2D1RenderTarget, w: i32) -> windows::core::Result<()> {
-        // заметен, когда мышь над плашкой или замок открыт; иначе почти не мешает тексту
-        let alpha = if self.hover_lock { 1.0 } else if self.hover || self.unlocked { 0.85 } else { 0.3 };
-        let r = lock_rect(w);
-        let (l, t, s) = (r.left as f32, r.top as f32, LOCK as f32);
+    /// Кнопки в углу: замочек (закрытый — плашка закреплена, открытый — её можно двигать
+    /// и растягивать) и меню.
+    fn draw_buttons(&self, rt: &ID2D1RenderTarget, w: i32) -> windows::core::Result<()> {
         unsafe {
-            if self.hover_lock {
-                let back = rt.CreateSolidColorBrush(&color(0x000000, 0.45), None)?;
-                let rect = D2D_RECT_F { left: l - 4.0, top: t - 4.0, right: l + s + 4.0, bottom: t + s + 4.0 };
-                rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 }, &back);
+            for i in 0..BUTTONS {
+                let hot = self.hover_btn == Some(i);
+                // заметны, когда мышь над плашкой или замок открыт; иначе почти не мешают тексту
+                let alpha = if hot { 1.0 } else if self.hover || self.unlocked { 0.85 } else { 0.3 };
+                let r = button_rect(w, i);
+                let (l, t, s) = (r.left as f32, r.top as f32, LOCK as f32);
+                if hot {
+                    let back = rt.CreateSolidColorBrush(&color(0x000000, 0.45), None)?;
+                    let rect = D2D_RECT_F { left: l - 4.0, top: t - 4.0, right: l + s + 4.0, bottom: t + s + 4.0 };
+                    rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 }, &back);
+                }
+                let white = rt.CreateSolidColorBrush(&color(0xFFFFFF, alpha), None)?;
+                if i == BTN_MENU {
+                    // три полоски
+                    for k in 0..3 {
+                        let y = t + 6.0 + k as f32 * 5.0;
+                        rt.DrawLine(D2D_POINT_2F { x: l + 4.0, y }, D2D_POINT_2F { x: l + s - 4.0, y }, &white, 2.4, &self.round);
+                    }
+                    continue;
+                }
+                // дужка — перевёрнутая «U»; у открытого замка приподнята, правая нога висит над корпусом
+                let (lx, rx, rad) = (l + 6.5, l + s - 6.5, (s - 13.0) / 2.0);
+                let lift = if self.unlocked { 4.0 } else { 0.0 };
+                let top_y = t + 2.5 + rad - lift; // центр дуги по вертикали
+                let body_top = t + 10.0;
+                let right_end = if self.unlocked { body_top - 3.5 } else { body_top + 1.0 };
+                let geo = self.d2d.CreatePathGeometry()?;
+                let sink = geo.Open()?;
+                sink.BeginFigure(D2D_POINT_2F { x: lx, y: body_top + 1.0 }, D2D1_FIGURE_BEGIN_HOLLOW);
+                sink.AddLine(D2D_POINT_2F { x: lx, y: top_y });
+                sink.AddArc(&D2D1_ARC_SEGMENT {
+                    point: D2D_POINT_2F { x: rx, y: top_y },
+                    size: D2D_SIZE_F { width: rad, height: rad },
+                    rotationAngle: 0.0,
+                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                    arcSize: D2D1_ARC_SIZE_SMALL,
+                });
+                sink.AddLine(D2D_POINT_2F { x: rx, y: right_end });
+                sink.EndFigure(D2D1_FIGURE_END_OPEN);
+                sink.Close()?;
+                rt.DrawGeometry(&geo, &white, 2.6, &self.round);
+                // корпус с замочной скважиной
+                let body = D2D_RECT_F { left: l + 2.5, top: body_top, right: l + s - 2.5, bottom: t + s };
+                rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: body, radiusX: 3.0, radiusY: 3.0 }, &white);
+                let dark = rt.CreateSolidColorBrush(&color(0x000000, alpha), None)?;
+                let hole = D2D_POINT_2F { x: l + s / 2.0, y: body_top + (t + s - body_top) / 2.0 };
+                rt.FillEllipse(&D2D1_ELLIPSE { point: hole, radiusX: 2.0, radiusY: 2.0 }, &dark);
             }
-            let white = rt.CreateSolidColorBrush(&color(0xFFFFFF, alpha), None)?;
-            let dark = rt.CreateSolidColorBrush(&color(0x000000, alpha), None)?;
-            // дужка: у открытого замка поднята и сдвинута влево, правая нога висит в воздухе
-            let (dx, dy) = if self.unlocked { (-5.0, -4.0) } else { (0.0, 0.0) };
-            let arc = D2D_RECT_F { left: l + 5.0 + dx, top: t + 1.0 + dy, right: l + s - 5.0 + dx, bottom: t + 15.0 + dy };
-            rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: arc, radiusX: 6.0, radiusY: 6.0 }, &white, 2.6, None);
-            let body = D2D_RECT_F { left: l + 2.0, top: t + 9.0, right: l + s - 2.0, bottom: t + s };
-            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: body, radiusX: 3.0, radiusY: 3.0 }, &white);
-            let hole = D2D_POINT_2F { x: l + s / 2.0, y: t + 15.5 };
-            rt.FillEllipse(&D2D1_ELLIPSE { point: hole, radiusX: 2.2, radiusY: 2.2 }, &dark);
         }
         Ok(())
     }
@@ -796,16 +881,43 @@ impl State {
     }
 }
 
-/// Где замочек внутри плашки шириной `w` (координаты плашки).
-fn lock_rect(w: i32) -> RECT {
-    RECT { left: w - LOCK_INSET - LOCK, top: LOCK_INSET, right: w - LOCK_INSET, bottom: LOCK_INSET + LOCK }
+/// Где кнопка `i` (0 — замочек, 1 — меню) внутри плашки шириной `w` (координаты плашки).
+fn button_rect(w: i32, i: usize) -> RECT {
+    let right = w - LOCK_INSET - i as i32 * (LOCK + BTN_GAP);
+    RECT { left: right - LOCK, top: LOCK_INSET, right, bottom: LOCK_INSET + LOCK }
 }
 
-/// Точка экрана (x, y) — над замочком плашки с прямоугольником `r`? С запасом в 4 px, чтобы легко попасть.
-fn in_lock(r: &RECT, x: i32, y: i32) -> bool {
-    let l = lock_rect(r.right - r.left);
-    let (x, y) = (x - r.left, y - r.top);
-    x >= l.left - 4 && x < l.right + 4 && y >= l.top - 4 && y < l.bottom + 4
+/// Какая кнопка в точке (x, y) плашки шириной `w`; с запасом в 4 px, чтобы легко попасть.
+fn button_at(w: i32, x: i32, y: i32) -> Option<usize> {
+    (0..BUTTONS).find(|&i| {
+        let b = button_rect(w, i);
+        x >= b.left - 4 && x < b.right + 4 && y >= b.top - 4 && y < b.bottom + 4
+    })
+}
+
+/// Меню плашки у точки `p` (экран). Возвращает id выбранного пункта меню трея.
+fn show_menu(hwnd: HWND, game: isize, p: POINT) -> Option<&'static str> {
+    unsafe {
+        let menu = CreatePopupMenu().ok()?;
+        for (cmd, _, text) in MENU {
+            if cmd == 0 {
+                let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
+            } else {
+                let _ = AppendMenuW(menu, MF_STRING, cmd as usize, &HSTRING::from(text));
+            }
+        }
+        // без этого меню не закрывается кликом мимо него (особенность TrackPopupMenu)
+        let _ = SetForegroundWindow(hwnd);
+        let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTALIGN | TPM_TOPALIGN | TPM_NONOTIFY, p.x, p.y, 0, hwnd, None);
+        let _ = PostMessageW(hwnd, WM_NULL, WPARAM(0), LPARAM(0));
+        let _ = DestroyMenu(menu);
+        let id = MENU.iter().find(|(c, _, _)| *c != 0 && *c as i32 == cmd.0).map(|(_, id, _)| *id);
+        // фокус — обратно игре, если пользователь не идёт в окно NovelTL
+        if !matches!(id, Some(crate::tray::ID_OPEN | crate::tray::ID_SETTINGS)) && game != 0 {
+            let _ = SetForegroundWindow(hwnd_of(game));
+        }
+        id
+    }
 }
 
 fn metrics(l: &IDWriteTextLayout) -> windows::core::Result<DWRITE_TEXT_METRICS> {

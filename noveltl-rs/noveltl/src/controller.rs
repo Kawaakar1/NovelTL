@@ -409,6 +409,8 @@ pub struct Controller {
     window_lost_since: Option<Instant>,
     /// файлы кэша, которые не удалось удалить сразу
     stale_caches: Vec<PathBuf>,
+    /// пункты меню, выбранные на плашке; их выполняет поток движка (`tray::handle_menu`)
+    menu_requests: Vec<&'static str>,
 }
 
 impl Controller {
@@ -480,6 +482,7 @@ impl Controller {
             closed: false,
             window_lost_since: None,
             stale_caches: Vec::new(),
+            menu_requests: Vec::new(),
         };
         c.register_hotkeys();
         c
@@ -502,6 +505,7 @@ impl Controller {
             match ev {
                 overlay::Event::Moved(f) => self.on_overlay_moved(f),
                 overlay::Event::Failed(msg) => self.notice(format!("Не удалось создать плашку перевода: {msg}")),
+                overlay::Event::Menu(id) => self.menu_requests.push(id),
             }
         }
         while let Ok(ev) = self.hotkey_rx.try_recv() {
@@ -525,6 +529,10 @@ impl Controller {
 
     pub fn take_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notices)
+    }
+
+    pub fn take_menu_requests(&mut self) -> Vec<&'static str> {
+        std::mem::take(&mut self.menu_requests)
     }
 
     pub fn translator_status(&self) -> String {

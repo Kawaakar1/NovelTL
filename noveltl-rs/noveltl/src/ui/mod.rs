@@ -98,11 +98,15 @@ pub fn start_engine(shared: Arc<Shared>) -> JoinHandle<()> {
         .name("engine".into())
         .spawn(move || {
             while !shared.engine_stop.load(Ordering::SeqCst) {
-                let notices = {
+                let (notices, menu) = {
                     let mut c = lock_ctl(&shared.controller);
                     c.poll();
-                    c.take_notices()
+                    (c.take_notices(), c.take_menu_requests())
                 };
+                // меню на плашке: те же действия, что у значка в трее (замок контроллера уже отпущен)
+                for id in menu {
+                    tray::handle_menu(&shared, id);
+                }
                 if !notices.is_empty() {
                     // окно спрятано или свёрнуто — показываем сообщение у значка в трее
                     let hwnd = shared.main_hwnd.load(Ordering::SeqCst);

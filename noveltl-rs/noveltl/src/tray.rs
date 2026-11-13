@@ -18,11 +18,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 use crate::ui::{lock_ctl, Request, Shared};
 use crate::winutil;
 
-const ID_OPEN: &str = "open";
-const ID_TOGGLE: &str = "toggle";
-const ID_RETR: &str = "retr";
-const ID_SETTINGS: &str = "settings";
-const ID_QUIT: &str = "quit";
+pub const ID_OPEN: &str = "open";
+pub const ID_TOGGLE: &str = "toggle";
+pub const ID_RETR: &str = "retr";
+pub const ID_SETTINGS: &str = "settings";
+pub const ID_QUIT: &str = "quit";
 
 const TRAY_CLASS: &str = "tray_icon_app";
 
@@ -185,7 +185,8 @@ fn quit_now(shared: &Shared) {
     std::process::exit(0);
 }
 
-fn handle_menu(shared: &Shared, id: &str) {
+/// Пункт меню (из трея или из меню на плашке). Не вызывать, держа замок контроллера.
+pub fn handle_menu(shared: &Shared, id: &str) {
     match id {
         ID_OPEN => show_window(shared),
         ID_TOGGLE => {
