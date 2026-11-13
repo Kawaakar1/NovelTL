@@ -5,6 +5,11 @@ pub mod demo_game;
 pub mod glossary;
 pub mod main_window;
 pub mod settings;
+#[cfg(windows)]
+pub mod shots;
+// снимки экрана для разработки — только Windows; в Linux заглушка с тем же интерфейсом
+#[cfg(not(windows))]
+#[path = "../platform_linux/shots.rs"]
 pub mod shots;
 pub mod theme;
 pub mod wizard;
@@ -17,7 +22,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use eframe::egui;
-use tray_icon::TrayIcon;
+use crate::tray::TrayIcon;
 
 use noveltl_core::langdetect::{is_han, is_hangul, is_kana, Lang};
 
@@ -191,6 +196,8 @@ impl App {
         start_error: String,
     ) -> App {
         theme::install(&shared.ctx);
+        #[cfg(not(windows))]
+        crate::overlay::set_context(&shared.ctx);
         let rgba = theme::icon_rgba(32);
         let tray = tray::create(shared.clone(), rgba, 32);
         let title = if cfg.demo { tf("{} — демо-режим", &[&APP_NAME]) } else { APP_NAME.to_string() };
@@ -390,7 +397,8 @@ impl eframe::App for App {
         }
 
         // крестик — в трей, а не выход
-        if ctx.input(|i| i.viewport().close_requested()) && !self.shared.quit.load(Ordering::SeqCst) {
+        // в Linux трея нет — крестик закрывает программу
+        if cfg!(windows) && ctx.input(|i| i.viewport().close_requested()) && !self.shared.quit.load(Ordering::SeqCst) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.shared.visible.store(false, Ordering::SeqCst);
@@ -450,7 +458,17 @@ impl eframe::App for App {
             );
         }
 
+        // в Linux плашка — окно egui, её рисует этот же цикл
+        #[cfg(not(windows))]
+        crate::overlay::show(ctx);
+
         ctx.request_repaint_after(Duration::from_millis(300));
+    }
+
+    /// Прозрачный фон окон: у плашки в Linux прозрачные углы (окна программы закрашивают фон панелями).
+    #[cfg(not(windows))]
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

@@ -21,6 +21,7 @@ use noveltl_core::langdetect::Lang;
 use noveltl_core::scorer::{find_name_thread, HookKey, HookRef, ThreadTracker, NAME_PAIR_WINDOW};
 use noveltl_core::translators::{Http, HttpError, HttpResponse, TranslatorManager};
 
+use crate::clipboard::CLIPBOARD_PID;
 use crate::hotkeys::{HotkeyEvent, Hotkeys};
 use crate::overlay::{self, parse_color, Cmd, Frac, Overlay, Style};
 use crate::paths::{data_dir, sub_data_dir};
@@ -556,7 +557,10 @@ impl Controller {
 
     pub fn windows(&self) -> Vec<WindowInfo> {
         let allowed: Vec<isize> = if self.demo_hwnd != 0 { vec![self.demo_hwnd] } else { Vec::new() };
-        winutil::list_windows(&allowed)
+        let mut list = winutil::list_windows(&allowed);
+        // «Буфер обмена» — в конце: настоящая игра с профилем важнее
+        list.push(crate::clipboard::window_info());
+        list
     }
 
     fn scan(&mut self) {
@@ -565,7 +569,8 @@ impl Controller {
             Ok(()) => false,
             Err(e) => e.kind() != std::io::ErrorKind::NotFound,
         });
-        if let Some(s) = &self.session {
+        let on_clipboard = self.session.as_ref().is_some_and(|s| s.pid == CLIPBOARD_PID);
+        if let Some(s) = self.session.as_ref().filter(|s| s.pid != CLIPBOARD_PID) {
             let (pid, hwnd) = (s.pid, s.hwnd);
             if !winutil::is_process_alive(pid) || (self.demo_hwnd != 0 && !winutil::is_window(hwnd)) {
                 self.end_session();
@@ -598,6 +603,10 @@ impl Controller {
         let mut seen = std::collections::HashSet::new();
         for w in self.windows() {
             if !seen.insert(w.exe_path.to_lowercase()) {
+                continue;
+            }
+            // буфер обмена уже работает — меняем его только на настоящую игру (в мастере — не трогаем)
+            if on_clipboard && (w.pid == CLIPBOARD_PID || self.session.as_ref().is_some_and(|s| s.setup)) {
                 continue;
             }
             if let Some(profile) = self.store.find_in(&profiles, Path::new(&w.exe_path)) {
@@ -1235,7 +1244,31 @@ impl Drop for Controller {
     }
 }
 
+/// Время по шаблону с %Y %m %d %H %M %S. В Linux — время UTC (без часового пояса; для имён отчётов хватает).
+#[cfg(not(windows))]
+fn local_time_text(fmt: &str) -> String {
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    // дата по числу дней от 1970-01-01 (алгоритм civil_from_days Говарда Хиннанта)
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    fmt.replace("%Y", &format!("{y:04}"))
+        .replace("%m", &format!("{m:02}"))
+        .replace("%d", &format!("{d:02}"))
+        .replace("%H", &format!("{:02}", rem / 3600))
+        .replace("%M", &format!("{:02}", rem % 3600 / 60))
+        .replace("%S", &format!("{:02}", rem % 60))
+}
+
 /// Местное время по шаблону с %Y %m %d %H %M %S.
+#[cfg(windows)]
 fn local_time_text(fmt: &str) -> String {
     use windows::Win32::System::SystemInformation::GetLocalTime;
     let t = unsafe { GetLocalTime() };

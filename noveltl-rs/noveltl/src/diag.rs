@@ -4,9 +4,13 @@
 use std::collections::HashMap;
 use std::panic::Location;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+#[cfg(windows)]
+use std::time::Duration;
+use std::time::Instant;
 
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, SMTO_ABORTIFHUNG, SMTO_BLOCK, WM_NULL};
 
 struct State {
@@ -105,6 +109,7 @@ fn report_text() -> String {
 }
 
 /// Фоновый сторож: раз в 2 с спрашивает главное окно; если оно не отвечает 5 с — пишет отчёт (один на зависание).
+#[cfg(windows)]
 pub fn start_watchdog(main_hwnd: impl Fn() -> isize + Send + 'static, reports_dir: std::path::PathBuf) {
     let _ = std::thread::Builder::new().name("watchdog".into()).spawn(move || {
         let mut reported = false;
@@ -143,6 +148,10 @@ pub fn start_watchdog(main_hwnd: impl Fn() -> isize + Send + 'static, reports_di
         }
     });
 }
+
+/// В Linux сторожа нет (нет SendMessage): заглушка.
+#[cfg(not(windows))]
+pub fn start_watchdog(_main_hwnd: impl Fn() -> isize + Send + 'static, _reports_dir: std::path::PathBuf) {}
 
 #[cfg(test)]
 mod tests {

@@ -1,14 +1,23 @@
 //! Глобальные горячие клавиши через RegisterHotKey (свой поток со скрытым окном).
 #![allow(dead_code)]
 
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::Sender;
+#[cfg(windows)]
+use std::sync::mpsc::{channel, Receiver};
+#[cfg(windows)]
 use std::sync::Mutex;
+#[cfg(windows)]
 use std::thread::JoinHandle;
 
+#[cfg(windows)]
 use windows::core::w;
+#[cfg(windows)]
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+#[cfg(windows)]
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+#[cfg(windows)]
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS};
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, PostMessageW, RegisterClassW,
     TranslateMessage, CS_HREDRAW, HWND_MESSAGE, MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WM_APP, WM_HOTKEY, WNDCLASSW,
@@ -101,17 +110,20 @@ pub enum HotkeyEvent {
     Fired(usize),
 }
 
+#[cfg(windows)]
 enum Command {
     Set(Vec<String>, Sender<Vec<String>>),
     Stop,
 }
 
+#[cfg(windows)]
 pub struct Hotkeys {
     tx: Mutex<Sender<Command>>,
     hwnd: isize,
     thread: Mutex<Option<JoinHandle<()>>>,
 }
 
+#[cfg(windows)]
 impl Hotkeys {
     pub fn start(events: Sender<HotkeyEvent>, waker: Waker) -> Hotkeys {
         let (tx, rx) = channel::<Command>();
@@ -155,16 +167,19 @@ impl Hotkeys {
     }
 }
 
+#[cfg(windows)]
 impl Drop for Hotkeys {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
+#[cfg(windows)]
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     DefWindowProcW(hwnd, msg, wp, lp)
 }
 
+#[cfg(windows)]
 fn run_thread(rx: Receiver<Command>, ready: Sender<isize>, events: Sender<HotkeyEvent>, waker: Waker) {
     unsafe {
         let hinst = GetModuleHandleW(None).unwrap_or_default();
@@ -252,6 +267,21 @@ fn run_thread(rx: Receiver<Command>, ready: Sender<isize>, events: Sender<Hotkey
     }
 }
 
+/// В Linux глобальных горячих клавиш нет: заглушка с тем же интерфейсом.
+#[cfg(not(windows))]
+pub struct Hotkeys;
+
+#[cfg(not(windows))]
+impl Hotkeys {
+    pub fn start(_events: Sender<HotkeyEvent>, _waker: Waker) -> Hotkeys {
+        Hotkeys
+    }
+    pub fn set(&self, _combos: &[String]) -> Vec<String> {
+        Vec::new()
+    }
+    pub fn stop(&self) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,7 +292,6 @@ mod tests {
         assert_eq!(parse_hotkey("f"), None);
         assert!(parse_hotkey("F12").is_some());
     }
-    use std::sync::Arc;
 
     #[test]
     fn parse_ctrl_alt_h() {
@@ -303,8 +332,10 @@ mod tests {
         assert_eq!(parse_hotkey("Ctrl+1"), Some((MOD_CONTROL, 0x31)));
     }
 
+    #[cfg(windows)]
     #[test]
     fn live_register() {
+        use std::sync::Arc;
         let (tx, _rx) = channel();
         let waker: Waker = Arc::new(|| {});
         let hk = Hotkeys::start(tx, waker);

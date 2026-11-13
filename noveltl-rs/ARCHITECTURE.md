@@ -74,3 +74,18 @@ pub trait HookSource: Send {
 Язык выбирается в «Настройки» → «Общие» (`AppSettings::ui_lang`; не выбран — по языку Windows).
 Новую строку интерфейса оборачивайте в `t(...)` и добавляйте в таблицу: тест `every_key_is_translated`
 находит в исходниках все вызовы `t`/`tf` и падает, если у какой-то строки нет перевода на все языки.
+
+### Linux и режим «Буфер обмена»
+
+Один код для Windows и Linux. Модули, завязанные на Windows (`winutil`, `tray`, `lunahost`, `overlay`,
+`ui/shots`), в Linux подменяются одноимёнными файлами из `noveltl/src/platform_linux/` (см. `main.rs`);
+в `hotkeys`, `diag`, `ui/avatar` Windows-части закрыты `#[cfg(windows)]`. Общие типы плашки — `overlay_common.rs`.
+- `clipboard.rs` — режим «Буфер обмена» (все ОС): виртуальное «окно» `CLIPBOARD_HWND`/`CLIPBOARD_PID` в списке
+  окон; источник `WithClipboard` отдаёт скопированный текст как реплики, остальное передаёт LunaHook/демо.
+  Настоящая игра с профилем важнее буфера: контроллер переключается на неё.
+- Linux-плашка (`platform_linux/overlay.rs`) — два прозрачных окна egui поверх всех: плашка (пропускает клики,
+  когда замочек закрыт) и кнопки (замочек, меню ☰). Рисует их главный цикл окон (`overlay::show`).
+- Сеть: Windows — native-tls (SChannel), Linux — rustls (без системной OpenSSL).
+- Проверка Linux-кода с Windows: `rustup target add x86_64-unknown-linux-gnu`, затем
+  `CC_x86_64_unknown_linux_gnu=gcc AR_x86_64_unknown_linux_gnu=ar cargo check -p noveltl --tests --target x86_64-unknown-linux-gnu`.
+  Сборка и тесты под Linux — `.github/workflows/linux.yml`.

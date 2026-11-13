@@ -40,73 +40,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// Положение плашки в долях клиентской области окна игры.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Frac {
-    pub x: f32,
-    pub y: f32,
-    pub w: f32,
-    pub h: f32,
-}
-
-impl Default for Frac {
-    fn default() -> Self {
-        Frac { x: 0.08, y: 0.70, w: 0.84, h: 0.24 }
-    }
-}
-
-/// Внешний вид плашки (из настроек).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Style {
-    pub font_family: String,
-    pub font_size: f32,
-    pub text_color: u32,
-    pub name_color: u32,
-    pub outline_color: u32,
-    pub bg_color: u32,
-    pub bg_opacity: u8, // проценты
-}
-
-impl Default for Style {
-    fn default() -> Self {
-        Style {
-            font_family: "Segoe UI".into(),
-            font_size: 26.0,
-            text_color: 0xFFFFFF,
-            name_color: 0xFFD27F,
-            outline_color: 0x000000,
-            bg_color: 0x0E0F1A,
-            bg_opacity: 85,
-        }
-    }
-}
-
-/// «#RRGGBB» -> 0xRRGGBB (при ошибке — запасной цвет).
-pub fn parse_color(s: &str, fallback: u32) -> u32 {
-    u32::from_str_radix(s.trim().trim_start_matches('#'), 16).unwrap_or(fallback)
-}
-
-pub enum Cmd {
-    Target(isize, Option<Frac>),
-    Line { name: String, text: String },
-    Note { note: String, keep_text: bool },
-    Clear,
-    EditMode(bool),
-    UserHidden(bool),
-    Style(Style),
-    /// Только для проверок и скриншотов: считать окно игры активным.
-    ForceActive(bool),
-    Quit,
-}
-
-pub enum Event {
-    /// Пользователь передвинул или растянул плашку в режиме настройки.
-    Moved(Frac),
-    /// Не удалось создать плашку (сбой инициализации).
-    Failed(String),
-    /// Выбран пункт меню плашки (id пункта меню трея).
-    Menu(&'static str),
-}
+pub use crate::overlay_common::*;
 
 /// Управление плашкой из любого потока.
 #[derive(Clone)]
@@ -167,17 +101,6 @@ const MENU: [(u32, &str, &str); 6] = [
     (5, crate::tray::ID_QUIT, ""),
 ];
 
-/// Подпись пункта меню на текущем языке (общая с меню трея).
-pub fn menu_label(id: &str) -> &'static str {
-    match id {
-        crate::tray::ID_OPEN => t("Открыть NovelTL"),
-        crate::tray::ID_TOGGLE => t("Скрыть плашку"),
-        crate::tray::ID_RETR => t("Перевести заново без кэша"),
-        crate::tray::ID_SETTINGS => t("Настройки"),
-        crate::tray::ID_QUIT => t("Выход"),
-        _ => "",
-    }
-}
 
 struct State {
     hwnd: HWND,
@@ -565,6 +488,13 @@ impl State {
 
     fn game_client_rect(&self) -> Option<RECT> {
         unsafe {
+            if self.target == crate::clipboard::CLIPBOARD_HWND {
+                // у буфера обмена нет окна игры: место плашки считается от рабочей области экрана
+                let mut r = RECT::default();
+                SystemParametersInfoW(SPI_GETWORKAREA, 0, Some(&mut r as *mut RECT as *mut _), SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0))
+                    .ok()?;
+                return (r.right > r.left && r.bottom > r.top).then_some(r);
+            }
             let h = hwnd_of(self.target);
             let mut r = RECT::default();
             GetClientRect(h, &mut r).ok()?;
@@ -584,13 +514,18 @@ impl State {
             if self.target == 0 {
                 return false;
             }
+            let clipboard = self.target == crate::clipboard::CLIPBOARD_HWND;
             let h = hwnd_of(self.target);
-            if !IsWindow(h).as_bool() || IsIconic(h).as_bool() {
+            if !clipboard && (!IsWindow(h).as_bool() || IsIconic(h).as_bool()) {
                 return false;
             }
             let has_content = self.edit || !self.text.is_empty() || !self.note.is_empty();
             if !has_content || (self.user_hidden && !self.edit) {
                 return false;
+            }
+            if clipboard {
+                // окна игры нет — плашка видна всегда, когда есть текст
+                return true;
             }
             if self.force_active || self.edit {
                 // в режиме настройки окно NovelTL (мастер) обычно активно — плашку всё равно показываем

@@ -12,6 +12,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 
 [![Download](https://img.shields.io/github/v/release/Kawaakar1/NovelTL?label=Download&style=for-the-badge&color=8b5cf6)](../../releases/latest)
 ![Windows 10/11](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D6?style=for-the-badge&logo=windows)
+![Linux](https://img.shields.io/badge/Linux-x86__64-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 ![Rust](https://img.shields.io/badge/Rust-egui-CE422B?style=for-the-badge&logo=rust)
 ![License GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge)
 
@@ -27,6 +28,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🎯 **Automatic hook detection.** Click through 3–4 lines — the program finds the dialogue text thread by itself, and a separate thread with character names.
 - 🪟 **Overlay on top of the game.** Clicks go through it, it never steals focus, it follows the game window. Size and position are set once with the mouse.
 - 🔒 **Lock and menu right on the overlay.** Open the lock — move and resize the box during play; close it — the box is fixed again. The ☰ button opens the same menu as the tray icon.
+- 📋 **Clipboard mode.** NovelTL translates everything you copy — for games the text hooker cannot handle, and for Linux.
 - 📜 **Dialogue history.** The main window keeps the last 50 lines with original and translation — handy if you skipped a line.
 - 🗺️ **5 languages, any direction.** Japanese, English, Chinese (Simplified), Korean and Russian. The target language is chosen in Settings, the source language per game (or “Auto”).
 - 🌐 **DeepL and Google.** “Auto” mode: Google without a key, DeepL with a key (the free plan works too) — DeepL uses the previous lines as context, and if DeepL refuses, the program switches to Google by itself. You can also choose “DeepL only” or “Google only”.
@@ -68,6 +70,17 @@ The screenshots show the Russian interface; the English one looks the same.
 > [!NOTE]
 > Windows Defender is sometimes suspicious of programs that connect to other processes (this is how text capture works).
 > If the game “does not respond” at step 2, add the NovelTL folder and the game folder to Defender exclusions.
+
+### Linux
+
+Download `NovelTL-…-linux-x86_64.tar.gz` from the [**Releases**](../../releases/latest) page, extract it and run `./noveltl` (`./install.sh` adds it to the application menu).
+
+Differences from Windows:
+- **No automatic text capture** — LunaHook exists only for Windows. In the wizard choose “Clipboard (copied text)”: NovelTL translates everything copied to the clipboard. Usually the game runs through Wine/Proton and a text hooker (for example Textractor in the same Wine) copies the lines to the clipboard.
+- **The overlay is a separate always-on-top window.** Its place is set with the mouse: open the lock — drag and stretch it, close the lock — clicks go to the game. Works on X11 (and XWayland, which NovelTL selects automatically); Steam Deck — in Desktop Mode.
+- No tray icon and no global hotkeys — everything is in the ☰ menu on the overlay. Keys are stored unencrypted.
+
+Details are in `README-Linux.txt` inside the archive. The Linux build is checked automatically, but nobody has tried it with real games on Linux yet — please report in [Issues](../../issues).
 
 ## How to use
 

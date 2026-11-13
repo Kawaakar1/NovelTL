@@ -8,33 +8,66 @@
 #![windows_subsystem = "windows"]
 
 #[allow(dead_code)]
+mod clipboard;
+#[allow(dead_code)]
 mod controller;
 #[allow(dead_code)]
 mod demo;
 mod diag;
 #[allow(dead_code)]
 mod hotkeys;
-mod lunahost;
 #[allow(dead_code)]
-mod overlay;
+mod overlay_common;
 #[allow(dead_code)]
 mod paths;
 #[allow(dead_code)]
 mod source;
-mod tray;
+// часть методов окон нужна только снимкам экрана для разработки (они есть только в Windows)
+#[cfg_attr(not(windows), allow(dead_code))]
 mod ui;
+
+// Части, завязанные на Windows; в Linux вместо них — одноимённые модули из platform_linux/
+// с теми же функциями (перехвата LunaHook там нет, плашка — отдельное окно egui).
+#[cfg(windows)]
+mod lunahost;
+#[cfg(not(windows))]
+#[path = "platform_linux/lunahost.rs"]
+mod lunahost;
+#[cfg(windows)]
+#[allow(dead_code)]
+mod overlay;
+#[cfg(not(windows))]
+#[allow(dead_code)]
+#[path = "platform_linux/overlay.rs"]
+mod overlay;
+#[cfg(windows)]
+mod tray;
+#[cfg(not(windows))]
+#[path = "platform_linux/tray.rs"]
+mod tray;
+#[cfg(windows)]
 #[allow(dead_code)]
 mod winutil;
+#[cfg(not(windows))]
+#[allow(dead_code)]
+#[path = "platform_linux/winutil.rs"]
+mod winutil;
 
-use noveltl_core::i18n::{t, tf};
+#[cfg(windows)]
+use noveltl_core::i18n::t;
+use noveltl_core::i18n::tf;
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
+#[cfg(windows)]
 use windows::core::{w, HSTRING};
+#[cfg(windows)]
 use windows::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
+#[cfg(windows)]
 use windows::Win32::System::Threading::CreateMutexW;
+#[cfg(windows)]
 use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
 
 use controller::Controller;
@@ -74,10 +107,41 @@ fn parse_args() -> Args {
     a
 }
 
+#[cfg(windows)]
 fn message_box(text: &str) {
     unsafe {
         MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(ui::APP_NAME), MB_OK | MB_ICONINFORMATION);
     }
+}
+
+#[cfg(not(windows))]
+fn message_box(text: &str) {
+    eprintln!("{}: {text}", ui::APP_NAME);
+}
+
+/// Где искать файл шрифта. В Windows — системная папка шрифтов; в Linux вместо японских
+/// шрифтов Windows — Noto Sans CJK (покрывает и китайский, и корейский) или запасные.
+fn font_paths(file: &str) -> Vec<PathBuf> {
+    if cfg!(windows) {
+        return vec![PathBuf::from(r"C:\Windows\Fonts").join(file)];
+    }
+    let list: &[&str] = match file {
+        "YuGothM.ttc" => &[
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJKjp-Regular.otf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        ],
+        "meiryo.ttc" => &[
+            "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/droid/DroidSansFallbackFull.ttf",
+            "/usr/share/fonts/wenquanyi/wqy-microhei/wqy-microhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        ],
+        _ => &[],
+    };
+    list.iter().map(PathBuf::from).collect()
 }
 
 /// Какие письма нужны на экране (шрифты грузятся лениво, чтобы не раздувать память).
@@ -102,16 +166,18 @@ impl FontNeeds {
 /// Восточные шрифты занимают десятки МБ памяти, поэтому грузятся только когда нужны (`needs`);
 /// они стоят в конце цепочки, так что латиница и кириллица остаются Segoe UI.
 fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
-    let dir = PathBuf::from(r"C:\Windows\Fonts");
+    // в Linux один шрифт CJK на все три письма — грузим его как «японский»
+    #[cfg(not(windows))]
+    let needs = FontNeeds { ja: needs.ja || needs.zh || needs.ko, zh: false, ko: false, zh_first: false };
     let mut fonts = FontDefinitions::default();
     let defaults = fonts.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
     let mut add = |key: &str, file: &str| -> bool {
-        match std::fs::read(dir.join(file)) {
-            Ok(bytes) => {
+        match font_paths(file).into_iter().find_map(|p| std::fs::read(p).ok()) {
+            Some(bytes) => {
                 fonts.font_data.insert(key.to_string(), Arc::new(FontData::from_owned(bytes)));
                 true
             }
-            Err(_) => false,
+            None => false,
         }
     };
     let segoe = add("segoe", "segoeui.ttf");
@@ -188,6 +254,12 @@ fn selfcheck(data_dir: &std::path::Path) -> i32 {
 }
 
 fn main() {
+    // Linux: под Wayland окно не может само встать в нужное место и поверх игры. Если есть X11
+    // (XWayland), работаем через него — тогда плашка встаёт куда задано. NOVELTL_WAYLAND=1 — не трогать.
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("DISPLAY").is_some() && std::env::var_os("NOVELTL_WAYLAND").is_none() {
+        std::env::remove_var("WAYLAND_DISPLAY");
+    }
     let args = parse_args();
     let demo = args.demo || args.shots.is_some();
 
@@ -210,13 +282,16 @@ fn main() {
     }
 
     // один экземпляр: именованный мьютекс держим до конца работы (по нему установщик понимает, что программа запущена)
-    let mutex = unsafe { CreateMutexW(None, false, w!("NovelTL_Running")) };
-    let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-    if already && !demo {
-        message_box(t("NovelTL уже запущен — посмотрите значок в трее."));
-        return;
-    }
-    let _mutex = mutex;
+    #[cfg(windows)]
+    let _mutex = {
+        let mutex = unsafe { CreateMutexW(None, false, w!("NovelTL_Running")) };
+        let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        if already && !demo {
+            message_box(t("NovelTL уже запущен — посмотрите значок в трее."));
+            return;
+        }
+        mutex
+    };
 
     if args.selfcheck && !demo {
         std::process::exit(selfcheck(&paths::data_dir()));
@@ -249,13 +324,15 @@ fn main() {
             };
             let (tx, rx) = channel();
             let (source, demo_source, start_error): (Box<dyn HookSource>, Option<DemoSource>, String) = if cfg.demo {
-                let src = DemoSource::new(tx, waker.clone());
+                let src = DemoSource::new(tx.clone(), waker.clone());
                 (Box::new(src.clone()), Some(src), String::new())
             } else {
-                let luna = LunaHost::start(tx, waker.clone());
+                let luna = LunaHost::start(tx.clone(), waker.clone());
                 let err = luna.error();
                 (Box::new(luna), None, err)
             };
+            // режим «Буфер обмена» работает поверх любого источника
+            let source: Box<dyn HookSource> = Box::new(clipboard::WithClipboard::new(source, tx, waker.clone()));
             let mut controller = Controller::new(source, rx, cfg.demo, 0, waker);
             if let Some(t) = &theme_arg {
                 controller.settings.theme = t.clone();

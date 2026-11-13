@@ -1,23 +1,31 @@
 //! Аватар пользователя: выбор файла (диалог Windows), обработка через WIC и хранение в папке данных.
 
-use noveltl_core::i18n::{t, tf};
+#[cfg(windows)]
+use noveltl_core::i18n::t;
+use noveltl_core::i18n::tf;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
 use windows::core::{w, HSTRING, PCWSTR};
+#[cfg(windows)]
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICImagingFactory, WICBitmapDitherTypeNone,
     WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
 };
+#[cfg(windows)]
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
 };
+#[cfg(windows)]
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+#[cfg(windows)]
 use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
 
 /// Сторона сохранённого аватара, пикселей.
 const SIZE: u32 = 256;
 
 /// Инициализация COM; если поток уже инициализирован иначе — это не ошибка.
+#[cfg(windows)]
 fn init_com() {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
@@ -25,6 +33,7 @@ fn init_com() {
 }
 
 /// Стандартный диалог «Открыть» для выбора картинки. None — отмена или ошибка.
+#[cfg(windows)]
 pub fn pick_image() -> Option<PathBuf> {
     init_com();
     unsafe {
@@ -46,6 +55,7 @@ pub fn pick_image() -> Option<PathBuf> {
 }
 
 /// Читает картинку через WIC в RGBA8 (прямая альфа): (ширина, высота, пиксели).
+#[cfg(windows)]
 fn decode(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     init_com();
     let wide: Vec<u16> = src.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
@@ -80,6 +90,36 @@ fn decode(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
         conv.CopyPixels(std::ptr::null(), w * 4, &mut buf).map_err(|e| e.to_string())?;
         Ok((w, h, buf))
     }
+}
+
+/// В Linux диалога выбора файла нет.
+#[cfg(not(windows))]
+pub fn pick_image() -> Option<PathBuf> {
+    None
+}
+
+/// В Linux читаем только PNG (RGBA8).
+#[cfg(not(windows))]
+fn decode(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let file = std::fs::File::open(src).map_err(|e| e.to_string())?;
+    let mut dec = png::Decoder::new(std::io::BufReader::new(file));
+    dec.set_transformations(png::Transformations::normalize_to_color8());
+    let mut reader = dec.read_info().map_err(|_| "PNG".to_string())?;
+    let mut buf = vec![0u8; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    let src = &buf[..info.buffer_size()];
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => src.to_vec(),
+        png::ColorType::Rgb => src.chunks(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        png::ColorType::GrayscaleAlpha => src.chunks(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        png::ColorType::Grayscale => src.iter().flat_map(|&g| [g, g, g, 255]).collect(),
+        _ => return Err("PNG".to_string()),
+    };
+    if w == 0 || h == 0 || rgba.len() != w * h * 4 {
+        return Err("PNG".to_string());
+    }
+    Ok((info.width, info.height, rgba))
 }
 
 /// Обрезка по центру до квадрата и масштаб до `SIZE`×`SIZE` (усреднение по площади, с учётом альфы).

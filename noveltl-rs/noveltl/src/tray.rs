@@ -1,13 +1,14 @@
 //! Значок в трее с меню (часть `main_window.py`). Крейт `tray-icon`; события приходят в обработчики,
 //! которые работают и тогда, когда главное окно спрятано (интерфейс в это время не рисуется).
 
+pub use tray_icon::TrayIcon;
 use noveltl_core::i18n::t;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Arc;
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,

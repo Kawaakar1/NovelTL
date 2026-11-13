@@ -91,7 +91,14 @@ fn installed_fonts() -> Vec<String> {
         .collect()
 }
 
+/// Высота рабочей области экрана в пикселях (в Linux — обычная высота экрана ноутбука).
+#[cfg(not(windows))]
+fn work_area_height_px() -> f32 {
+    1000.0
+}
+
 /// Высота рабочей области экрана в пикселях.
+#[cfg(windows)]
 fn work_area_height_px() -> f32 {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
