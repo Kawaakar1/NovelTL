@@ -6,6 +6,7 @@ use eframe::egui::{
     self, text::LayoutJob, Align, Color32, ColorImage, CornerRadius, FontId, Frame, Layout, Margin, RichText,
     Sense, TextureHandle, TextureOptions, Vec2,
 };
+use noveltl_core::i18n::{t, tf};
 use noveltl_core::langdetect::Lang;
 use noveltl_core::pipeline::LineResult;
 use noveltl_core::profiles::{Profile, ProfileStore};
@@ -119,7 +120,7 @@ impl MainWindow {
             hotkey_toggle: c.settings.hotkey_toggle.clone(),
             hotkey_retranslate: c.settings.hotkey_retranslate.clone(),
             translator: c.translator_status(),
-            target_title: c.settings.target_lang.title().to_lowercase(),
+            target_title: c.settings.target_lang.title_in_text(),
             nickname: c.settings.nickname.clone(),
         }
     }
@@ -206,7 +207,7 @@ impl MainWindow {
                     });
                 });
                 ui.add_space(6.0);
-                ui.label(theme::step("МОИ ИГРЫ"));
+                ui.label(theme::step(t("МОИ ИГРЫ")));
                 let list_h = (ui.available_height() - 96.0).max(40.0);
                 egui::ScrollArea::vertical()
                     .id_salt("games")
@@ -243,14 +244,14 @@ impl MainWindow {
                             if resp.clicked() {
                                 self.selected = Some(pr.id.clone());
                             }
-                            resp.on_hover_text(if running { "Игра запущена" } else { "Игра не запущена" });
+                            resp.on_hover_text(if running { t("Игра запущена") } else { t("Игра не запущена") });
                         }
                     });
                 let w = ui.available_width();
-                if button(ui, "+  Добавить игру", BtnKind::Primary, true, Some(w)).clicked() {
+                if button(ui, t("+  Добавить игру"), BtnKind::Primary, true, Some(w)).clicked() {
                     actions.push(Action::Wizard(WizardMode::New));
                 }
-                if button(ui, "Настройки", BtnKind::Normal, true, Some(w)).clicked() {
+                if button(ui, t("Настройки"), BtnKind::Normal, true, Some(w)).clicked() {
                     actions.push(Action::Settings);
                 }
             });
@@ -269,10 +270,10 @@ impl MainWindow {
                 .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 6, bottom: 18 }))
                 .show(ctx, |ui| {
                     ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
-                    let tip = "Сначала запустите игру";
+                    let tip = t("Сначала запустите игру");
                     ui.columns(2, |cols| {
                         let w = cols[0].available_width();
-                        let r = button(&mut cols[0], "Найти текст заново", BtnKind::Normal, ready, Some(w));
+                        let r = button(&mut cols[0], t("Найти текст заново"), BtnKind::Normal, ready, Some(w));
                         if r.clicked() {
                             actions.push(Action::Wizard(WizardMode::Hook));
                         }
@@ -280,7 +281,7 @@ impl MainWindow {
                             r.on_hover_text(tip);
                         }
                         let w = cols[1].available_width();
-                        let r = button(&mut cols[1], "Расположение плашки", BtnKind::Normal, can_pos, Some(w));
+                        let r = button(&mut cols[1], t("Расположение плашки"), BtnKind::Normal, can_pos, Some(w));
                         if r.clicked() {
                             actions.push(Action::Wizard(WizardMode::Position));
                         }
@@ -290,11 +291,11 @@ impl MainWindow {
                     });
                     ui.columns(2, |cols| {
                         let w = cols[0].available_width();
-                        if button(&mut cols[0], "Глоссарий имён", BtnKind::Normal, true, Some(w)).clicked() {
+                        if button(&mut cols[0], t("Глоссарий имён"), BtnKind::Normal, true, Some(w)).clicked() {
                             actions.push(Action::Glossary(profile.id.clone()));
                         }
                         let w = cols[1].available_width();
-                        let r = button(&mut cols[1], "Отчёт для настройки", BtnKind::Normal, s.is_some(), Some(w));
+                        let r = button(&mut cols[1], t("Отчёт для настройки"), BtnKind::Normal, s.is_some(), Some(w));
                         if r.clicked() {
                             actions.push(Action::Report);
                         }
@@ -309,16 +310,19 @@ impl MainWindow {
                     // высоту панели, и после уведомления панель так и остаётся высокой
                     ui.horizontal(|ui| {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if button(ui, "Удалить игру", BtnKind::Link, true, None).clicked() {
+                            if button(ui, t("Удалить игру"), BtnKind::Link, true, None).clicked() {
                                 actions.push(Action::AskDelete(profile.id.clone(), profile.name.clone()));
                             }
                             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
                                 let keys = format!(
-                                    "{} — скрыть плашку, {} — перевести заново",
-                                    snap.hotkey_toggle, snap.hotkey_retranslate
+                                    "{} — {}, {} — {}",
+                                    snap.hotkey_toggle,
+                                    t("скрыть плашку"),
+                                    snap.hotkey_retranslate,
+                                    t("перевести заново")
                                 );
                                 ui.add(
-                                    egui::Label::new(theme::small(format!("Переводчик: {}\n{}", snap.translator, keys)))
+                                    egui::Label::new(theme::small(tf("Переводчик: {}\n{}", &[&snap.translator, &keys])))
                                         .wrap_mode(egui::TextWrapMode::Wrap),
                                 );
                             });
@@ -366,7 +370,7 @@ impl MainWindow {
                 ui.image((t.id(), Vec2::splat(72.0)));
             }
             ui.add_space(4.0);
-            ui.label(theme::h1("Добавьте первую игру"));
+            ui.label(theme::h1(t("Добавьте первую игру")));
             ui.allocate_ui_with_layout(
                 Vec2::new(ui.available_width().min(520.0), 60.0),
                 Layout::top_down(Align::Center),
@@ -374,8 +378,8 @@ impl MainWindow {
                     ui.add(
                         egui::Label::new(
                             RichText::new(
-                                "Запустите визуальную новеллу в оконном режиме и нажмите кнопку ниже. \
-                                 Настройка займёт минуту: выбрать окно, прокликать пару реплик и поставить плашку.",
+                                t("Запустите визуальную новеллу в оконном режиме и нажмите кнопку ниже. \
+                                 Настройка займёт минуту: выбрать окно, прокликать пару реплик и поставить плашку."),
                             )
                             .size(14.0)
                             .color(p.dim),
@@ -386,7 +390,7 @@ impl MainWindow {
                 },
             );
             ui.add_space(8.0);
-            if button(ui, "+  Добавить игру", BtnKind::Big, true, None).clicked() {
+            if button(ui, t("+  Добавить игру"), BtnKind::Big, true, None).clicked() {
                 actions.push(Action::Wizard(WizardMode::New));
             }
         });
@@ -414,7 +418,7 @@ impl MainWindow {
                     }
                 })
                 .response
-                .on_hover_text("Язык оригинала этой игры");
+                .on_hover_text(t("Язык оригинала этой игры"));
             if lang != profile.lang {
                 actions.push(Action::SetLang(profile.id.clone(), lang));
             }
@@ -422,7 +426,7 @@ impl MainWindow {
 
         // статус
         let (mut color, mut text, mut retry) =
-            (p.dim, "Игра не запущена. Запустите её — NovelTL подключится сам.".to_string(), false);
+            (p.dim, t("Игра не запущена. Запустите её — NovelTL подключится сам.").to_string(), false);
         if let Some(s) = s {
             if !s.error.is_empty() {
                 color = p.bad;
@@ -430,18 +434,18 @@ impl MainWindow {
                 retry = true;
             } else if !s.connected {
                 color = p.warn;
-                text = "Подключаюсь к игре…".to_string();
+                text = t("Подключаюсь к игре…").to_string();
             } else if s.setup {
                 color = p.warn;
-                text = "Идёт настройка — закончите её в окне мастера.".to_string();
+                text = t("Идёт настройка — закончите её в окне мастера.").to_string();
             } else if !s.has_selected {
                 color = p.warn;
-                text = "Подключено. Жду текст — прокликайте пару реплик в игре.".to_string();
+                text = t("Подключено. Жду текст — прокликайте пару реплик в игре.").to_string();
             } else {
                 color = p.ok;
-                text = "Перевод работает.".to_string();
+                text = t("Перевод работает.").to_string();
                 if snap.user_hidden {
-                    text += &format!(" Плашка скрыта — {}, чтобы показать.", snap.hotkey_toggle);
+                    text += &tf(" Плашка скрыта — {}, чтобы показать.", &[&snap.hotkey_toggle]);
                 }
             }
         }
@@ -458,7 +462,7 @@ impl MainWindow {
                             .wrap_mode(egui::TextWrapMode::Wrap),
                     );
                 });
-                if retry && button(ui, "Повторить", BtnKind::Normal, true, None).clicked() {
+                if retry && button(ui, t("Повторить"), BtnKind::Normal, true, None).clicked() {
                     actions.push(Action::Retry);
                 }
             });
@@ -472,11 +476,11 @@ impl MainWindow {
             ui.spacing_mut().item_spacing.y = 6.0;
             let history = s.map_or(&[][..], |s| s.history.as_slice());
             ui.label(theme::step(match history.len() {
-                0 | 1 => "ПОСЛЕДНЯЯ РЕПЛИКА".to_string(),
-                n => format!("ИСТОРИЯ ДИАЛОГА · {n}"),
+                0 | 1 => t("ПОСЛЕДНЯЯ РЕПЛИКА").to_string(),
+                n => tf("ИСТОРИЯ ДИАЛОГА · {}", &[&n]),
             }));
             if history.is_empty() {
-                let hint = if s.is_some() { "Здесь появится текст из игры и его перевод." } else { "—" };
+                let hint = if s.is_some() { t("Здесь появится текст из игры и его перевод.") } else { "—" };
                 ui.add(egui::Label::new(theme::jp(hint)).wrap_mode(egui::TextWrapMode::Wrap));
                 return;
             }
@@ -498,7 +502,7 @@ impl MainWindow {
                         ui.label(theme::small(format!(
                             "{}{}",
                             engine_title(res.engine),
-                            if res.cached { " · из кэша" } else { "" }
+                            if res.cached { t(" · из кэша") } else { "" }
                         )));
                     }
                 }
@@ -512,20 +516,21 @@ impl MainWindow {
             let mut no = false;
             let m = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
                 ui.set_width(380.0);
-                ui.label(theme::h2("Удалить игру"));
+                ui.label(theme::h2(t("Удалить игру")));
                 ui.add_space(4.0);
                 ui.add(
-                    egui::Label::new(theme::body(format!(
-                        "Удалить «{name}» из NovelTL?\nПрофиль, глоссарий и кэш переводов будут удалены. Сама игра не затрагивается."
+                    egui::Label::new(theme::body(tf(
+                        "Удалить «{}» из NovelTL?\nПрофиль, глоссарий и кэш переводов будут удалены. Сама игра не затрагивается.",
+                        &[&name],
                     )))
                     .wrap_mode(egui::TextWrapMode::Wrap),
                 );
                 ui.add_space(8.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, "Нет", BtnKind::Normal, true, Some(80.0)).clicked() {
+                    if button(ui, t("Нет"), BtnKind::Normal, true, Some(80.0)).clicked() {
                         no = true;
                     }
-                    if button(ui, "Да", BtnKind::Primary, true, Some(80.0)).clicked() {
+                    if button(ui, t("Да"), BtnKind::Primary, true, Some(80.0)).clicked() {
                         yes = true;
                     }
                 });
@@ -574,13 +579,14 @@ impl MainWindow {
                             let path = path.to_string_lossy().into_owned();
                             winutil::reveal_in_explorer(&path);
                             self.add_message(
-                                "Отчёт сохранён",
-                                &format!(
-                                    "Отчёт сохранён в файл:\n{path}\n\nПапка с ним открыта — пришлите этот файл для доработки."
+                                t("Отчёт сохранён"),
+                                &tf(
+                                    "Отчёт сохранён в файл:\n{}\n\nПапка с ним открыта — пришлите этот файл для доработки.",
+                                    &[&path],
                                 ),
                             );
                         }
-                        Err(e) => self.add_message("Отчёт", &format!("Не удалось сохранить отчёт: {e}")),
+                        Err(e) => self.add_message(t("Отчёт"), &tf("Не удалось сохранить отчёт: {}", &[&e])),
                     }
                 }
                 Action::Retry => {

@@ -1,5 +1,6 @@
 //! Окно «игры» для демо (перенос `DemoGameWindow` из `noveltl/demo.py`): по щелчку — следующая реплика.
 
+use noveltl_core::i18n::t;
 use eframe::egui::{
     self, epaint::Vertex, pos2, vec2, Color32, CornerRadius, FontFamily, FontId, Mesh, Painter, Pos2, Rect, Sense,
     Shape, Stroke, StrokeKind, ViewportBuilder, ViewportId,
@@ -111,7 +112,7 @@ impl DemoGame {
             p.text(
                 bx.center(),
                 egui::Align2::CENTER_CENTER,
-                "Это имитация игры. Щёлкайте здесь, чтобы листать реплики.",
+                t("Это имитация игры. Щёлкайте здесь, чтобы листать реплики."),
                 FontId::new(21.0, FontFamily::Proportional),
                 Color32::WHITE,
             );

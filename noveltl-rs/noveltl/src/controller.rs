@@ -16,6 +16,7 @@ use noveltl_core::pipeline::{LineResult, TranslationPipeline};
 use noveltl_core::profiles::{
     exe_version, AppSettings, GlossaryEntry, OverlayFrac, Profile, ProfileStore,
 };
+use noveltl_core::i18n::{t, tf};
 use noveltl_core::langdetect::Lang;
 use noveltl_core::scorer::{find_name_thread, HookKey, HookRef, ThreadTracker, NAME_PAIR_WINDOW};
 use noveltl_core::translators::{Http, HttpError, HttpResponse, TranslatorManager};
@@ -335,6 +336,13 @@ fn push_history(history: &mut VecDeque<LineResult>, r: LineResult) {
     }
 }
 
+/// Язык интерфейса из настроек (не выбран — по языку Windows).
+pub fn apply_ui_lang(s: &AppSettings) {
+    // в тестах — всегда русский, чтобы проверки текста не зависели от языка Windows
+    let system = if cfg!(test) { noveltl_core::i18n::UiLang::Ru } else { winutil::system_ui_lang() };
+    noveltl_core::i18n::set_lang(s.ui_lang.unwrap_or(system));
+}
+
 fn to_frac(f: OverlayFrac) -> Frac {
     Frac { x: f.x as f32, y: f.y as f32, w: f.w as f32, h: f.h as f32 }
 }
@@ -362,13 +370,13 @@ fn build_network(s: &AppSettings) -> (Option<Arc<dyn Http>>, String) {
     let mut bind_ip = s.bind_ip.clone();
     if !bind_ip.is_empty() && !winutil::list_interfaces().iter().any(|(_, ip)| *ip == bind_ip) {
         bind_ip.clear();
-        msg = "Сохранённый сетевой интерфейс сейчас недоступен — используется автоматический выбор".to_string();
+        msg = t("Сохранённый сетевой интерфейс сейчас недоступен — используется автоматический выбор").to_string();
     }
     let http: Option<Arc<dyn Http>> = match make_http(&s.net_mode, &s.proxy_url, &bind_ip, &s.proxy_user, &s.proxy_pass)
     {
         Ok(h) => Some(Arc::new(h)),
         Err(_) => {
-            msg = "Настройки прокси неверные — используется подключение как в системе".to_string();
+            msg = t("Настройки прокси неверные — используется подключение как в системе").to_string();
             make_http(NET_SYSTEM, "", "", "", "").ok().map(|h| Arc::new(h) as Arc<dyn Http>)
         }
     };
@@ -423,6 +431,7 @@ impl Controller {
     ) -> Self {
         let settings_path = data_dir().join("settings.json");
         let settings = AppSettings::load(&settings_path);
+        apply_ui_lang(&settings);
         let store = ProfileStore::new(sub_data_dir("profiles"));
         let mut notices = Vec::new();
         let http: Arc<dyn Http> = if demo {
@@ -504,7 +513,7 @@ impl Controller {
         while let Ok(ev) = self.overlay_rx.try_recv() {
             match ev {
                 overlay::Event::Moved(f) => self.on_overlay_moved(f),
-                overlay::Event::Failed(msg) => self.notice(format!("Не удалось создать плашку перевода: {msg}")),
+                overlay::Event::Failed(msg) => self.notice(tf("Не удалось создать плашку перевода: {}", &[&msg])),
                 overlay::Event::Menu(id) => self.menu_requests.push(id),
             }
         }
@@ -595,7 +604,7 @@ impl Controller {
                 if profile.hook.is_some() {
                     let name = profile.name.clone();
                     self.start_session(profile, &w, true, false);
-                    self.notice(format!("Игра «{name}» найдена — перевод включён."));
+                    self.notice(tf("Игра «{}» найдена — перевод включён.", &[&name]));
                     break;
                 }
             }
@@ -741,7 +750,7 @@ impl Controller {
         if s.saved {
             let _ = self.store.save(&s.profile);
         }
-        self.notices.push("Сохранённый источник текста не нашёлся — NovelTL сам выбрал другой.".to_string());
+        self.notices.push(t("Сохранённый источник текста не нашёлся — NovelTL сам выбрал другой.").to_string());
     }
 
     fn run_pending(&mut self) {
@@ -834,7 +843,7 @@ impl Controller {
 
     fn on_translate_failed(&mut self, seq: u64, message: String) {
         if self.session.is_some() && seq == self.seq {
-            self.overlay.send(Cmd::Note { note: format!("⚠ Не удалось перевести: {message}"), keep_text: false });
+            self.overlay.send(Cmd::Note { note: tf("⚠ Не удалось перевести: {}", &[&message]), keep_text: false });
         }
     }
 
@@ -979,7 +988,7 @@ impl Controller {
             Err(e) => e.kind() == std::io::ErrorKind::NotFound,
         };
         if !flushed || !removed {
-            self.notice("Файл кэша этой игры занят — он будет удалён позже.");
+            self.notice(t("Файл кэша этой игры занят — он будет удалён позже."));
             if !self.stale_caches.contains(&path) {
                 self.stale_caches.push(path);
             }
@@ -1017,7 +1026,7 @@ impl Controller {
                 // страницей (пауза до следующего скана заодно пропускает запоздалый Disconnected от старой сессии)
                 self.end_session();
                 self.last_scan = Instant::now();
-                self.notice("Язык игры изменён — NovelTL переподключается к игре.");
+                self.notice(t("Язык игры изменён — NovelTL переподключается к игре."));
             } else {
                 // профиля для автопоиска нет — подключаемся явно к тому же окну
                 let win = self.windows().into_iter().find(|w| w.pid == win_pid);
@@ -1072,6 +1081,7 @@ impl Controller {
     pub fn save_settings(&mut self, new: AppSettings) {
         let old = self.settings.clone();
         self.settings = new;
+        apply_ui_lang(&self.settings);
         self.register_hotkeys();
         // занятые другой программой сочетания откатываем на прежние, чтобы они продолжали работать
         let attempted = std::mem::take(&mut self.hotkey_errors);
@@ -1087,10 +1097,10 @@ impl Controller {
         self.hotkey_errors = attempted;
         match self.settings.save_checked(&self.settings_path) {
             Ok(true) => self.notice(
-                "Не удалось зашифровать ключ DeepL или пароль прокси — они сохранены открытым текстом в data\\settings.json.",
+                t("Не удалось зашифровать ключ DeepL или пароль прокси — они сохранены открытым текстом в data\\settings.json."),
             ),
             Ok(false) => {}
-            Err(e) => self.notice(format!("Не удалось сохранить настройки: {e}")),
+            Err(e) => self.notice(tf("Не удалось сохранить настройки: {}", &[&e])),
         }
         self.worker.send(WorkerCmd::SetDeeplKey(self.settings.deepl_key.clone()));
         self.worker.send(WorkerCmd::SetTarget(self.settings.target_lang));

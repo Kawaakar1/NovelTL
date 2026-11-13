@@ -1,8 +1,9 @@
 //! Аватар пользователя: выбор файла (диалог Windows), обработка через WIC и хранение в папке данных.
 
+use noveltl_core::i18n::{t, tf};
 use std::path::{Path, PathBuf};
 
-use windows::core::{w, PCWSTR};
+use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppRGBA, IWICImagingFactory, WICBitmapDitherTypeNone,
     WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
@@ -28,12 +29,13 @@ pub fn pick_image() -> Option<PathBuf> {
     init_com();
     unsafe {
         let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let filter = HSTRING::from(t("Изображения (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)"));
         let spec = [COMDLG_FILTERSPEC {
-            pszName: w!("Изображения (*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp)"),
+            pszName: PCWSTR(filter.as_ptr()),
             pszSpec: w!("*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp"),
         }];
         dlg.SetFileTypes(&spec).ok()?;
-        dlg.SetTitle(w!("Выберите аватар")).ok()?;
+        dlg.SetTitle(&HSTRING::from(t("Выберите аватар"))).ok()?;
         dlg.Show(None).ok()?;
         let item = dlg.GetResult().ok()?;
         let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
@@ -72,7 +74,7 @@ fn decode(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
         let (mut w, mut h) = (0u32, 0u32);
         conv.GetSize(&mut w, &mut h).map_err(|e| e.to_string())?;
         if w == 0 || h == 0 {
-            return Err("пустая картинка".into());
+            return Err(t("пустая картинка").into());
         }
         let mut buf = vec![0u8; w as usize * h as usize * 4];
         conv.CopyPixels(std::ptr::null(), w * 4, &mut buf).map_err(|e| e.to_string())?;
@@ -138,7 +140,7 @@ fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
 
 /// Сохраняет аватар в `dir` под уникальным именем; возвращает имя файла.
 fn store_avatar_to(dir: &Path, src: &Path) -> Result<String, String> {
-    let (w, h, px) = decode(src).map_err(|e| format!("Не удалось открыть картинку: {e}"))?;
+    let (w, h, px) = decode(src).map_err(|e| tf("Не удалось открыть картинку: {}", &[&e]))?;
     let out = square_resize(w, h, &px);
     let mut ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -151,7 +153,7 @@ fn store_avatar_to(dir: &Path, src: &Path) -> Result<String, String> {
         }
         ms += 1;
     };
-    write_png(&dir.join(&name), SIZE, SIZE, &out).map_err(|e| format!("Не удалось сохранить аватар: {e}"))?;
+    write_png(&dir.join(&name), SIZE, SIZE, &out).map_err(|e| tf("Не удалось сохранить аватар: {}", &[&e]))?;
     Ok(name)
 }
 

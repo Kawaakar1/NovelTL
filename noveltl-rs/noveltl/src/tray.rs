@@ -1,6 +1,7 @@
 //! Значок в трее с меню (часть `main_window.py`). Крейт `tray-icon`; события приходят в обработчики,
 //! которые работают и тогда, когда главное окно спрятано (интерфейс в это время не рисуется).
 
+use noveltl_core::i18n::t;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Arc;
@@ -31,8 +32,11 @@ static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static TRAY_UID: AtomicU32 = AtomicU32::new(0);
 
 struct Items {
+    open: MenuItem,
     toggle: MenuItem,
     retr: MenuItem,
+    settings: MenuItem,
+    quit: MenuItem,
 }
 
 thread_local! {
@@ -168,10 +172,13 @@ fn refresh_menu(shared: &Shared) {
     };
     ITEMS.with(|cell| {
         if let Some(items) = cell.borrow().as_ref() {
-            items
-                .toggle
-                .set_text(format!("{}\t{}", if hidden { "Показать плашку" } else { "Скрыть плашку" }, toggle_key));
-            items.retr.set_text(format!("Перевести заново без кэша\t{retr_key}"));
+            // подписи на текущем языке интерфейса (его могли сменить в настройках)
+            let toggle = if hidden { t("Показать плашку") } else { crate::overlay::menu_label(ID_TOGGLE) };
+            items.toggle.set_text(format!("{toggle}\t{toggle_key}"));
+            items.retr.set_text(format!("{}\t{retr_key}", crate::overlay::menu_label(ID_RETR)));
+            items.open.set_text(crate::overlay::menu_label(ID_OPEN));
+            items.settings.set_text(crate::overlay::menu_label(ID_SETTINGS));
+            items.quit.set_text(crate::overlay::menu_label(ID_QUIT));
             items.retr.set_enabled(has_session);
         }
     });
@@ -216,11 +223,11 @@ pub fn handle_menu(shared: &Shared, id: &str) {
 pub fn create(shared: Arc<Shared>, rgba: Vec<u8>, size: u32) -> Option<TrayIcon> {
     let icon = Icon::from_rgba(rgba, size, size).ok()?;
     let menu = Menu::new();
-    let open = MenuItem::with_id(ID_OPEN, "Открыть NovelTL", true, None);
-    let toggle = MenuItem::with_id(ID_TOGGLE, "Скрыть плашку", true, None);
-    let retr = MenuItem::with_id(ID_RETR, "Перевести заново без кэша", true, None);
-    let settings = MenuItem::with_id(ID_SETTINGS, "Настройки", true, None);
-    let quit = MenuItem::with_id(ID_QUIT, "Выход", true, None);
+    let open = MenuItem::with_id(ID_OPEN, crate::overlay::menu_label(ID_OPEN), true, None);
+    let toggle = MenuItem::with_id(ID_TOGGLE, crate::overlay::menu_label(ID_TOGGLE), true, None);
+    let retr = MenuItem::with_id(ID_RETR, crate::overlay::menu_label(ID_RETR), true, None);
+    let settings = MenuItem::with_id(ID_SETTINGS, crate::overlay::menu_label(ID_SETTINGS), true, None);
+    let quit = MenuItem::with_id(ID_QUIT, crate::overlay::menu_label(ID_QUIT), true, None);
     let _ = menu.append_items(&[
         &open,
         &PredefinedMenuItem::separator(),
@@ -230,7 +237,7 @@ pub fn create(shared: Arc<Shared>, rgba: Vec<u8>, size: u32) -> Option<TrayIcon>
         &settings,
         &quit,
     ]);
-    ITEMS.with(|cell| *cell.borrow_mut() = Some(Items { toggle, retr }));
+    ITEMS.with(|cell| *cell.borrow_mut() = Some(Items { open: open.clone(), toggle: toggle.clone(), retr: retr.clone(), settings: settings.clone(), quit: quit.clone() }));
 
     let tray = TrayIconBuilder::new()
         .with_id("noveltl")

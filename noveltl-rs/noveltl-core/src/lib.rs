@@ -3,6 +3,7 @@
 
 pub mod cache;
 pub mod cleaner;
+pub mod i18n;
 pub mod langdetect;
 pub mod net;
 pub mod pipeline;

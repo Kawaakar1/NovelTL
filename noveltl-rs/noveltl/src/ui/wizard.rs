@@ -8,6 +8,7 @@ use eframe::egui::{
     self, text::LayoutJob, Align, Color32, CornerRadius, FontId, Frame, Layout, Margin, Pos2, Rect,
     Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2, ViewportBuilder, ViewportId,
 };
+use noveltl_core::i18n::{t, tf};
 use noveltl_core::langdetect::Lang;
 use noveltl_core::scorer::{is_confident, HookKey, CONFIDENT_DISTINCT};
 
@@ -81,7 +82,7 @@ fn elide(text: &str, limit: usize) -> String {
 
 fn lang_title(l: Lang) -> String {
     if l == Lang::Auto {
-        format!("{} (определять по тексту)", l.title())
+        tf("{} (определять по тексту)", &[&l.title()])
     } else {
         l.title().to_string()
     }
@@ -93,7 +94,7 @@ fn wrap(ui: &mut Ui, text: RichText) {
 
 fn header(ui: &mut Ui, step: usize, title: &str, text: &str) {
     ui.spacing_mut().item_spacing.y = 12.0;
-    ui.label(theme::step(format!("ШАГ {step} ИЗ 3")));
+    ui.label(theme::step(tf("ШАГ {} ИЗ 3", &[&step])));
     ui.label(theme::h1(title));
     wrap(ui, theme::dim(text));
     ui.add_space(4.0);
@@ -164,7 +165,7 @@ impl Wizard {
             windows_at: None,
             selected: None,
             lang: default_lang,
-            target_title: target_lang.title().to_lowercase(),
+            target_title: target_lang.title_in_text(),
             show_others: false,
             best_key: None,
             messages: Vec::new(),
@@ -190,9 +191,9 @@ impl Wizard {
     /// Заголовок окна (по нему окно находят для снимка с экрана).
     pub fn window_title(&self) -> &'static str {
         if self.mode == WizardMode::New {
-            "Добавление игры — NovelTL"
+            t("Добавление игры — NovelTL")
         } else {
-            "Настройка игры — NovelTL"
+            t("Настройка игры — NovelTL")
         }
     }
 
@@ -314,7 +315,7 @@ impl Wizard {
         self.reload_windows(shared, false);
         let snap = self.snapshot(shared);
         self.best_key = snap.rows.first().map(|r| r.key.clone());
-        self.target_title = lock_ctl(&shared.controller).settings.target_lang.title().to_lowercase();
+        self.target_title = lock_ctl(&shared.controller).settings.target_lang.title_in_text();
 
         let mut builder = ViewportBuilder::default()
             .with_title(self.window_title())
@@ -362,13 +363,14 @@ impl Wizard {
                         let path = path.to_string_lossy().into_owned();
                         winutil::reveal_in_explorer(&path);
                         self.messages.push((
-                            "Отчёт сохранён".to_string(),
-                            format!(
-                                "Отчёт сохранён в файл:\n{path}\n\nПапка с ним открыта — пришлите этот файл для доработки."
+                            t("Отчёт сохранён").to_string(),
+                            tf(
+                                "Отчёт сохранён в файл:\n{}\n\nПапка с ним открыта — пришлите этот файл для доработки.",
+                                &[&path],
                             ),
                         ));
                     }
-                    Err(e) => self.messages.push(("Отчёт".to_string(), format!("Не удалось сохранить отчёт: {e}"))),
+                    Err(e) => self.messages.push((t("Отчёт").to_string(), tf("Не удалось сохранить отчёт: {}", &[&e]))),
                 }
             }
             Act::BackToSearch => self.go(shared, 1),
@@ -416,7 +418,7 @@ impl Wizard {
         egui::TopBottomPanel::bottom("wiz_foot1").show_separator_line(false).frame(footer_frame()).show(ctx, |ui| {
             ui.spacing_mut().item_spacing = Vec2::new(8.0, 10.0);
             ui.horizontal(|ui| {
-                ui.label(theme::body("Язык игры"));
+                ui.label(theme::body(t("Язык игры")));
                 egui::ComboBox::from_id_salt("wiz_lang")
                     .width(240.0)
                     .selected_text(theme::body(lang_title(self.lang)))
@@ -426,16 +428,16 @@ impl Wizard {
                         }
                     });
             });
-            ui.label(theme::small(format!(
+            ui.label(theme::small(tf(
                 "Перевод на: {} — меняется в настройках, раздел «Перевод».",
-                self.target_title
+                &[&self.target_title],
             )));
             ui.horizontal(|ui| {
-                if button(ui, "Отмена", BtnKind::Normal, true, None).clicked() {
+                if button(ui, t("Отмена"), BtnKind::Normal, true, None).clicked() {
                     acts.push(Act::Cancel);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, "Далее  →", BtnKind::Primary, can_next, None).clicked() {
+                    if button(ui, t("Далее  →"), BtnKind::Primary, can_next, None).clicked() {
                         acts.push(Act::Start);
                     }
                 });
@@ -445,11 +447,11 @@ impl Wizard {
             header(
                 ui,
                 1,
-                "Выберите игру",
-                "Запустите игру в оконном режиме и выберите её в списке. Браузеры и системные окна скрыты.",
+                t("Выберите игру"),
+                t("Запустите игру в оконном режиме и выберите её в списке. Браузеры и системные окна скрыты."),
             );
             if self.windows.is_empty() {
-                wrap(ui, theme::dim("Не вижу запущенных игр. Запустите игру — она появится здесь сама."));
+                wrap(ui, theme::dim(t("Не вижу запущенных игр. Запустите игру — она появится здесь сама.")));
                 return;
             }
             let mut picked: Option<isize> = None;
@@ -479,11 +481,11 @@ impl Wizard {
     fn draw_step2(&mut self, ctx: &egui::Context, snap: &Snap, acts: &mut Vec<Act>) {
         egui::TopBottomPanel::bottom("wiz_foot2").show_separator_line(false).frame(footer_frame()).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if button(ui, "←  Назад", BtnKind::Normal, true, None).clicked() {
+                if button(ui, t("←  Назад"), BtnKind::Normal, true, None).clicked() {
                     acts.push(Act::BackFromSearch);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, "Текст не находится? Сохранить отчёт", BtnKind::Link, true, None).clicked() {
+                    if button(ui, t("Текст не находится? Сохранить отчёт"), BtnKind::Link, true, None).clicked() {
                         acts.push(Act::Report);
                     }
                 });
@@ -496,31 +498,30 @@ impl Wizard {
                 header(
                     ui,
                     2,
-                    "Поиск текста",
-                    "Перейдите в игру и прокликайте 3–4 реплики. NovelTL сам найдёт, откуда брать текст, и покажет его здесь.",
+                    t("Поиск текста"),
+                    t("Перейдите в игру и прокликайте 3–4 реплики. NovelTL сам найдёт, откуда брать текст, и покажет его здесь."),
                 );
                 let best = snap.rows.first();
                 let (color, text) = if !snap.has_session {
-                    (p.bad, "Игра закрыта. Запустите её и начните заново.".to_string())
+                    (p.bad, t("Игра закрыта. Запустите её и начните заново.").to_string())
                 } else if !snap.error.is_empty() {
                     (p.bad, snap.error.clone())
                 } else if !snap.connected {
-                    (p.warn, "Подключаюсь к игре…".to_string())
+                    (p.warn, t("Подключаюсь к игре…").to_string())
                 } else if let Some(b) = best {
                     if snap.confident {
-                        (p.ok, "Текст найден. Проверьте, что ниже — реплики из игры.".to_string())
+                        (p.ok, t("Текст найден. Проверьте, что ниже — реплики из игры.").to_string())
                     } else {
                         (
                             p.warn,
-                            format!(
+                            tf(
                                 "Поймано реплик: {} из {}. Кликайте дальше.",
-                                b.distinct.min(CONFIDENT_DISTINCT),
-                                CONFIDENT_DISTINCT
+                                &[&b.distinct.min(CONFIDENT_DISTINCT), &CONFIDENT_DISTINCT],
                             ),
                         )
                     }
                 } else {
-                    (p.warn, "Подключено. Жду текст — кликайте в игре.".to_string())
+                    (p.warn, t("Подключено. Жду текст — кликайте в игре.").to_string())
                 };
                 wrap(ui, RichText::new(text).size(14.0).color(color));
                 let shown = if snap.has_session { best } else { None };
@@ -535,7 +536,7 @@ impl Wizard {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.spacing_mut().item_spacing.y = 8.0;
-                        ui.label(theme::step("НАЙДЕННЫЙ ТЕКСТ"));
+                        ui.label(theme::step(t("НАЙДЕННЫЙ ТЕКСТ")));
                         ui.vertical(|ui| {
                             ui.set_min_height(96.0);
                             ui.set_width(ui.available_width());
@@ -547,7 +548,7 @@ impl Wizard {
                                 None => wrap(
                                     ui,
                                     RichText::new(
-                                        "Пока пусто.\nЗдесь появятся реплики, как только вы начнёте кликать в игре.",
+                                        t("Пока пусто.\nЗдесь появятся реплики, как только вы начнёте кликать в игре."),
                                     )
                                     .size(17.0)
                                     .family(theme::jp_family())
@@ -558,15 +559,15 @@ impl Wizard {
                         let hint = match shown {
                             Some(b) => {
                                 let engine =
-                                    if snap.engine.is_empty() { String::new() } else { format!(" · движок {}", snap.engine) };
-                                let name = if b.name.is_empty() { "хук" } else { b.name.as_str() };
-                                format!("Источник: {name}{engine} · оценка {:.0}", b.score)
+                                    if snap.engine.is_empty() { String::new() } else { tf(" · движок {}", &[&snap.engine]) };
+                                let name = if b.name.is_empty() { t("хук") } else { b.name.as_str() };
+                                tf("Источник: {}{} · оценка {}", &[&name, &engine, &format!("{:.0}", b.score)])
                             }
                             None => String::new(),
                         };
                         wrap(ui, theme::small(hint));
                         let w = ui.available_width();
-                        if button(ui, "Это текст диалога", BtnKind::Big, shown.is_some(), Some(w)).clicked() {
+                        if button(ui, t("Это текст диалога"), BtnKind::Big, shown.is_some(), Some(w)).clicked() {
                             if let Some(b) = shown {
                                 acts.push(Act::Confirm(b.key.clone()));
                             }
@@ -576,7 +577,7 @@ impl Wizard {
                 let others: &[Row] = if snap.rows.len() > 1 { &snap.rows[1..] } else { &[] };
                 if !others.is_empty() || self.show_others {
                     let arrow = if self.show_others { "↓" } else { "→" };
-                    let label = format!("{arrow}  Это не то? Другие варианты ({})", others.len());
+                    let label = tf("{}  Это не то? Другие варианты ({})", &[&arrow, &others.len()]);
                     if button(ui, &label, BtnKind::Link, true, None).clicked() {
                         acts.push(Act::ToggleOthers);
                     }
@@ -586,17 +587,17 @@ impl Wizard {
                         ui.spacing_mut().item_spacing.y = 6.0;
                         for r in others {
                             let line = r.last.last().map(|t| elide(t, 46)).unwrap_or_default();
-                            let name = if r.name.is_empty() { "хук" } else { r.name.as_str() };
+                            let name = if r.name.is_empty() { t("хук") } else { r.name.as_str() };
                             theme::card_frame().inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 8 }).show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.horizontal(|ui| {
                                     ui.vertical(|ui| {
                                         ui.spacing_mut().item_spacing.y = 2.0;
                                         ui.label(theme::jp(line));
-                                        ui.label(theme::small(format!("{name} · оценка {:.0}", r.score)));
+                                        ui.label(theme::small(tf("{} · оценка {}", &[&name, &format!("{:.0}", r.score)])));
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        if button(ui, "Выбрать", BtnKind::Normal, true, None).clicked() {
+                                        if button(ui, t("Выбрать"), BtnKind::Normal, true, None).clicked() {
                                             acts.push(Act::Confirm(r.key.clone()));
                                         }
                                     });
@@ -614,14 +615,14 @@ impl Wizard {
         let position = self.mode == WizardMode::Position;
         egui::TopBottomPanel::bottom("wiz_foot3").show_separator_line(false).frame(footer_frame()).show(ctx, |ui| {
             ui.horizontal(|ui| {
-                if !position && button(ui, "←  Назад", BtnKind::Normal, true, None).clicked() {
+                if !position && button(ui, t("←  Назад"), BtnKind::Normal, true, None).clicked() {
                     acts.push(Act::BackToSearch);
                 }
-                if position && button(ui, "Отмена", BtnKind::Normal, true, None).clicked() {
+                if position && button(ui, t("Отмена"), BtnKind::Normal, true, None).clicked() {
                     acts.push(Act::Cancel);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, "Готово", BtnKind::Big, true, None).clicked() {
+                    if button(ui, t("Готово"), BtnKind::Big, true, None).clicked() {
                         acts.push(Act::Finish);
                     }
                 });
@@ -631,23 +632,23 @@ impl Wizard {
             header(
                 ui,
                 3,
-                "Расположение плашки",
-                "Поверх игры появилась плашка с примером перевода. Перетащите её мышью на окно диалога \
-                 и растяните за края так, чтобы она закрыла оригинальный текст.",
+                t("Расположение плашки"),
+                t("Поверх игры появилась плашка с примером перевода. Перетащите её мышью на окно диалога \
+                 и растяните за края так, чтобы она закрыла оригинальный текст."),
             );
             theme::card_frame().inner_margin(Margin::symmetric(18, 14)).show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 8.0;
                 for tip in [
-                    "•  Тяните за середину — плашка двигается, за края и углы — меняет размер.",
-                    "•  Если окно игры изменит размер, плашка подстроится сама.",
-                    "•  Шрифт, цвета и прозрачность меняются в «Настройках».",
-                    "•  Не видно плашку? Разверните окно игры — плашка рисуется только поверх него.",
+                    t("•  Тяните за середину — плашка двигается, за края и углы — меняет размер."),
+                    t("•  Если окно игры изменит размер, плашка подстроится сама."),
+                    t("•  Шрифт, цвета и прозрачность меняются в «Настройках»."),
+                    t("•  Не видно плашку? Разверните окно игры — плашка рисуется только поверх него."),
                 ] {
                     wrap(ui, theme::body(tip));
                 }
             });
-            if button(ui, "Вернуть положение по умолчанию", BtnKind::Link, true, None).clicked() {
+            if button(ui, t("Вернуть положение по умолчанию"), BtnKind::Link, true, None).clicked() {
                 acts.push(Act::ResetPosition);
             }
         });

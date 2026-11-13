@@ -1,5 +1,6 @@
 ﻿//! Сетевые настройки перевода: прокси, прямое подключение, выбор интерфейса.
 
+use crate::i18n::{t, tf};
 use std::error::Error as StdError;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -15,15 +16,19 @@ pub const NET_PROXY: &str = "proxy";
 
 pub fn net_title(mode: &str) -> &'static str {
     match mode {
-        NET_SYSTEM => "Как в системе",
-        NET_DIRECT => "Напрямую, без прокси",
-        NET_PROXY => "Через прокси",
+        NET_SYSTEM => t("Как в системе"),
+        NET_DIRECT => t("Напрямую, без прокси"),
+        NET_PROXY => t("Через прокси"),
         _ => "",
     }
 }
 
-const PROXY_ERROR: &str = "Неверный адрес прокси. Пример: socks5://127.0.0.1:1080 или http://127.0.0.1:8080";
-const AUTH_ERROR: &str = "Прокси не принял логин или пароль";
+fn proxy_error() -> &'static str {
+    t("Неверный адрес прокси. Пример: socks5://127.0.0.1:1080 или http://127.0.0.1:8080")
+}
+fn auth_error() -> &'static str {
+    t("Прокси не принял логин или пароль")
+}
 const TIMEOUT: Duration = Duration::from_secs(12);
 
 fn scheme_map(s: &str) -> Option<&'static str> {
@@ -78,18 +83,18 @@ fn host_port(netloc: &str) -> Result<(String, Option<u32>), ()> {
 pub fn normalize_proxy(text: &str) -> Result<String, String> {
     let mut text = text.trim().to_string();
     if text.is_empty() {
-        return Err("Укажите адрес прокси".to_string());
+        return Err(t("Укажите адрес прокси").to_string());
     }
     if !text.contains("://") {
         text = format!("http://{text}");
     }
-    let err = || PROXY_ERROR.to_string();
+    let err = || proxy_error().to_string();
     let (scheme, netloc, _) = split_url(&text).ok_or_else(err)?;
     let (host, port) = host_port(netloc).map_err(|_| err())?;
     let scheme = scheme_map(&scheme).ok_or_else(err)?;
     if scheme == "socks4a" {
         // reqwest умеет только SOCKS5 и HTTP(S)
-        return Err("SOCKS4 не поддерживается — используйте SOCKS5 или HTTP".to_string());
+        return Err(t("SOCKS4 не поддерживается — используйте SOCKS5 или HTTP").to_string());
     }
     match port {
         Some(p) if !host.is_empty() && (1..=65535).contains(&p) => Ok(format!("{scheme}://{netloc}")),
@@ -136,16 +141,16 @@ pub fn build_proxy_url(address: &str, user: &str, password: &str) -> Result<Stri
     let base = normalize_proxy(address)?;
     let user = user.trim();
     if user.is_empty() && !password.is_empty() {
-        return Err("Укажите логин прокси".to_string());
+        return Err(t("Укажите логин прокси").to_string());
     }
     if user.is_empty() {
         return Ok(base);
     }
-    let (scheme, netloc, _) = split_url(&base).ok_or_else(|| PROXY_ERROR.to_string())?;
+    let (scheme, netloc, _) = split_url(&base).ok_or_else(|| proxy_error().to_string())?;
     if scheme == "socks4a" && !password.is_empty() {
-        return Err("SOCKS4 не поддерживает пароль — используйте SOCKS5".to_string());
+        return Err(t("SOCKS4 не поддерживает пароль — используйте SOCKS5").to_string());
     }
-    let (host, port) = host_port(netloc).map_err(|_| PROXY_ERROR.to_string())?;
+    let (host, port) = host_port(netloc).map_err(|_| proxy_error().to_string())?;
     let host = if host.contains(':') { format!("[{host}]") } else { host };
     let mut cred = quote(user);
     if !password.is_empty() {
@@ -271,7 +276,7 @@ pub fn make_http(
         let url = build_proxy_url(proxy_url, proxy_user, proxy_pass)?;
         // логин и пароль отдаём отдельно (раскодированными): так они уходят на сервер ровно как введены
         let (clean, user, pass) = split_proxy_credentials(&url);
-        let mut proxy = reqwest::Proxy::all(clean.as_str()).map_err(|_| PROXY_ERROR.to_string())?;
+        let mut proxy = reqwest::Proxy::all(clean.as_str()).map_err(|_| proxy_error().to_string())?;
         if !user.is_empty() {
             proxy = proxy.basic_auth(&user, &pass);
         }
@@ -280,10 +285,10 @@ pub fn make_http(
     }
     let bind_ip = bind_ip.trim();
     if !bind_ip.is_empty() {
-        let ip: IpAddr = bind_ip.parse().map_err(|_| format!("Неверный сетевой адрес: {bind_ip}"))?;
+        let ip: IpAddr = bind_ip.parse().map_err(|_| tf("Неверный сетевой адрес: {}", &[&bind_ip]))?;
         b = b.local_address(ip);
     }
-    let client = b.build().map_err(|e| format!("Не удалось настроить соединение: {e}"))?;
+    let client = b.build().map_err(|e| tf("Не удалось настроить соединение: {}", &[&e]))?;
     Ok(ReqwestHttp { client, uses_proxy })
 }
 
@@ -301,34 +306,34 @@ pub fn check_google(http: &dyn Http) -> (bool, String) {
     let query = [("client", "gtx"), ("sl", "en"), ("tl", "ru"), ("dt", "t"), ("q", "test")];
     let resp = match http.get("https://translate.googleapis.com/translate_a/single", &query) {
         Ok(r) => r,
-        Err(HttpError::ProxyAuth) => return (false, AUTH_ERROR.to_string()),
+        Err(HttpError::ProxyAuth) => return (false, auth_error().to_string()),
         Err(HttpError::ProxyUnreachable) => {
-            return (false, "Не удалось подключиться к прокси. Проверьте адрес и что прокси запущен".to_string())
+            return (false, t("Не удалось подключиться к прокси. Проверьте адрес и что прокси запущен").to_string())
         }
         Err(HttpError::AccessDenied) => {
             return (
                 false,
-                "Выход через этот интерфейс запрещён системой. Обычно так делает VPN \
-                 с защитой от утечек (kill switch) — выключите её в настройках VPN или используйте прокси"
+                t("Выход через этот интерфейс запрещён системой. Обычно так делает VPN \
+                 с защитой от утечек (kill switch) — выключите её в настройках VPN или используйте прокси")
                     .to_string(),
             )
         }
         Err(HttpError::AddressUnavailable) => {
-            return (false, "Этого сетевого адреса сейчас нет на компьютере — выберите другой интерфейс".to_string())
+            return (false, t("Этого сетевого адреса сейчас нет на компьютере — выберите другой интерфейс").to_string())
         }
         Err(HttpError::Connect(_)) | Err(HttpError::Timeout) => {
-            return (false, "Нет соединения с Google. Проверьте интернет, прокси или выбранный интерфейс".to_string())
+            return (false, t("Нет соединения с Google. Проверьте интернет, прокси или выбранный интерфейс").to_string())
         }
-        Err(HttpError::Other(name)) => return (false, format!("Ошибка: {name}")),
+        Err(HttpError::Other(name)) => return (false, tf("Ошибка: {}", &[&name])),
     };
     match resp.status {
-        407 => (false, AUTH_ERROR.to_string()),
-        200 => (true, "Google отвечает, перевод работает".to_string()),
+        407 => (false, auth_error().to_string()),
+        200 => (true, t("Google отвечает, перевод работает").to_string()),
         429 => (
             false,
-            "Google ограничил запросы с этого адреса (код 429). Попробуйте другой интерфейс или прокси".to_string(),
+            t("Google ограничил запросы с этого адреса (код 429). Попробуйте другой интерфейс или прокси").to_string(),
         ),
-        s => (false, format!("Google ответил кодом {s}")),
+        s => (false, tf("Google ответил кодом {}", &[&s])),
     }
 }
 
@@ -476,10 +481,10 @@ mod tests {
         let (_, text) = check_google(&http);
         assert_eq!(got.lock().unwrap().last().unwrap(), &expected);
         assert!(!text.contains("p@ss") && !text.contains("%40"), "{text}");
-        assert_ne!(text, AUTH_ERROR);
+        assert_ne!(text, auth_error());
 
         let http = make_http(NET_PROXY, &url, "", "юзер", "wrong").unwrap();
-        assert_eq!(check_google(&http), (false, AUTH_ERROR.to_string()));
+        assert_eq!(check_google(&http), (false, auth_error().to_string()));
     }
 
     #[test]
@@ -520,14 +525,14 @@ mod tests {
         let (_, text) = check_google(&http);
         assert_eq!(got.lock().unwrap().last().unwrap(), "user:p@ss:w/rd");
         assert!(!text.contains("p@ss"), "{text}");
-        assert_ne!(text, AUTH_ERROR);
+        assert_ne!(text, auth_error());
 
         let http = make_http(NET_PROXY, &url, "", "user", "wrong").unwrap();
-        assert_eq!(check_google(&http), (false, AUTH_ERROR.to_string()));
+        assert_eq!(check_google(&http), (false, auth_error().to_string()));
 
         // кириллица в логине и пароле уходит в UTF-8, а не роняет запрос
         let http = make_http(NET_PROXY, &url, "", "юзер", "пароль@1").unwrap();
-        assert_eq!(check_google(&http), (false, AUTH_ERROR.to_string()));
+        assert_eq!(check_google(&http), (false, auth_error().to_string()));
         assert_eq!(got.lock().unwrap().last().unwrap(), "юзер:пароль@1");
     }
 
@@ -612,7 +617,7 @@ mod tests {
         }
         let r = |s: u16| Fixed(Ok(HttpResponse { status: s, body: String::new() }));
         assert_eq!(check_google(&r(200)), (true, "Google отвечает, перевод работает".to_string()));
-        assert_eq!(check_google(&r(407)), (false, AUTH_ERROR.to_string()));
+        assert_eq!(check_google(&r(407)), (false, auth_error().to_string()));
         assert!(check_google(&r(429)).1.contains("код 429"));
         assert_eq!(check_google(&r(500)).1, "Google ответил кодом 500");
         assert!(check_google(&Fixed(Err(HttpError::AccessDenied))).1.contains("kill switch"));

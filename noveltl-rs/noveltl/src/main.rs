@@ -26,6 +26,7 @@ mod ui;
 #[allow(dead_code)]
 mod winutil;
 
+use noveltl_core::i18n::{t, tf};
 use std::path::PathBuf;
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
@@ -47,10 +48,12 @@ struct Args {
     shots: Option<PathBuf>,
     selfcheck: bool,
     theme: Option<String>,
+    /// язык интерфейса для этого запуска (проверки и снимки): ru / en / ja / zh / ko
+    lang: Option<noveltl_core::i18n::UiLang>,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { demo: false, shots: None, selfcheck: false, theme: None };
+    let mut a = Args { demo: false, shots: None, selfcheck: false, theme: None, lang: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
@@ -58,6 +61,7 @@ fn parse_args() -> Args {
             "--selfcheck" => a.selfcheck = true,
             "--shots" => a.shots = it.next().map(PathBuf::from),
             "--theme" => a.theme = it.next().filter(|t| matches!(t.as_str(), "system" | "dark" | "light")),
+            "--lang" => a.lang = it.next().and_then(|l| serde_json::from_value(serde_json::Value::String(l)).ok()),
             other => {
                 if let Some(v) = other.strip_prefix("--shots=") {
                     a.shots = Some(PathBuf::from(v));
@@ -199,12 +203,17 @@ fn main() {
         }
         paths::set_data_dir_override(dir);
     }
+    // язык интерфейса нужен уже для первых сообщений и заголовка окна
+    controller::apply_ui_lang(&noveltl_core::profiles::AppSettings::load(&paths::data_dir().join("settings.json")));
+    if let Some(l) = args.lang {
+        noveltl_core::i18n::set_lang(l);
+    }
 
     // один экземпляр: именованный мьютекс держим до конца работы (по нему установщик понимает, что программа запущена)
     let mutex = unsafe { CreateMutexW(None, false, w!("NovelTL_Running")) };
     let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
     if already && !demo {
-        message_box("NovelTL уже запущен — посмотрите значок в трее.");
+        message_box(t("NovelTL уже запущен — посмотрите значок в трее."));
         return;
     }
     let _mutex = mutex;
@@ -214,7 +223,7 @@ fn main() {
     }
 
     let icon = theme::icon_data(64);
-    let title = if demo { format!("{} — демо-режим", ui::APP_NAME) } else { ui::APP_NAME.to_string() };
+    let title = if demo { tf("{} — демо-режим", &[&ui::APP_NAME]) } else { ui::APP_NAME.to_string() };
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(title)
         .with_inner_size([900.0, 600.0])
@@ -227,6 +236,7 @@ fn main() {
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let cfg = Config { demo, shots: args.shots.clone() };
     let theme_arg = args.theme.clone();
+    let lang_arg = args.lang;
     let result = eframe::run_native(
         ui::APP_NAME,
         options,
@@ -250,6 +260,10 @@ fn main() {
             if let Some(t) = &theme_arg {
                 controller.settings.theme = t.clone();
             }
+            if let Some(l) = lang_arg {
+                controller.settings.ui_lang = Some(l);
+                noveltl_core::i18n::set_lang(l);
+            }
             let controller = Arc::new(Mutex::new(controller));
             let shared = Arc::new(Shared::new(controller, ctx));
             let engine = ui::start_engine(shared.clone());
@@ -257,6 +271,6 @@ fn main() {
         }),
     );
     if let Err(e) = result {
-        message_box(&format!("Не удалось запустить окно: {e}"));
+        message_box(&tf("Не удалось запустить окно: {}", &[&e]));
     }
 }

@@ -1,6 +1,7 @@
 //! Окно «Глоссарий — <игра>» (перенос `GlossaryDialog` из `noveltl/ui/dialogs.py`).
 //! Таблица из двух столбцов («В игре» / «В переводе») в `Grid` внутри `ScrollArea`.
 
+use noveltl_core::i18n::{t, tf};
 use std::sync::Arc;
 
 use eframe::egui::{
@@ -54,7 +55,7 @@ impl GlossaryWindow {
             icon: Arc::new(theme::icon_data(64)),
             pos,
             profile_id: profile_id.to_string(),
-            title: format!("Глоссарий — {}", profile.name),
+            title: tf("Глоссарий — {}", &[&profile.name]),
             rows: Vec::new(),
             next_uid: 0,
             selected: None,
@@ -166,17 +167,17 @@ impl GlossaryWindow {
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 20 }))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    if button(ui, "＋ Добавить", BtnKind::Normal, true, None).clicked() {
+                    if button(ui, t("＋ Добавить"), BtnKind::Normal, true, None).clicked() {
                         acts.push(Act::Add);
                     }
-                    if button(ui, "Удалить выбранное", BtnKind::Normal, self.selected.is_some(), None).clicked() {
+                    if button(ui, t("Удалить выбранное"), BtnKind::Normal, self.selected.is_some(), None).clicked() {
                         acts.push(Act::Remove);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if button(ui, "Сохранить", BtnKind::Primary, true, None).clicked() {
+                        if button(ui, t("Сохранить"), BtnKind::Primary, true, None).clicked() {
                             acts.push(Act::Save);
                         }
-                        if button(ui, "Отмена", BtnKind::Normal, true, None).clicked() {
+                        if button(ui, t("Отмена"), BtnKind::Normal, true, None).clicked() {
                             acts.push(Act::Cancel);
                         }
                     });
@@ -186,11 +187,11 @@ impl GlossaryWindow {
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 24, right: 24, top: 20, bottom: 8 }))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 12.0;
-                ui.label(theme::h2("Глоссарий имён и терминов"));
+                ui.label(theme::h2(t("Глоссарий имён и терминов")));
                 ui.add(
                     egui::Label::new(theme::dim(
-                        "Слева — как написано в игре, справа — как должно быть в переводе. \
-                         Так имена героев всегда переводятся одинаково.",
+                        t("Слева — как написано в игре, справа — как должно быть в переводе. \
+                         Так имена героев всегда переводятся одинаково."),
                     ))
                     .wrap_mode(egui::TextWrapMode::Wrap),
                 );
@@ -213,8 +214,8 @@ impl GlossaryWindow {
                 .show(ui, |ui| {
                     let head = |t: &str| RichText::new(t).size(13.0).family(theme::bold_family()).color(pal().dim);
                     ui.label("");
-                    ui.label(head("В игре"));
-                    ui.label(head("В переводе"));
+                    ui.label(head(t("В игре")));
+                    ui.label(head(t("В переводе")));
                     ui.end_row();
                     for (i, r) in self.rows.iter_mut().enumerate() {
                         let num = ui.add_sized(
@@ -246,7 +247,7 @@ impl GlossaryWindow {
                 });
             if self.rows.is_empty() {
                 ui.add_space(8.0);
-                ui.label(theme::small("Пока пусто. Нажмите «＋ Добавить»."));
+                ui.label(theme::small(t("Пока пусто. Нажмите «＋ Добавить».")));
             }
         });
         if clicked.is_some() {

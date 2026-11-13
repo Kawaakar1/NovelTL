@@ -1,5 +1,6 @@
 //! Источник текста: обёртка над LunaHost64.dll (движок LunaHook, GPL-3.0). Перенос `noveltl/lunahost.py`.
 
+use noveltl_core::i18n::{t, tf};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_void, CStr};
 use std::panic::catch_unwind;
@@ -18,10 +19,12 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub const HOSTINFO_WARNING: i32 = 1;
 pub const HOSTINFO_ENGINE: i32 = 4;
 
-pub const DEFENDER_HINT: &str = "Игра не ответила за 10 секунд. Чаще всего внедрение блокирует Защитник Windows: \
+pub fn defender_hint() -> &'static str {
+    t("Игра не ответила за 10 секунд. Чаще всего внедрение блокирует Защитник Windows: \
 добавьте папку NovelTL и папку игры в исключения \
 (Безопасность Windows → Защита от вирусов и угроз → Управление настройками → Исключения), \
-затем перезапустите игру и NovelTL.";
+затем перезапустите игру и NovelTL.")
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -203,7 +206,7 @@ impl LunaHost {
         let dir = files_dir();
         let path = dir.join("LunaHost64.dll");
         if !path.is_file() {
-            return Err(format!("Не найден файл {}", path.display()));
+            return Err(tf("Не найден файл {}", &[&path.display()]));
         }
         unsafe {
             // чтобы рядом лежащие msvcp140/vcruntime подтянулись
@@ -211,13 +214,13 @@ impl LunaHost {
             let _ = SetDllDirectoryW(PCWSTR(wdir.as_ptr()));
             let wpath = to_wide(&path.to_string_lossy());
             let module = LoadLibraryW(PCWSTR(wpath.as_ptr()))
-                .map_err(|e| format!("Не удалось загрузить LunaHost64.dll: {e}"))?;
+                .map_err(|e| tf("Не удалось загрузить LunaHost64.dll: {}", &[&e]))?;
 
             macro_rules! func {
                 ($name:expr, $ty:ty) => {
                     match GetProcAddress(module, $name) {
                         Some(f) => std::mem::transmute::<unsafe extern "system" fn() -> isize, $ty>(f),
-                        None => return Err("Не удалось загрузить LunaHost64.dll: нет нужной функции".to_string()),
+                        None => return Err(t("Не удалось загрузить LunaHost64.dll: нет нужной функции").to_string()),
                     }
                 };
             }
@@ -275,9 +278,10 @@ fn attach_worker(api: Api, pid: u32, codepage: u32, sig: ConnSignal, my_gen: u64
                 code = winutil::run_elevated(&exe, &format!("dllinject {pid} \"{hook_dll}\""), 30_000);
             }
             if code != 1 {
-                fail(format!(
-                    "Не удалось подключиться к игре (код {code}). Если игра запущена от имени \
-администратора — запустите так же NovelTL. {DEFENDER_HINT}"
+                fail(tf(
+                    "Не удалось подключиться к игре (код {}). Если игра запущена от имени \
+администратора — запустите так же NovelTL. {}",
+                    &[&code, &defender_hint()],
                 ));
                 return;
             }
@@ -290,14 +294,14 @@ fn attach_worker(api: Api, pid: u32, codepage: u32, sig: ConnSignal, my_gen: u64
         .unwrap_or_else(|e| e.into_inner());
     if !*guard {
         drop(guard);
-        fail(DEFENDER_HINT.to_string());
+        fail(defender_hint().to_string());
     }
 }
 
 impl HookSource for LunaHost {
     fn attach(&mut self, pid: u32, codepage: u32) {
         let Some(api) = self.api else {
-            let text = if self.error.is_empty() { "Движок LunaHook не загружен.".to_string() } else { self.error.clone() };
+            let text = if self.error.is_empty() { t("Движок LunaHook не загружен.").to_string() } else { self.error.clone() };
             emit(HookEvent::AttachFailed(pid, text));
             return;
         };
@@ -321,7 +325,7 @@ impl HookSource for LunaHost {
         let handle = std::thread::spawn(move || {
             let r = catch_unwind(std::panic::AssertUnwindSafe(|| attach_worker(api, pid, codepage, sig, my_gen)));
             if r.is_err() {
-                fail_attach(pid, my_gen, "Ошибка подключения: внутренний сбой".to_string());
+                fail_attach(pid, my_gen, t("Ошибка подключения: внутренний сбой").to_string());
             }
         });
         self.workers.push(handle);

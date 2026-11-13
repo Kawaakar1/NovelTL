@@ -10,6 +10,7 @@ use eframe::egui::{
     Rect, RichText, Sense, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui, Vec2, ViewportBuilder,
     ViewportCommand, ViewportId,
 };
+use noveltl_core::i18n::{t, tf, UiLang};
 use noveltl_core::langdetect::Lang;
 use noveltl_core::net::{self, NET_DIRECT, NET_PROXY, NET_SYSTEM};
 use noveltl_core::profiles::AppSettings;
@@ -20,27 +21,44 @@ use super::{avatar, lock_ctl, Shared};
 use crate::hotkeys::parse_hotkey;
 use crate::overlay::parse_color;
 
-pub const SETTINGS_TITLE: &str = "Настройки — NovelTL";
+/// Заголовок окна настроек.
+pub fn settings_title() -> &'static str {
+    t("Настройки — NovelTL")
+}
 
 /// Разделы окна (порядок = порядок в меню слева).
-const SECTIONS: [&str; 5] = ["Персонализация", "Перевод", "Сеть", "Горячие клавиши", "Общие"];
+fn sections() -> [&'static str; 5] {
+    [t("Персонализация"), t("Перевод"), t("Сеть"), t("Горячие клавиши"), t("Общие")]
+}
 
 const PROJECT_URL: &str = "https://github.com/Kawaakar1/NovelTL";
 
 /// (подпись под цветом, подсказка)
-const COLORS: [(&str, &str); 4] =
-    [("Текста", "Цвет текста"), ("Имени", "Цвет имени"), ("Контура", "Цвет контура"), ("Фона", "Цвет фона")];
+fn colors() -> [(&'static str, &'static str); 4] {
+    [
+        (t("Текста"), t("Цвет текста")),
+        (t("Имени"), t("Цвет имени")),
+        (t("Контура"), t("Цвет контура")),
+        (t("Фона"), t("Цвет фона")),
+    ]
+}
 
 /// Цвета своей темы — слоты 4..8 (после цветов плашки).
-const CUSTOM_COLORS: [(&str, &str); 4] =
-    [("Фон", "Цвет фона окон"), ("Панели", "Цвет панелей и карточек"), ("Текст", "Цвет текста"), ("Акцент", "Акцентный цвет")];
+fn custom_colors() -> [(&'static str, &'static str); 4] {
+    [
+        (t("Фон"), t("Цвет фона окон")),
+        (t("Панели"), t("Цвет панелей и карточек")),
+        (t("Текст"), t("Цвет текста")),
+        (t("Акцент"), t("Акцентный цвет")),
+    ]
+}
 
 /// Подсказка для окна выбора цвета по номеру слота.
 fn slot_hint(i: usize) -> &'static str {
     if i < 4 {
-        COLORS[i].1
+        colors()[i].1
     } else {
-        CUSTOM_COLORS[(i - 4).min(3)].1
+        custom_colors()[(i - 4).min(3)].1
     }
 }
 
@@ -227,7 +245,7 @@ impl SettingsWindow {
             .collect();
         let mut ifaces_all = ifaces;
         if !orig.bind_ip.is_empty() && !ifaces_all.iter().any(|(_, ip)| *ip == orig.bind_ip) {
-            ifaces_all.push((format!("{} (сейчас недоступен)", orig.bind_ip), orig.bind_ip.clone()));
+            ifaces_all.push((tf("{} (сейчас недоступен)", &[&orig.bind_ip]), orig.bind_ip.clone()));
         }
         let mut fonts = installed_fonts();
         if !fonts.iter().any(|f| *f == orig.font_family) {
@@ -285,7 +303,7 @@ impl SettingsWindow {
 
     /// Заголовок окна (по нему окно находят для снимка с экрана).
     pub fn window_title(&self) -> &'static str {
-        SETTINGS_TITLE
+        settings_title()
     }
 
     /// Сколько раз окно уже отрисовано.
@@ -308,7 +326,7 @@ impl SettingsWindow {
 
     /// Для `--shots`: выбрать раздел по номеру.
     pub fn select_section_for_shots(&mut self, i: usize) {
-        self.section = i.min(SECTIONS.len() - 1);
+        self.section = i.min(sections().len() - 1);
     }
 
     /// Для `--shots`: подставить ник-заглушку (аватар — демо-заглушка из профиля снимков).
@@ -363,7 +381,7 @@ impl SettingsWindow {
         }
         let h0 = 900.0_f32.min(self.limit);
         let mut builder = ViewportBuilder::default()
-            .with_title(SETTINGS_TITLE)
+            .with_title(settings_title())
             .with_inner_size([780.0, h0])
             .with_min_inner_size([660.0, 320.0])
             .with_always_on_top()
@@ -468,30 +486,30 @@ impl SettingsWindow {
         let retr = self.hk[1].trim().to_string();
         for combo in [&toggle, &retr] {
             if !combo.is_empty() && parse_hotkey(combo).is_none() {
-                self.warn(format!("Сочетание «{combo}» не подходит. Нужна клавиша с Ctrl, Alt или Shift."));
+                self.warn(tf("Сочетание «{}» не подходит. Нужна клавиша с Ctrl, Alt или Shift.", &[combo]));
                 return;
             }
         }
         if !toggle.is_empty() && toggle == retr {
-            self.warn("Для двух действий выбрано одно и то же сочетание.");
+            self.warn(t("Для двух действий выбрано одно и то же сочетание."));
             return;
         }
         if self.d.engine_mode == "deepl" && self.d.deepl_key.trim().is_empty() {
-            self.warn("Для режима «Только DeepL» нужен ключ.");
+            self.warn(t("Для режима «Только DeepL» нужен ключ."));
             return;
         }
         if self.d.engine_mode == "microsoft" && self.d.ms_key.trim().is_empty() {
-            self.warn("Для Microsoft Translator нужен ключ.");
+            self.warn(t("Для Microsoft Translator нужен ключ."));
             return;
         }
         if self.d.engine_mode == "local_ai" {
             if self.d.local_ai_model.trim().is_empty() {
-                self.warn("Выберите или впишите модель локального ИИ.");
+                self.warn(t("Выберите или впишите модель локального ИИ."));
                 return;
             }
             let u = self.d.local_ai_url.trim();
             if !(u.starts_with("http://") || u.starts_with("https://")) {
-                self.warn("Адрес сервера локального ИИ должен начинаться с http:// или https://.");
+                self.warn(t("Адрес сервера локального ИИ должен начинаться с http:// или https://."));
                 return;
             }
         }
@@ -547,7 +565,7 @@ impl SettingsWindow {
         // автозапуск: ошибка не мешает остальным настройкам
         let auto_err = crate::winutil::set_autostart(self.autostart).err();
         if let Some(e) = &auto_err {
-            self.warn(format!("Не удалось изменить автозапуск: {e}\nОстальные настройки сохранены."));
+            self.warn(tf("Не удалось изменить автозапуск: {}\nОстальные настройки сохранены.", &[e]));
         }
         if errors.is_empty() {
             if auto_err.is_some() {
@@ -556,9 +574,9 @@ impl SettingsWindow {
                 self.closed = true;
             }
         } else {
-            self.warn(format!(
+            self.warn(tf(
                 "Не удалось занять сочетание: {}.\nСкорее всего, его уже использует другая программа — выберите другое.\nОстальные настройки сохранены.",
-                errors.join(", ")
+                &[&errors.join(", ")],
             ));
             // окно остаётся открытым — можно сразу выбрать другое сочетание
         }
@@ -577,10 +595,10 @@ impl SettingsWindow {
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 24, right: 24, top: 10, bottom: 18 }))
             .show(ctx, |ui| {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, "Сохранить", BtnKind::Primary, true, None).clicked() {
+                    if button(ui, t("Сохранить"), BtnKind::Primary, true, None).clicked() {
                         acts.push(Act::Save);
                     }
-                    if button(ui, "Отмена", BtnKind::Normal, true, None).clicked() {
+                    if button(ui, t("Отмена"), BtnKind::Normal, true, None).clicked() {
                         acts.push(Act::Cancel);
                     }
                 });
@@ -593,7 +611,7 @@ impl SettingsWindow {
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 12, right: 12, top: 20, bottom: 8 }))
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 4.0;
-                for (i, title) in SECTIONS.iter().enumerate() {
+                for (i, title) in sections().iter().enumerate() {
                     if nav_item(ui, title, self.section == i).clicked() {
                         self.section = i;
                     }
@@ -713,7 +731,7 @@ impl SettingsWindow {
         let mut open = true;
         let mut done = false;
         let mut changed = false;
-        egui::Window::new("Выберите цвет")
+        egui::Window::new(t("Выберите цвет"))
             .id(egui::Id::new("settings_color_window"))
             .collapsible(false)
             .resizable(false)
@@ -744,7 +762,7 @@ impl SettingsWindow {
                 });
                 ui.add_space(4.0);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, "Готово", BtnKind::Primary, true, Some(90.0)).clicked() {
+                    if button(ui, t("Готово"), BtnKind::Primary, true, Some(90.0)).clicked() {
                         done = true;
                     }
                 });
@@ -764,7 +782,7 @@ impl SettingsWindow {
         let gap = 18.0;
         let ctl_w = (ui.available_width() - label_w - gap).max(140.0);
         ui.spacing_mut().item_spacing.y = 12.0;
-        ui.label(theme::h1(SECTIONS[self.section]));
+        ui.label(theme::h1(sections()[self.section]));
         match self.section {
             0 => self.draw_personal(ui, label_w, gap, ctl_w),
             1 => self.draw_translate(ui, label_w, gap, ctl_w),
@@ -792,13 +810,13 @@ impl SettingsWindow {
     /// Профиль: ник и аватар.
     fn draw_profile(&mut self, ui: &mut Ui) {
         let p = pal();
-        ui.label(theme::h2("Профиль"));
+        ui.label(theme::h2(t("Профиль")));
         ui.horizontal(|ui| {
-            ui.label(theme::body("Ник"));
+            ui.label(theme::body(t("Ник")));
             ui.add(
                 egui::TextEdit::singleline(&mut self.d.nickname)
                     .char_limit(32)
-                    .hint_text("Как вас называть — показывается в главном окне")
+                    .hint_text(t("Как вас называть — показывается в главном окне"))
                     .margin(Margin::symmetric(8, 6))
                     .desired_width((ui.available_width() - 20.0).clamp(160.0, 420.0)),
             );
@@ -814,7 +832,7 @@ impl SettingsWindow {
             });
         }
         ui.horizontal(|ui| {
-            ui.label(theme::body("Аватар"));
+            ui.label(theme::body(t("Аватар")));
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(64.0), Sense::hover());
             let painter = ui.painter();
             match &self.avatar_tex {
@@ -846,15 +864,15 @@ impl SettingsWindow {
                 }
             }
             painter.circle_stroke(rect.center(), 32.0, Stroke::new(1.0_f32, p.border));
-            if button(ui, "Выбрать картинку…", BtnKind::Normal, true, None).clicked() {
+            if button(ui, t("Выбрать картинку…"), BtnKind::Normal, true, None).clicked() {
                 if let Some(path) = avatar::pick_image() {
                     match avatar::store_avatar(&path) {
                         Ok(n) => self.d.avatar = n,
-                        Err(e) => self.warn(format!("Не удалось загрузить картинку: {e}")),
+                        Err(e) => self.warn(tf("Не удалось загрузить картинку: {}", &[&e])),
                     }
                 }
             }
-            if !self.d.avatar.is_empty() && button(ui, "Убрать", BtnKind::Normal, true, None).clicked() {
+            if !self.d.avatar.is_empty() && button(ui, t("Убрать"), BtnKind::Normal, true, None).clicked() {
                 self.d.avatar = String::new();
             }
         });
@@ -862,7 +880,7 @@ impl SettingsWindow {
 
     /// Сетка карточек-пресетов и, для «Своей», цвета темы.
     fn draw_themes(&mut self, ui: &mut Ui) {
-        ui.label(theme::h2("Тема оформления"));
+        ui.label(theme::h2(t("Тема оформления")));
         let sys_dark = ui.ctx().system_theme() != Some(egui::Theme::Light);
         let cur_accent = pal().accent;
         let (cw, ch) = (130.0_f32, 64.0_f32);
@@ -872,6 +890,7 @@ impl SettingsWindow {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = sp;
                 for (id, title) in row {
+                    let title = t(*title);
                     let pp = theme::palette_for(id, &self.d, sys_dark);
                     let sel = self.d.theme == *id;
                     ui.vertical(|ui| {
@@ -895,7 +914,7 @@ impl SettingsWindow {
                         ui.painter().text(
                             tr.left_center() + Vec2::new(2.0, 0.0),
                             Align2::LEFT_CENTER,
-                            *title,
+                            title,
                             FontId::proportional(13.0),
                             if sel { cur_accent } else { pal().text },
                         );
@@ -911,10 +930,10 @@ impl SettingsWindow {
         }
         if self.d.theme == "custom" {
             ui.add_space(4.0);
-            ui.label(theme::h2("Цвета своей темы"));
+            ui.label(theme::h2(t("Цвета своей темы")));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
-                for (k, (title, hint)) in CUSTOM_COLORS.iter().enumerate() {
+                for (k, (title, hint)) in custom_colors().iter().enumerate() {
                     let i = 4 + k;
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 4.0;
@@ -933,7 +952,7 @@ impl SettingsWindow {
                         ui.label(theme::small(*title));
                     });
                 }
-                if button(ui, "Сбросить", BtnKind::Normal, true, None).clicked() {
+                if button(ui, t("Сбросить"), BtnKind::Normal, true, None).clicked() {
                     let def = AppSettings::default();
                     self.d.custom_bg = def.custom_bg;
                     self.d.custom_card = def.custom_card;
@@ -946,13 +965,14 @@ impl SettingsWindow {
 
     fn draw_translate(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
         // --- переводчик ---
-        ui.label(theme::h2("Переводчик"));
+        ui.label(theme::h2(t("Переводчик")));
         let cur = ENGINE_MODES.iter().find(|(c, _)| *c == self.d.engine_mode).map_or(ENGINE_MODES[0].1, |m| m.1);
+        let cur = t(cur);
         egui::ComboBox::from_id_salt("set_engine").width(ui.available_width().min(420.0)).selected_text(theme::body(cur)).show_ui(
             ui,
             |ui| {
                 for (code, title) in ENGINE_MODES {
-                    ui.selectable_value(&mut self.d.engine_mode, code.to_string(), title);
+                    ui.selectable_value(&mut self.d.engine_mode, code.to_string(), t(title));
                 }
             },
         );
@@ -963,39 +983,39 @@ impl SettingsWindow {
                     ui.add(
                         egui::TextEdit::singleline(&mut self.d.ms_key)
                             .password(!self.ms_key_show)
-                            .hint_text("Ключ Microsoft")
+                            .hint_text(t("Ключ Microsoft"))
                             .margin(Margin::symmetric(8, 6))
                             .desired_width(w),
                     );
-                    if button(ui, "Показать", BtnKind::Normal, true, None).clicked() {
+                    if button(ui, t("Показать"), BtnKind::Normal, true, None).clicked() {
                         self.ms_key_show = !self.ms_key_show;
                     }
                 });
                 ui.add(
                     egui::TextEdit::singleline(&mut self.d.ms_region)
-                        .hint_text("Регион, например, westeurope; если ресурс глобальный — оставьте пустым")
+                        .hint_text(t("Регион, например, westeurope; если ресурс глобальный — оставьте пустым"))
                         .margin(Margin::symmetric(8, 6))
                         .desired_width(ui.available_width().min(420.0)),
                 );
                 wrap(
                     ui,
-                    theme::small(format!(
+                    theme::small(tf(
                         "Бесплатный тариф F0 — 2 млн символов в месяц. Ключ: портал Azure → создать ресурс \
                          «Translator» → «Ключи и конечная точка». Сейчас: {}.",
-                        self.status
+                        &[&self.status],
                     )),
                 );
             }
             "local_ai" => {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.d.local_ai_url)
-                        .hint_text("Адрес сервера: Ollama — http://localhost:11434, LM Studio — http://localhost:1234")
+                        .hint_text(t("Адрес сервера: Ollama — http://localhost:11434, LM Studio — http://localhost:1234"))
                         .margin(Margin::symmetric(8, 6))
                         .desired_width(ui.available_width().min(420.0)),
                 );
                 ui.horizontal(|ui| {
                     let cur = if self.d.local_ai_model.is_empty() {
-                        "Выберите модель".to_string()
+                        t("Выберите модель").to_string()
                     } else {
                         self.d.local_ai_model.clone()
                     };
@@ -1007,16 +1027,16 @@ impl SettingsWindow {
                                 ui.selectable_value(&mut self.d.local_ai_model, m.clone(), m);
                             }
                         });
-                    if button(ui, "Обновить список", BtnKind::Normal, !self.models_loading, None).clicked() {
+                    if button(ui, t("Обновить список"), BtnKind::Normal, !self.models_loading, None).clicked() {
                         self.start_models(ui.ctx());
                     }
                     if self.models_loading {
-                        ui.label(theme::body("Загрузка…"));
+                        ui.label(theme::body(t("Загрузка…")));
                     }
                 });
                 ui.add(
                     egui::TextEdit::singleline(&mut self.d.local_ai_model)
-                        .hint_text("или впишите имя модели вручную")
+                        .hint_text(t("или впишите имя модели вручную"))
                         .margin(Margin::symmetric(8, 6))
                         .desired_width(ui.available_width().min(420.0)),
                 );
@@ -1025,11 +1045,11 @@ impl SettingsWindow {
                 }
                 wrap(
                     ui,
-                    theme::small(format!(
+                    theme::small(tf(
                         "Бесплатно и без интернета. Установите Ollama (ollama.com) и скачайте модель командой \
                          `ollama pull <модель>`; для перевода нужна видеокарта примерно от 6–8 ГБ. Первая реплика \
                          может переводиться дольше — модель загружается в память. Сейчас: {}.",
-                        self.status
+                        &[&self.status],
                     )),
                 );
             }
@@ -1041,20 +1061,20 @@ impl SettingsWindow {
                         key_on,
                         egui::TextEdit::singleline(&mut self.d.deepl_key)
                             .password(!self.key_show)
-                            .hint_text("Ключ DeepL API (необязательно)")
+                            .hint_text(t("Ключ DeepL API (необязательно)"))
                             .margin(Margin::symmetric(8, 6))
                             .desired_width(w),
                     );
-                    if button(ui, "Показать", BtnKind::Normal, key_on, None).clicked() {
+                    if button(ui, t("Показать"), BtnKind::Normal, key_on, None).clicked() {
                         self.key_show = !self.key_show;
                     }
                 });
                 wrap(
                     ui,
-                    theme::small(format!(
+                    theme::small(tf(
                         "С ключом переводит DeepL (ключ на «:fx» — бесплатный тариф). Без ключа или при ошибке \
                          DeepL перевод идёт через Google. Сейчас: {}.",
-                        self.status
+                        &[&self.status],
                     )),
                 );
             }
@@ -1063,7 +1083,7 @@ impl SettingsWindow {
 
         // --- языки ---
         egui::Grid::new("set_lang_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
-            ui.label(theme::body("Переводить на"));
+            ui.label(theme::body(t("Переводить на")));
             egui::ComboBox::from_id_salt("set_target_lang")
                 .width(ctl_w)
                 .selected_text(theme::body(lang_label(self.d.target_lang)))
@@ -1074,7 +1094,7 @@ impl SettingsWindow {
                 });
             ui.end_row();
 
-            ui.label(theme::body("Язык игр по умолчанию"));
+            ui.label(theme::body(t("Язык игр по умолчанию")));
             egui::ComboBox::from_id_salt("set_source_lang")
                 .width(ctl_w)
                 .selected_text(theme::body(lang_label(self.d.default_source_lang)))
@@ -1088,7 +1108,7 @@ impl SettingsWindow {
         wrap(
             ui,
             theme::small(
-                "Подставляется в мастере для новых игр. Язык уже добавленной игры меняется в главном окне.",
+                t("Подставляется в мастере для новых игр. Язык уже добавленной игры меняется в главном окне."),
             ),
         );
     }
@@ -1097,7 +1117,7 @@ impl SettingsWindow {
         let p = pal();
         let proxy_on = self.net_mode == NET_PROXY;
         egui::Grid::new("set_net_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
-            ui.label(theme::body("Подключение"));
+            ui.label(theme::body(t("Подключение")));
             egui::ComboBox::from_id_salt("set_net_mode")
                 .width(ctl_w)
                 .selected_text(theme::body(net::net_title(&self.net_mode)))
@@ -1108,45 +1128,45 @@ impl SettingsWindow {
                 });
             ui.end_row();
 
-            ui.label(theme::body("Адрес прокси"));
+            ui.label(theme::body(t("Адрес прокси")));
             ui.add_enabled(
                 proxy_on,
                 egui::TextEdit::singleline(&mut self.proxy_addr)
-                    .hint_text("socks5://127.0.0.1:1080 или http://127.0.0.1:8080")
+                    .hint_text(t("socks5://127.0.0.1:1080 или http://127.0.0.1:8080"))
                     .margin(Margin::symmetric(8, 6))
                     .desired_width(ctl_w),
             );
             ui.end_row();
 
-            ui.label(theme::body("Логин"));
+            ui.label(theme::body(t("Логин")));
             ui.add_enabled(
                 proxy_on,
                 egui::TextEdit::singleline(&mut self.proxy_user)
-                    .hint_text("если прокси требует")
+                    .hint_text(t("если прокси требует"))
                     .margin(Margin::symmetric(8, 6))
                     .desired_width(ctl_w),
             );
             ui.end_row();
 
-            ui.label(theme::body("Пароль"));
+            ui.label(theme::body(t("Пароль")));
             ui.horizontal(|ui| {
                 ui.add_enabled(
                     proxy_on,
                     egui::TextEdit::singleline(&mut self.proxy_pass)
                         .password(!self.pass_show)
-                        .hint_text("если прокси требует")
+                        .hint_text(t("если прокси требует"))
                         .margin(Margin::symmetric(8, 6))
                         .desired_width((ctl_w - 112.0).max(80.0)),
                 );
-                if button(ui, "Показать", BtnKind::Normal, proxy_on, None).clicked() {
+                if button(ui, t("Показать"), BtnKind::Normal, proxy_on, None).clicked() {
                     self.pass_show = !self.pass_show;
                 }
             });
             ui.end_row();
 
-            ui.label(theme::body("Сетевой интерфейс"));
+            ui.label(theme::body(t("Сетевой интерфейс")));
             let cur = if self.bind_ip.is_empty() {
-                "Автоматически".to_string()
+                t("Автоматически").to_string()
             } else {
                 self.ifaces
                     .iter()
@@ -1154,7 +1174,7 @@ impl SettingsWindow {
                     .map_or_else(|| self.bind_ip.clone(), |(t, _)| t.clone())
             };
             egui::ComboBox::from_id_salt("set_iface").width(ctl_w).selected_text(theme::body(cur)).show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.bind_ip, String::new(), "Автоматически");
+                ui.selectable_value(&mut self.bind_ip, String::new(), t("Автоматически"));
                 for (title, ip) in &self.ifaces {
                     ui.selectable_value(&mut self.bind_ip, ip.clone(), title.as_str());
                 }
@@ -1168,17 +1188,17 @@ impl SettingsWindow {
         }
         wrap(
             ui,
-            theme::small(
+            theme::small(t(
                 "Если Google пишет «код 429», выберите другой интерфейс (например, обычное подключение вместо VPN) \
                  или прокси. Настройка влияет только на перевод. Логин и пароль нужны, только если их требует прокси.",
-            ),
+            )),
         );
         ui.horizontal(|ui| {
-            if button(ui, "Проверить связь с Google", BtnKind::Normal, !self.checking, None).clicked() {
+            if button(ui, t("Проверить связь с Google"), BtnKind::Normal, !self.checking, None).clicked() {
                 acts.push(Act::Check);
             }
             let rich = if self.checking {
-                theme::body("Проверяю…")
+                theme::body(t("Проверяю…"))
             } else {
                 match &self.check_result {
                     Some((ok, text)) => RichText::new(text.clone()).size(14.0).color(if *ok { p.ok } else { p.bad }),
@@ -1192,10 +1212,10 @@ impl SettingsWindow {
     fn draw_plate(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
         let p = pal();
         // --- плашка ---
-        ui.label(theme::h2("Плашка с переводом"));
+        ui.label(theme::h2(t("Плашка с переводом")));
         self.draw_preview(ui);
         egui::Grid::new("set_look_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
-            ui.label(theme::body("Шрифт"));
+            ui.label(theme::body(t("Шрифт")));
             egui::ComboBox::from_id_salt("set_font")
                 .width(ctl_w)
                 .selected_text(theme::body(self.d.font_family.clone()))
@@ -1206,7 +1226,7 @@ impl SettingsWindow {
                 });
             ui.end_row();
 
-            ui.label(theme::body("Размер текста"));
+            ui.label(theme::body(t("Размер текста")));
             ui.horizontal(|ui| {
                 ui.spacing_mut().slider_width = (ctl_w - 64.0).max(80.0);
                 ui.add(egui::Slider::new(&mut self.d.font_size, 14..=60).show_value(false));
@@ -1214,10 +1234,10 @@ impl SettingsWindow {
             });
             ui.end_row();
 
-            ui.label(theme::body("Цвета"));
+            ui.label(theme::body(t("Цвета")));
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 14.0;
-                for (i, (title, hint)) in COLORS.iter().enumerate() {
+                for (i, (title, hint)) in colors().iter().enumerate() {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 4.0;
                         let (rect, resp) = ui.allocate_exact_size(Vec2::new(44.0, 28.0), Sense::click());
@@ -1238,7 +1258,7 @@ impl SettingsWindow {
             });
             ui.end_row();
 
-            ui.label(theme::body("Непрозрачность фона"));
+            ui.label(theme::body(t("Непрозрачность фона")));
             ui.horizontal(|ui| {
                 ui.spacing_mut().slider_width = (ctl_w - 64.0).max(80.0);
                 ui.add(egui::Slider::new(&mut self.d.bg_opacity, 0..=100).show_value(false));
@@ -1250,7 +1270,7 @@ impl SettingsWindow {
 
     fn draw_hotkeys(&mut self, ui: &mut Ui, label_w: f32, gap: f32, ctl_w: f32) {
         egui::Grid::new("set_keys_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
-            for (i, title) in ["Скрыть / показать плашку", "Перевести заново без кэша"].into_iter().enumerate() {
+            for (i, title) in [t("Скрыть / показать плашку"), t("Перевести заново без кэша")].into_iter().enumerate() {
                 ui.label(theme::body(title));
                 let resp = hotkey_field(ui, &self.hk[i], self.capturing == Some(i), ctl_w);
                 if resp.clicked() {
@@ -1261,20 +1281,42 @@ impl SettingsWindow {
                 ui.end_row();
             }
         });
-        wrap(ui, theme::small("Щёлкните по полю и нажмите новое сочетание. Работают в любой программе."));
+        wrap(ui, theme::small(t("Щёлкните по полю и нажмите новое сочетание. Работают в любой программе.")));
     }
 
     fn draw_general(&mut self, ui: &mut Ui) {
-        ui.checkbox(&mut self.autostart, theme::body("Запускать вместе с Windows"));
+        ui.horizontal(|ui| {
+            // подпись на двух языках — найти её можно, даже если интерфейс на незнакомом языке
+            let label = if t("Язык интерфейса") == "Interface language" {
+                "Interface language".to_string()
+            } else {
+                format!("{} / Interface language", t("Язык интерфейса"))
+            };
+            ui.label(theme::body(label));
+            let current = self.d.ui_lang.unwrap_or_else(noveltl_core::i18n::lang);
+            egui::ComboBox::from_id_salt("set_ui_lang")
+                .width(160.0)
+                .selected_text(theme::body(current.native_title()))
+                .show_ui(ui, |ui| {
+                    for l in UiLang::ALL {
+                        if ui.selectable_label(current == l, l.native_title()).clicked() {
+                            self.d.ui_lang = Some(l);
+                        }
+                    }
+                });
+        });
+        wrap(ui, theme::small(t("Язык меняется после нажатия «Сохранить».")));
         hline(ui);
-        if button(ui, "Открыть папку с данными", BtnKind::Normal, true, None).clicked() {
+        ui.checkbox(&mut self.autostart, theme::body(t("Запускать вместе с Windows")));
+        hline(ui);
+        if button(ui, t("Открыть папку с данными"), BtnKind::Normal, true, None).clicked() {
             let _ = std::process::Command::new("explorer.exe").arg(crate::paths::data_dir()).spawn();
         }
         hline(ui);
-        ui.label(theme::h2("О программе"));
+        ui.label(theme::h2(t("О программе")));
         ui.label(theme::body(format!("NovelTL {}", env!("CARGO_PKG_VERSION"))));
-        wrap(ui, theme::small("Перехват текста — LunaHook (GPL-3.0). Лицензии — в папке files\\licenses."));
-        if button(ui, "Страница проекта", BtnKind::Link, true, None).clicked() {
+        wrap(ui, theme::small(t("Перехват текста — LunaHook (GPL-3.0). Лицензии — в папке files\\licenses.")));
+        if button(ui, t("Страница проекта"), BtnKind::Link, true, None).clicked() {
             let _ = std::process::Command::new("explorer.exe").arg(PROJECT_URL).spawn();
         }
     }
@@ -1300,7 +1342,7 @@ impl SettingsWindow {
         let pad = Vec2::new(14.0, 8.0);
         let wrap_w = (plate.width() - 2.0 * pad.x).max(40.0);
         let avail_h = plate.height() - 2.0 * pad.y;
-        let (name, line) = ("Акари", "Доброе утро. Вы сегодня снова рано.");
+        let (name, line) = (t("Акари"), t("Доброе утро. Вы сегодня снова рано."));
         // размер подгоняется, чтобы всё поместилось в плашку
         let mut scale = 1.0_f32;
         let (name_font, text_font) = loop {
@@ -1412,9 +1454,9 @@ fn hotkey_field(ui: &mut Ui, text: &str, capturing: bool, width: f32) -> egui::R
     };
     ui.painter().rect(rect, CornerRadius::same(8), fill, stroke, StrokeKind::Inside);
     let (shown, color) = if capturing {
-        ("Нажмите сочетание…".to_string(), p.dim)
+        (t("Нажмите сочетание…").to_string(), p.dim)
     } else if text.is_empty() {
-        ("не задано".to_string(), p.dim)
+        (t("не задано").to_string(), p.dim)
     } else {
         (text.to_string(), p.text)
     };

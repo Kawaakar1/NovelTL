@@ -1,5 +1,7 @@
 ﻿//! Определение языка по кане и иероглифам.
 
+use crate::i18n::t;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Lang {
@@ -31,12 +33,21 @@ impl Lang {
 
     pub fn title(self) -> &'static str {
         match self {
-            Lang::Ja => "Японский",
-            Lang::Zh => "Китайский",
-            Lang::En => "Английский",
-            Lang::Ko => "Корейский",
-            Lang::Ru => "Русский",
-            Lang::Auto => "Авто",
+            Lang::Ja => t("Японский"),
+            Lang::Zh => t("Китайский"),
+            Lang::En => t("Английский"),
+            Lang::Ko => t("Корейский"),
+            Lang::Ru => t("Русский"),
+            Lang::Auto => t("Авто"),
+        }
+    }
+
+    /// Название внутри фразы: по-русски со строчной («→ русский»), на других языках — как есть.
+    pub fn title_in_text(self) -> String {
+        if crate::i18n::lang() == crate::i18n::UiLang::Ru {
+            self.title().to_lowercase()
+        } else {
+            self.title().to_string()
         }
     }
 

@@ -32,7 +32,7 @@ pub const SCRIPT: &[ScriptLine] = &[
     ScriptLine { name: "灯里", text: "「今日の朝ごはんは何でしょう。楽しみです」", name_ru: "Акари", text_ru: "«Интересно, что сегодня на завтрак. Жду с нетерпением».", name_en: "Akari", text_en: "\"I wonder what's for breakfast today. I can't wait.\"" },
 ];
 
-pub const DEMO_TITLE: &str = "Kirinomori Lantern (демо NovelTL)";
+pub const DEMO_TITLE: &str = "Kirinomori Lantern (NovelTL demo)";
 const TITLE_TEXT: &str = "Kirinomori Lantern";
 
 // (код, имя, addr, ctx, ctx2)

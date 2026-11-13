@@ -1,5 +1,6 @@
 ﻿//! Реплика из игры -> глоссарий -> кэш/переводчик -> готовый перевод с именем.
 
+use crate::i18n::t;
 use std::collections::VecDeque;
 
 use crate::langdetect::{resolve_language, Lang};
@@ -111,7 +112,7 @@ impl TranslationPipeline {
                     // ошибка имени не должна губить готовый перевод реплики
                     name_tr = name.to_string();
                     if notice.is_empty() {
-                        notice = "Имя не удалось перевести — показано как есть.".to_string();
+                        notice = t("Имя не удалось перевести — показано как есть.").to_string();
                     }
                 }
             }

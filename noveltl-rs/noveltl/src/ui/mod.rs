@@ -9,6 +9,7 @@ pub mod shots;
 pub mod theme;
 pub mod wizard;
 
+use noveltl_core::i18n::{t, tf};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,6 @@ use crate::demo::{DemoSource, DEMO_TITLE};
 use crate::tray;
 
 pub const APP_NAME: &str = "NovelTL";
-const TRAY_HINT: &str = "NovelTL продолжает работать в трее. Выход — через меню значка.";
 
 /// Замок контроллера: короткое обращение; отравленный замок (паника в другом потоке) не мешает.
 /// Место вызова запоминается — оно попадёт в отчёт, если программа зависнет.
@@ -193,10 +193,10 @@ impl App {
         theme::install(&shared.ctx);
         let rgba = theme::icon_rgba(32);
         let tray = tray::create(shared.clone(), rgba, 32);
-        let title = if cfg.demo { format!("{APP_NAME} — демо-режим") } else { APP_NAME.to_string() };
+        let title = if cfg.demo { tf("{} — демо-режим", &[&APP_NAME]) } else { APP_NAME.to_string() };
         let mut main = main_window::MainWindow::new();
         if !start_error.is_empty() {
-            main.add_message(APP_NAME, &format!("{start_error}\n\nПроверьте, что папка files лежит рядом с программой."));
+            main.add_message(APP_NAME, &tf("{}\n\nПроверьте, что папка files лежит рядом с программой.", &[&start_error]));
         }
         // сторож зависаний: отчёт в data\reports, если окно перестанет отвечать
         let sh = shared.clone();
@@ -293,7 +293,13 @@ impl App {
                 }
             }
         }
-        n.zh_first = n.zh && zh_game;
+        // язык интерфейса; в окне настроек — все три письма: в списке языков их названия на них самих
+        let ui_lang = noveltl_core::i18n::lang();
+        let settings_open = self.settings.is_some() || self.windows.settings;
+        n.ja |= settings_open || ui_lang == noveltl_core::i18n::UiLang::Ja;
+        n.zh |= settings_open || ui_lang == noveltl_core::i18n::UiLang::Zh;
+        n.ko |= settings_open || ui_lang == noveltl_core::i18n::UiLang::Ko;
+        n.zh_first = n.zh && (zh_game || ui_lang == noveltl_core::i18n::UiLang::Zh);
         n
     }
 
@@ -390,7 +396,7 @@ impl eframe::App for App {
             self.shared.visible.store(false, Ordering::SeqCst);
             if !self.tray_hint_shown {
                 self.tray_hint_shown = true;
-                tray::balloon(APP_NAME, TRAY_HINT);
+                tray::balloon(APP_NAME, t("NovelTL продолжает работать в трее. Выход — через меню значка."));
             }
         }
         if self.shared.quit.load(Ordering::SeqCst) && !self.close_sent {

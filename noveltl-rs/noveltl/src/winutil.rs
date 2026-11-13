@@ -1,6 +1,7 @@
 //! Работа с окнами и процессами Windows (перенос `noveltl/winutil.py` и `net.list_interfaces`).
 #![allow(dead_code)]
 
+use noveltl_core::i18n::{t, tf};
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -278,7 +279,7 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
         RegCloseKey, RegDeleteValueW, RegSetValueExW, KEY_SET_VALUE, REG_SZ,
     };
     let Some(h) = open_run_key(KEY_SET_VALUE) else {
-        return Err("Не удалось открыть раздел автозапуска в реестре".to_string());
+        return Err(t("Не удалось открыть раздел автозапуска в реестре").to_string());
     };
     let name = to_wide(RUN_VALUE);
     let result = if on {
@@ -290,10 +291,10 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
                 if rc.0 == 0 {
                     Ok(())
                 } else {
-                    Err(format!("Не удалось записать автозапуск в реестр (код {})", rc.0))
+                    Err(tf("Не удалось записать автозапуск в реестр (код {})", &[&rc.0]))
                 }
             }
-            Err(e) => Err(format!("Не удалось определить путь к программе: {e}")),
+            Err(e) => Err(tf("Не удалось определить путь к программе: {}", &[&e])),
         }
     } else {
         let rc = unsafe { RegDeleteValueW(h, PCWSTR(name.as_ptr())) };
@@ -301,7 +302,7 @@ pub fn set_autostart(on: bool) -> Result<(), String> {
         if rc.0 == 0 || rc.0 == 2 {
             Ok(())
         } else {
-            Err(format!("Не удалось удалить автозапуск из реестра (код {})", rc.0))
+            Err(tf("Не удалось удалить автозапуск из реестра (код {})", &[&rc.0]))
         }
     };
     unsafe {
@@ -472,5 +473,19 @@ mod tests {
     #[test]
     fn run_hidden_exit_code() {
         assert_eq!(run_hidden("cmd", &["/c", "exit", "3"], 10), 3);
+    }
+}
+
+/// Язык интерфейса по языку Windows (для тех, кто его ещё не выбирал).
+pub fn system_ui_lang() -> noveltl_core::i18n::UiLang {
+    use noveltl_core::i18n::UiLang;
+    // младшие 10 бит LANGID — основной язык
+    let primary = unsafe { windows::Win32::Globalization::GetUserDefaultUILanguage() } & 0x3FF;
+    match primary {
+        0x19 | 0x22 | 0x23 | 0x3F => UiLang::Ru, // русский, украинский, белорусский, казахский
+        0x11 => UiLang::Ja,
+        0x04 => UiLang::Zh,
+        0x12 => UiLang::Ko,
+        _ => UiLang::En,
     }
 }

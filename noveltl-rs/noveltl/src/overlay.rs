@@ -6,6 +6,7 @@
 //! (значок в углу плашки) её можно двигать и растягивать мышью средствами самой Windows (WM_NCHITTEST).
 //! Рядом с замочком — кнопка меню: те же пункты, что у значка в трее.
 
+use noveltl_core::i18n::t;
 use std::cell::RefCell;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -156,18 +157,27 @@ const BTN_GAP: i32 = 10;
 const BTN_LOCK: usize = 0;
 const BTN_MENU: usize = 1;
 const BUTTONS: usize = 2;
-/// пункты меню плашки: (команда, id пункта меню трея, подпись); 0 — разделитель
+/// пункты меню плашки: (команда, id пункта меню трея, не используется); 0 — разделитель
 const MENU: [(u32, &str, &str); 6] = [
-    (1, crate::tray::ID_OPEN, "Открыть NovelTL"),
+    (1, crate::tray::ID_OPEN, ""),
     (0, "", ""),
-    (2, crate::tray::ID_TOGGLE, "Скрыть плашку"),
-    (3, crate::tray::ID_RETR, "Перевести заново без кэша"),
-    (4, crate::tray::ID_SETTINGS, "Настройки"),
-    (5, crate::tray::ID_QUIT, "Выход"),
+    (2, crate::tray::ID_TOGGLE, ""),
+    (3, crate::tray::ID_RETR, ""),
+    (4, crate::tray::ID_SETTINGS, ""),
+    (5, crate::tray::ID_QUIT, ""),
 ];
-const SAMPLE_NAME: &str = "Акари";
-const SAMPLE_TEXT: &str =
-    "«Так будет выглядеть перевод. Перетащите плашку на окно диалога игры и растяните по размеру».";
+
+/// Подпись пункта меню на текущем языке (общая с меню трея).
+pub fn menu_label(id: &str) -> &'static str {
+    match id {
+        crate::tray::ID_OPEN => t("Открыть NovelTL"),
+        crate::tray::ID_TOGGLE => t("Скрыть плашку"),
+        crate::tray::ID_RETR => t("Перевести заново без кэша"),
+        crate::tray::ID_SETTINGS => t("Настройки"),
+        crate::tray::ID_QUIT => t("Выход"),
+        _ => "",
+    }
+}
 
 struct State {
     hwnd: HWND,
@@ -730,7 +740,7 @@ impl State {
             rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: 12.0, radiusY: 12.0 }, &bg);
 
             let (name, text) = if self.edit && self.text.is_empty() {
-                (SAMPLE_NAME, SAMPLE_TEXT)
+                (t("Акари"), t("«Так будет выглядеть перевод. Перетащите плашку на окно диалога игры и растяните по размеру»."))
             } else {
                 (self.name.as_str(), self.text.as_str())
             };
@@ -899,11 +909,11 @@ fn button_at(w: i32, x: i32, y: i32) -> Option<usize> {
 fn show_menu(hwnd: HWND, game: isize, p: POINT) -> Option<&'static str> {
     unsafe {
         let menu = CreatePopupMenu().ok()?;
-        for (cmd, _, text) in MENU {
+        for (cmd, id, _) in MENU {
             if cmd == 0 {
                 let _ = AppendMenuW(menu, MF_SEPARATOR, 0, None);
             } else {
-                let _ = AppendMenuW(menu, MF_STRING, cmd as usize, &HSTRING::from(text));
+                let _ = AppendMenuW(menu, MF_STRING, cmd as usize, &HSTRING::from(menu_label(id)));
             }
         }
         // без этого меню не закрывается кликом мимо него (особенность TrackPopupMenu)

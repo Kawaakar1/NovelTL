@@ -1,5 +1,6 @@
 ﻿//! Переводчики: DeepL (основной, с ключом) и Google без ключа (запасной).
 
+use crate::i18n::{t, tf};
 use std::fmt;
 use std::sync::Arc;
 
@@ -30,8 +31,8 @@ pub fn engine_title(engine: &str) -> &'static str {
         ENGINE_DEEPL => "DeepL",
         ENGINE_GOOGLE => "Google",
         ENGINE_MICROSOFT => "Microsoft",
-        ENGINE_LOCAL_AI => "Локальный ИИ",
-        ENGINE_NONE => "Без перевода (тот же язык)",
+        ENGINE_LOCAL_AI => t("Локальный ИИ"),
+        ENGINE_NONE => t("Без перевода (тот же язык)"),
         _ => "",
     }
 }
@@ -107,11 +108,11 @@ impl fmt::Display for TranslateError {
         match self {
             TranslateError::Denied(status) => {
                 let reason = match status {
-                    403 => "ключ не принят",
-                    456 => "лимит символов исчерпан",
-                    _ => "доступ запрещён",
+                    403 => t("ключ не принят"),
+                    456 => t("лимит символов исчерпан"),
+                    _ => t("доступ запрещён"),
                 };
-                write!(f, "ошибка {status}: {reason}")
+                f.write_str(&tf("ошибка {}: {}", &[status, &reason]))
             }
             TranslateError::Failed(s) => f.write_str(s),
         }
@@ -164,14 +165,14 @@ impl DeepLTranslator {
         let resp = self
             .http
             .post_json(&self.url(), &[("Authorization", auth.as_str())], &payload)
-            .map_err(|e| TranslateError::Failed(format!("нет связи с DeepL ({})", e.name())))?;
+            .map_err(|e| TranslateError::Failed(tf("нет связи с DeepL ({})", &[&e.name()])))?;
         if resp.status == 403 || resp.status == 456 {
             return Err(TranslateError::Denied(resp.status));
         }
         if resp.status != 200 {
-            return Err(TranslateError::Failed(format!("DeepL ответил кодом {}", resp.status)));
+            return Err(TranslateError::Failed(tf("DeepL ответил кодом {}", &[&resp.status])));
         }
-        let bad = || TranslateError::Failed("непонятный ответ DeepL".to_string());
+        let bad = || TranslateError::Failed(t("непонятный ответ DeepL").to_string());
         let v: Value = serde_json::from_str(&resp.body).map_err(|_| bad())?;
         v.get("translations")
             .and_then(|t| t.get(0))
@@ -288,18 +289,18 @@ impl GoogleTranslator {
         let resp = self
             .http
             .get(Self::URL, &query)
-            .map_err(|e| TranslateError::Failed(format!("нет связи с Google ({})", e.name())))?;
+            .map_err(|e| TranslateError::Failed(tf("нет связи с Google ({})", &[&e.name()])))?;
         if resp.status == 429 {
             return Err(TranslateError::Failed(
-                "Google временно ограничил запросы с вашего адреса (код 429). \
-                 Укажите ключ DeepL или смените сеть/прокси в настройках"
+                t("Google временно ограничил запросы с вашего адреса (код 429). \
+                 Укажите ключ DeepL или смените сеть/прокси в настройках")
                     .to_string(),
             ));
         }
         if resp.status != 200 {
-            return Err(TranslateError::Failed(format!("Google ответил кодом {}", resp.status)));
+            return Err(TranslateError::Failed(tf("Google ответил кодом {}", &[&resp.status])));
         }
-        let bad = || TranslateError::Failed("непонятный ответ Google".to_string());
+        let bad = || TranslateError::Failed(t("непонятный ответ Google").to_string());
         let v: Value = serde_json::from_str(&resp.body).map_err(|_| bad())?;
         let segs = v.get(0).and_then(|s| s.as_array()).ok_or_else(bad)?;
         let mut out = String::new();
@@ -341,7 +342,9 @@ fn lang_name_en(lang: Lang) -> &'static str {
 }
 
 /// Ключ или регион Microsoft не приняты (401/403).
-const MS_KEY_ERROR: &str = "Microsoft: ключ не подходит (проверьте ключ и регион)";
+fn ms_key_error() -> &'static str {
+    t("Microsoft: ключ не подходит (проверьте ключ и регион)")
+}
 
 pub struct MicrosoftTranslator {
     pub key: String,
@@ -369,14 +372,14 @@ impl MicrosoftTranslator {
         let resp = self
             .http
             .post_json(&url, &headers, &body)
-            .map_err(|e| TranslateError::Failed(format!("нет связи с Microsoft ({})", e.name())))?;
+            .map_err(|e| TranslateError::Failed(tf("нет связи с Microsoft ({})", &[&e.name()])))?;
         match resp.status {
             200 => {}
-            401 | 403 => return Err(TranslateError::Failed(MS_KEY_ERROR.to_string())),
-            429 => return Err(TranslateError::Failed("Microsoft: исчерпан лимит запросов".to_string())),
-            s => return Err(TranslateError::Failed(format!("Microsoft ответил кодом {s}"))),
+            401 | 403 => return Err(TranslateError::Failed(ms_key_error().to_string())),
+            429 => return Err(TranslateError::Failed(t("Microsoft: исчерпан лимит запросов").to_string())),
+            s => return Err(TranslateError::Failed(tf("Microsoft ответил кодом {}", &[&s]))),
         }
-        let bad = || TranslateError::Failed("непонятный ответ Microsoft".to_string());
+        let bad = || TranslateError::Failed(t("непонятный ответ Microsoft").to_string());
         let v: Value = serde_json::from_str(&resp.body).map_err(|_| bad())?;
         v.get(0)
             .and_then(|t| t.get("translations"))
@@ -454,7 +457,7 @@ impl LocalAiTranslator {
         context: &str,
     ) -> Result<String, TranslateError> {
         if self.model.is_empty() {
-            return Err(TranslateError::Failed("Укажите модель локального ИИ в настройках".to_string()));
+            return Err(TranslateError::Failed(t("Укажите модель локального ИИ в настройках").to_string()));
         }
         let source = src_lang.map(lang_name_en).unwrap_or("the original language");
         let system = format!(
@@ -479,18 +482,19 @@ impl LocalAiTranslator {
         });
         let url = format!("{}/v1/chat/completions", self.base_url);
         let resp = self.http.post_json_timeout(&url, &[], &body, LOCAL_AI_TIMEOUT).map_err(|e| match e {
-            HttpError::Timeout => TranslateError::Failed(format!(
-                "Локальный ИИ не ответил за {LOCAL_AI_TIMEOUT} с (модель слишком медленная?)"
+            HttpError::Timeout => TranslateError::Failed(tf(
+                "Локальный ИИ не ответил за {} с (модель слишком медленная?)",
+                &[&LOCAL_AI_TIMEOUT],
             )),
-            _ => TranslateError::Failed(format!(
+            _ => TranslateError::Failed(tf(
                 "Локальный ИИ не отвечает по адресу {}. Запустите Ollama или LM Studio.",
-                self.base_url
+                &[&self.base_url],
             )),
         })?;
         if resp.status != 200 {
-            return Err(TranslateError::Failed(format!("Локальный ИИ ответил кодом {}", resp.status)));
+            return Err(TranslateError::Failed(tf("Локальный ИИ ответил кодом {}", &[&resp.status])));
         }
-        let bad = || TranslateError::Failed("непонятный ответ локального ИИ".to_string());
+        let bad = || TranslateError::Failed(t("непонятный ответ локального ИИ").to_string());
         let v: Value = serde_json::from_str(&resp.body).map_err(|_| bad())?;
         let raw = v
             .get("choices")
@@ -501,7 +505,7 @@ impl LocalAiTranslator {
             .ok_or_else(bad)?;
         let out = clean_ai_reply(raw);
         if out.is_empty() {
-            return Err(TranslateError::Failed("Локальный ИИ вернул пустой ответ".to_string()));
+            return Err(TranslateError::Failed(t("Локальный ИИ вернул пустой ответ").to_string()));
         }
         Ok(out)
     }
@@ -528,7 +532,7 @@ pub fn list_local_models(http: &dyn Http, base_url: &str) -> Result<Vec<String>,
         .filter(|l| !l.is_empty())
         .or_else(|| fetch("/api/tags", "models", "name").filter(|l| !l.is_empty()));
     found.ok_or_else(|| {
-        format!("Не удалось получить список моделей с {base}. Запустите Ollama или LM Studio и загрузите модель.")
+        tf("Не удалось получить список моделей с {}. Запустите Ollama или LM Studio и загрузите модель.", &[&base])
     })
 }
 
@@ -650,28 +654,28 @@ impl TranslatorManager {
 
     pub fn status_text(&self) -> String {
         match self.mode {
-            "google" => "Google (выбран в настройках)".to_string(),
+            "google" => t("Google (выбран в настройках)").to_string(),
             "microsoft" => {
                 if self.microsoft.is_none() {
-                    "Microsoft недоступен: ключ не задан (используется Google)".to_string()
+                    t("Microsoft недоступен: ключ не задан (используется Google)").to_string()
                 } else if self.microsoft_denied {
-                    "Microsoft недоступен: ключ не подходит (используется Google)".to_string()
+                    t("Microsoft недоступен: ключ не подходит (используется Google)").to_string()
                 } else {
                     "Microsoft Translator".to_string()
                 }
             }
             "local_ai" => {
                 if self.local_model.is_empty() {
-                    "Локальный ИИ: модель не указана (используется Google)".to_string()
+                    t("Локальный ИИ: модель не указана (используется Google)").to_string()
                 } else {
-                    format!("Локальный ИИ ({})", self.local_model)
+                    tf("Локальный ИИ ({})", &[&self.local_model])
                 }
             }
             "deepl" => {
                 if self.deepl.is_none() {
-                    "DeepL недоступен: ключ не задан".to_string()
+                    t("DeepL недоступен: ключ не задан").to_string()
                 } else if !self.deepl_disabled_reason.is_empty() {
-                    format!("DeepL недоступен: {}", self.deepl_disabled_reason)
+                    tf("DeepL недоступен: {}", &[&self.deepl_disabled_reason])
                 } else {
                     "DeepL".to_string()
                 }
@@ -680,9 +684,9 @@ impl TranslatorManager {
                 if self.active_engine() == ENGINE_DEEPL {
                     "DeepL".to_string()
                 } else if !self.deepl_disabled_reason.is_empty() {
-                    format!("Google (DeepL недоступен: {})", self.deepl_disabled_reason)
+                    tf("Google (DeepL недоступен: {})", &[&self.deepl_disabled_reason])
                 } else {
-                    "Google (ключ DeepL не задан)".to_string()
+                    t("Google (ключ DeepL не задан)").to_string()
                 }
             }
         }
@@ -732,7 +736,7 @@ impl TranslatorManager {
                     return Ok(res);
                 }
                 Err(e) => {
-                    let msg = format!("{} не сработал ({e}) — перевод через Google.", engine_title(engine));
+                    let msg = tf("{} не сработал ({}) — перевод через Google.", &[&engine_title(engine), &e]);
                     // одно и то же сообщение на каждой реплике не повторяем
                     if msg != self.selected_failure {
                         notice = msg.clone();
@@ -756,9 +760,9 @@ impl TranslatorManager {
                 }
                 Err(e @ TranslateError::Denied(_)) => {
                     self.deepl_disabled_reason = e.to_string();
-                    notice = format!("DeepL недоступен ({e}). Переключился на Google.");
+                    notice = tf("DeepL недоступен ({}). Переключился на Google.", &[&e]);
                 }
-                Err(e) => notice = format!("DeepL: {e}. Эта реплика переведена через Google."),
+                Err(e) => notice = tf("DeepL: {}. Эта реплика переведена через Google.", &[&e]),
             }
         }
 
@@ -787,15 +791,15 @@ impl TranslatorManager {
         }
         let out = if engine == ENGINE_MICROSOFT {
             if self.microsoft_denied {
-                return Err(TranslateError::Failed(MS_KEY_ERROR.to_string()));
+                return Err(TranslateError::Failed(ms_key_error().to_string()));
             }
             let res = match &self.microsoft {
                 Some(m) => m.translate(text, src_lang, self.target),
                 None => {
-                    return Err(TranslateError::Failed("ключ Microsoft не задан".to_string()));
+                    return Err(TranslateError::Failed(t("ключ Microsoft не задан").to_string()));
                 }
             };
-            if res.as_ref().is_err_and(|e| e.to_string() == MS_KEY_ERROR) {
+            if res.as_ref().is_err_and(|e| e.to_string() == ms_key_error()) {
                 self.microsoft_denied = true;
             }
             res?
@@ -822,7 +826,7 @@ impl TranslatorManager {
     ) -> Result<TranslateResult, TranslateError> {
         let Some(d) = &self.deepl else {
             return Err(TranslateError::Failed(
-                "Ключ DeepL не задан — укажите его в настройках или выберите другой переводчик.".to_string(),
+                t("Ключ DeepL не задан — укажите его в настройках или выберите другой переводчик.").to_string(),
             ));
         };
         if let Some(hit) = self.cached(text, ENGINE_DEEPL, use_cache) {

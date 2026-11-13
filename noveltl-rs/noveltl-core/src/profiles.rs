@@ -301,6 +301,8 @@ pub struct AppSettings {
     /// Локальный ИИ (Ollama / LM Studio): адрес сервера и имя модели.
     pub local_ai_url: String,
     pub local_ai_model: String,
+    /// Язык интерфейса; None — по языку Windows.
+    pub ui_lang: Option<crate::i18n::UiLang>,
 }
 
 impl Default for AppSettings {
@@ -335,6 +337,7 @@ impl Default for AppSettings {
             ms_region: String::new(),
             local_ai_url: "http://localhost:11434".into(),
             local_ai_model: String::new(),
+            ui_lang: None,
         }
     }
 }
