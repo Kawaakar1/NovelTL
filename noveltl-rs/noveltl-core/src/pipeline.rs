@@ -47,6 +47,22 @@ pub struct LineResult {
     pub engine: &'static str,
     pub cached: bool,
     pub notice: String,
+    /// второй перевод (мелко под основным); пусто — нет
+    pub alt: String,
+}
+
+/// Заметки о персонажах из глоссария, чьи имена есть в реплике, — подсказка ИИ-переводчику.
+pub fn character_notes(name: &str, text: &str, glossary: &[GlossaryEntry]) -> String {
+    let notes: Vec<String> = glossary
+        .iter()
+        .filter(|e| !e.src.is_empty() && !e.note.trim().is_empty() && (text.contains(&e.src) || name.contains(&e.src)))
+        .map(|e| format!("{}: {}", if e.dst.is_empty() { &e.src } else { &e.dst }, e.note.trim()))
+        .collect();
+    if notes.is_empty() {
+        String::new()
+    } else {
+        format!("Characters: {}", notes.join("; "))
+    }
 }
 
 pub struct TranslationPipeline {
@@ -92,11 +108,17 @@ impl TranslationPipeline {
                 engine: ENGINE_NONE,
                 cached: false,
                 notice: String::new(),
+                alt: String::new(),
             });
         }
-        let context = self.context.iter().filter(|c| c.as_str() != text).cloned().collect::<Vec<_>>().join("\n");
+        let mut context = self.context.iter().filter(|c| c.as_str() != text).cloned().collect::<Vec<_>>().join("\n");
+        let notes = character_notes(name, text, &self.glossary);
+        if !notes.is_empty() {
+            context = if context.is_empty() { notes } else { format!("{notes}\n{context}") };
+        }
         let prepared = apply_glossary(text, &self.glossary);
         let res = self.manager.translate(&prepared, lang, &context, use_cache)?;
+        let alt = self.manager.translate_alt(&prepared, lang, &context, use_cache, res.engine).unwrap_or_default();
         let mut notice = res.notice.clone();
         let mut name_tr = String::new();
         if !name.is_empty() {
@@ -131,6 +153,7 @@ impl TranslationPipeline {
             engine: res.engine,
             cached: res.cached,
             notice,
+            alt,
         })
     }
 }
@@ -142,8 +165,18 @@ mod tests {
     use crate::translators::fake::{param, FakeHttp};
     use std::sync::Arc;
 
+    #[test]
+    fn character_notes_only_for_names_in_line() {
+        let mut akari = g("灯里", "Акари");
+        akari.note = " девушка, говорит вежливо ".into();
+        let gl = vec![akari, GlossaryEntry { src: "悠斗".into(), dst: String::new(), note: "парень".into() }, g("箒", "метла")];
+        assert_eq!(character_notes("灯里", "「おはよう」", &gl), "Characters: Акари: девушка, говорит вежливо");
+        assert_eq!(character_notes("", "悠斗さん", &gl), "Characters: 悠斗: парень");
+        assert_eq!(character_notes("", "箒を持つ", &gl), "", "у термина без заметки подсказки нет");
+    }
+
     fn g(src: &str, dst: &str) -> GlossaryEntry {
-        GlossaryEntry { src: src.to_string(), dst: dst.to_string() }
+        GlossaryEntry { src: src.to_string(), dst: dst.to_string(), note: String::new() }
     }
 
     #[test]

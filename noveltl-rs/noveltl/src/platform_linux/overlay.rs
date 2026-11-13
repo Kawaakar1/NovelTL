@@ -40,6 +40,8 @@ struct State {
     style: Style,
     name: String,
     text: String,
+    /// второй перевод (мелко под основным)
+    alt: String,
     note: String,
     edit: bool,
     unlocked: bool,
@@ -72,9 +74,10 @@ impl State {
                     self.frac = f;
                 }
             }
-            Cmd::Line { name, text } => {
+            Cmd::Line { name, text, alt } => {
                 self.name = name;
                 self.text = text;
+                self.alt = alt;
                 self.note.clear();
             }
             Cmd::Note { note, keep_text } => {
@@ -82,11 +85,13 @@ impl State {
                 if !keep_text {
                     self.name.clear();
                     self.text.clear();
+                    self.alt.clear();
                 }
             }
             Cmd::Clear => {
                 self.name.clear();
                 self.text.clear();
+                self.alt.clear();
                 self.note.clear();
             }
             Cmd::EditMode(on) => self.edit = on,
@@ -126,6 +131,7 @@ impl Overlay {
             style: Style::default(),
             name: String::new(),
             text: String::new(),
+            alt: String::new(),
             note: String::new(),
             edit: false,
             unlocked: false,
@@ -383,14 +389,22 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
             let font = |sz: f32| FontId::new(sz, FontFamily::Proportional);
             let name_g = (!name.is_empty()).then(|| p.layout(name.to_string(), font(name_size), rgba(st.name_color, 1.0), inner_w));
             let body_g = p.layout(text.to_string(), font(size), rgba(st.text_color, 1.0), inner_w);
+            // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
+            let alt_size = (size * 0.7).max(MIN_FONT);
+            let alt_g = (!s.alt.is_empty() && !s.edit).then(|| p.layout(s.alt.clone(), font(alt_size), rgba(0xC9CBE0, 1.0), inner_w));
             let name_h = name_g.as_ref().map_or(0.0, |g| g.size().y + 2.0);
-            if name_h + body_g.size().y <= inner_h || size <= MIN_FONT {
+            let alt_h = alt_g.as_ref().map_or(0.0, |g| g.size().y + 4.0);
+            if name_h + body_g.size().y + alt_h <= inner_h || size <= MIN_FONT {
                 let mut y = top;
                 if let Some(g) = name_g {
                     outlined(p, pos2(left, y), g, st.outline_color, name_size);
                     y += name_h;
                 }
+                let body_h = body_g.size().y;
                 outlined(p, pos2(left, y), body_g, st.outline_color, size);
+                if let Some(g) = alt_g {
+                    outlined(p, pos2(left, y + body_h + 4.0), g, st.outline_color, alt_size);
+                }
                 break;
             }
             size -= 1.0;

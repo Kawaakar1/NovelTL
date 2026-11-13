@@ -33,7 +33,10 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🗺️ **5 languages, any direction.** Japanese, English, Chinese (Simplified), Korean and Russian. The target language is chosen in Settings, the source language per game (or “Auto”).
 - 🌐 **DeepL and Google.** “Auto” mode: Google without a key, DeepL with a key (the free plan works too) — DeepL uses the previous lines as context, and if DeepL refuses, the program switches to Google by itself. You can also choose “DeepL only” or “Google only”.
 - 🆓 **Free alternatives.** **Local AI** via [Ollama](https://ollama.com) or LM Studio — free, offline, aware of the scene context. **Microsoft Translator** — the official free tier (2 million characters per month). If the chosen translator does not answer, the line is translated by Google.
-- 📖 **Glossary.** Names and terms are translated the way you set: “灯里 → Akari”.
+- 📖 **Glossary.** Names and terms are translated the way you set: “灯里 → Akari”. A name can have a note (gender, way of speaking) — DeepL and local AI get it.
+- ⚖️ **Second translation.** A smaller line under the main one from another translator, to cross-check the meaning.
+- 🧾 **Log and statistics.** Every translated line of a game is saved to a text file (easy to search); the main window shows how much you have read.
+- 🧽 **Per-game filters.** Fragments that are removed from the text before translation.
 - 💾 **Translation cache.** Repeated lines appear instantly and do not use up translator limits.
 - 🧹 **Text cleanup.** Removes KiriKiri engine tags, doubled characters and repeated phrases.
 - 🔌 **A profile for each game.** Start the game — NovelTL connects by itself, no wizard needed.

@@ -560,6 +560,7 @@ impl SettingsWindow {
         new.hotkey_toggle = toggle;
         new.hotkey_retranslate = retr;
         new.engine_mode = self.d.engine_mode.clone();
+        new.second_engine = self.d.second_engine.clone();
         new.target_lang = self.d.target_lang;
         new.default_source_lang = self.d.default_source_lang;
         self.saved = true;
@@ -1086,6 +1087,32 @@ impl SettingsWindow {
                 );
             }
         }
+        egui::Grid::new("set_second_grid").num_columns(2).spacing([gap, 10.0]).min_col_width(label_w).show(ui, |ui| {
+            ui.label(theme::body(t("Второй перевод")));
+            let opts = [
+                ("", t("Нет")),
+                ("google", "Google"),
+                ("deepl", "DeepL"),
+                ("microsoft", "Microsoft Translator"),
+                ("local_ai", t("Локальный ИИ")),
+            ];
+            let cur = opts.iter().find(|(c, _)| *c == self.d.second_engine).map_or(opts[0].1, |o| o.1);
+            egui::ComboBox::from_id_salt("set_second_engine")
+                .width(ctl_w)
+                .selected_text(theme::body(cur))
+                .show_ui(ui, |ui| {
+                    for (code, title) in opts {
+                        ui.selectable_value(&mut self.d.second_engine, code.to_string(), title);
+                    }
+                });
+            ui.end_row();
+        });
+        wrap(
+            ui,
+            theme::small(t(
+                "Показывается мелко под основным переводом. Каждая реплика переводится дважды — расходуются лимиты обоих переводчиков.",
+            )),
+        );
         hline(ui);
 
         // --- языки ---

@@ -30,6 +30,17 @@ impl Default for OverlayFrac {
 pub struct GlossaryEntry {
     pub src: String,
     pub dst: String,
+    /// заметка для ИИ-переводчика: кто это, пол, манера речи (необязательно)
+    #[serde(default)]
+    pub note: String,
+}
+
+/// Сколько прочитано в игре (считается по переведённым репликам).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReadStats {
+    pub lines: u64,
+    pub chars: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -47,6 +58,9 @@ pub struct Profile {
     pub name_hook: Option<HookRef>,
     pub overlay: OverlayFrac,
     pub glossary: Vec<GlossaryEntry>,
+    /// что убирать из текста реплик этой игры (точные фрагменты)
+    pub filters: Vec<String>,
+    pub stats: ReadStats,
 }
 
 impl Default for Profile {
@@ -62,6 +76,8 @@ impl Default for Profile {
             name_hook: None,
             overlay: OverlayFrac::default(),
             glossary: Vec::new(),
+            filters: Vec::new(),
+            stats: ReadStats::default(),
         }
     }
 }
@@ -301,6 +317,8 @@ pub struct AppSettings {
     /// Локальный ИИ (Ollama / LM Studio): адрес сервера и имя модели.
     pub local_ai_url: String,
     pub local_ai_model: String,
+    /// Второй перевод мелко под основным: "" (нет), google, deepl, microsoft, local_ai.
+    pub second_engine: String,
     /// Язык интерфейса; None — по языку Windows.
     pub ui_lang: Option<crate::i18n::UiLang>,
 }
@@ -337,6 +355,7 @@ impl Default for AppSettings {
             ms_region: String::new(),
             local_ai_url: "http://localhost:11434".into(),
             local_ai_model: String::new(),
+            second_engine: String::new(),
             ui_lang: None,
         }
     }
@@ -416,7 +435,7 @@ mod tests {
         let store = ProfileStore::new(dir.join("profiles"));
         let mut p = store.create("Senren*Banka", &exe, Lang::Ja).unwrap();
         p.set_hook("HKIRI", "KiriKiriZ", 0x7FF600001234, 0x10005);
-        p.glossary.push(GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into() });
+        p.glossary.push(GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into(), note: String::new() });
         store.save(&p).unwrap();
 
         let found = store.find_for_exe(&exe).unwrap();
@@ -425,7 +444,7 @@ mod tests {
             found.hook,
             Some(HookRef { code: "HKIRI".into(), name: "KiriKiriZ".into(), ctx_lo: 0x1234, ctx2_lo: 0x0005 })
         );
-        assert_eq!(found.glossary, vec![GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into() }]);
+        assert_eq!(found.glossary, vec![GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into(), note: String::new() }]);
         assert!(found.overlay.w > 0.0 && found.overlay.w <= 1.0);
         let _ = fs::remove_dir_all(&dir);
     }

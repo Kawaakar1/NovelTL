@@ -16,6 +16,7 @@ struct Row {
     uid: u64,
     src: String,
     dst: String,
+    note: String,
 }
 
 enum Act {
@@ -32,6 +33,7 @@ pub struct GlossaryWindow {
     profile_id: String,
     title: String,
     rows: Vec<Row>,
+    filters: String,
     next_uid: u64,
     selected: Option<u64>,
     focus: Option<Id>,
@@ -57,6 +59,7 @@ impl GlossaryWindow {
             profile_id: profile_id.to_string(),
             title: tf("Глоссарий — {}", &[&profile.name]),
             rows: Vec::new(),
+            filters: profile.filters.join("\n"),
             next_uid: 0,
             selected: None,
             focus: None,
@@ -64,7 +67,7 @@ impl GlossaryWindow {
             frames: 0,
         };
         for e in &profile.glossary {
-            w.push_row(&e.src, &e.dst);
+            w.push_row(&e.src, &e.dst, &e.note);
         }
         Some(w)
     }
@@ -97,14 +100,14 @@ impl GlossaryWindow {
         self.rows.clear();
         self.selected = None;
         for (s, d) in entries {
-            self.push_row(s, d);
+            self.push_row(s, d, "");
         }
     }
 
-    fn push_row(&mut self, src: &str, dst: &str) -> u64 {
+    fn push_row(&mut self, src: &str, dst: &str, note: &str) -> u64 {
         let uid = self.next_uid;
         self.next_uid += 1;
-        self.rows.push(Row { uid, src: src.to_string(), dst: dst.to_string() });
+        self.rows.push(Row { uid, src: src.to_string(), dst: dst.to_string(), note: note.to_string() });
         uid
     }
 
@@ -113,8 +116,8 @@ impl GlossaryWindow {
         self.frames += 1;
         let mut builder = ViewportBuilder::default()
             .with_title(self.title.clone())
-            .with_inner_size([540.0, 520.0])
-            .with_min_inner_size([420.0, 320.0])
+            .with_inner_size([760.0, 620.0])
+            .with_min_inner_size([560.0, 420.0])
             .with_always_on_top()
             .with_icon(self.icon.clone());
         if let Some(pos) = self.pos {
@@ -128,7 +131,7 @@ impl GlossaryWindow {
         for a in acts {
             match a {
                 Act::Add => {
-                    let uid = self.push_row("", "");
+                    let uid = self.push_row("", "", "");
                     self.selected = Some(uid);
                     self.focus = Some(Id::new(("gl_src", uid)));
                 }
@@ -145,10 +148,16 @@ impl GlossaryWindow {
                         .filter_map(|r| {
                             let (s, d) = (r.src.trim(), r.dst.trim());
                             (!s.is_empty() && !d.is_empty())
-                                .then(|| GlossaryEntry { src: s.to_string(), dst: d.to_string() })
+                                .then(|| GlossaryEntry {
+                                    src: s.to_string(),
+                                    dst: d.to_string(),
+                                    note: r.note.trim().to_string(),
+                                })
                         })
                         .collect();
-                    lock_ctl(&shared.controller).save_glossary(&self.profile_id, entries);
+                    let filters: Vec<String> =
+                        self.filters.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect();
+                    lock_ctl(&shared.controller).save_glossary(&self.profile_id, entries, filters);
                     self.closed = true;
                 }
                 Act::Cancel => self.closed = true,
@@ -183,6 +192,25 @@ impl GlossaryWindow {
                     });
                 });
             });
+        egui::TopBottomPanel::bottom("gl_filters")
+            .show_separator_line(false)
+            .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 6 }))
+            .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                ui.label(RichText::new(t("Убирать из текста этой игры")).size(13.0).family(theme::bold_family()).color(p.dim));
+                ui.add(
+                    egui::Label::new(theme::small(t(
+                        "По одному фрагменту на строку — например, служебные значки, которые попадают в перевод.",
+                    )))
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                ui.add(
+                    egui::TextEdit::multiline(&mut self.filters)
+                        .desired_rows(3)
+                        .desired_width(f32::INFINITY)
+                        .margin(Margin::symmetric(8, 6)),
+                );
+            });
         egui::CentralPanel::default()
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 24, right: 24, top: 20, bottom: 8 }))
             .show(ctx, |ui| {
@@ -195,20 +223,28 @@ impl GlossaryWindow {
                     ))
                     .wrap_mode(egui::TextWrapMode::Wrap),
                 );
+                ui.add(
+                    egui::Label::new(theme::dim(t(
+                        "Заметку получают DeepL и локальный ИИ, когда имя есть в реплике, — так легче угадать род и тон.",
+                    )))
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+                );
                 self.draw_table(ui);
             });
     }
 
     fn draw_table(&mut self, ui: &mut egui::Ui) {
         let p = pal();
-        let col_w = ((ui.available_width() - 40.0 - 2.0 * 8.0) / 2.0).max(80.0);
+        let free = (ui.available_width() - 40.0 - 3.0 * 8.0 - 16.0).max(240.0);
+        let col_w = free * 0.28;
+        let note_w = free - 2.0 * col_w;
         let sel_index = self.selected.and_then(|s| self.rows.iter().position(|r| r.uid == s));
         let selected_fill: Color32 = p.selected;
         let focus = self.focus.take();
         let mut clicked: Option<u64> = None;
         egui::ScrollArea::vertical().id_salt("gl_scroll").auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("gl_grid")
-                .num_columns(3)
+                .num_columns(4)
                 .spacing([8.0, 6.0])
                 .with_row_color(move |row, _| (sel_index.is_some_and(|i| i + 1 == row)).then_some(selected_fill))
                 .show(ui, |ui| {
@@ -216,6 +252,7 @@ impl GlossaryWindow {
                     ui.label("");
                     ui.label(head(t("В игре")));
                     ui.label(head(t("В переводе")));
+                    ui.label(head(t("Заметка для ИИ")));
                     ui.end_row();
                     for (i, r) in self.rows.iter_mut().enumerate() {
                         let num = ui.add_sized(
@@ -241,6 +278,17 @@ impl GlossaryWindow {
                             if focus == Some(id) {
                                 resp.scroll_to_me(None);
                             }
+                        }
+                        let note_id = Id::new(("gl_note", r.uid));
+                        let resp = ui.add_sized(
+                            [note_w, 30.0],
+                            egui::TextEdit::singleline(&mut r.note)
+                                .id(note_id)
+                                .hint_text(t("например: девушка, говорит вежливо"))
+                                .margin(Margin::symmetric(8, 6)),
+                        );
+                        if resp.clicked() || resp.gained_focus() {
+                            clicked = Some(r.uid);
                         }
                         ui.end_row();
                     }

@@ -556,6 +556,8 @@ pub struct TranslatorManager {
     local_http: Option<Arc<dyn Http>>,
     target: Lang,
     mode: &'static str,
+    /// второй переводчик (мелко под основным); "" — нет
+    second: &'static str,
 }
 
 impl TranslatorManager {
@@ -574,6 +576,7 @@ impl TranslatorManager {
             local_http: None,
             target: Lang::Ru,
             mode: "auto",
+            second: "",
         };
         m.set_deepl_key(deepl_key);
         m
@@ -596,6 +599,42 @@ impl TranslatorManager {
 
     pub fn mode(&self) -> &str {
         self.mode
+    }
+
+    /// Второй переводчик; неизвестное значение — выключен.
+    pub fn set_second(&mut self, engine: &str) {
+        self.second = [ENGINE_GOOGLE, ENGINE_DEEPL, ENGINE_MICROSOFT, ENGINE_LOCAL_AI]
+            .into_iter()
+            .find(|e| *e == engine)
+            .unwrap_or("");
+    }
+
+    /// Перевод вторым переводчиком; None — он не выбран, совпал с основным или не сработал
+    /// (второй перевод — подсказка, его ошибки пользователю не показываем).
+    pub fn translate_alt(
+        &mut self,
+        text: &str,
+        src_lang: Option<Lang>,
+        context: &str,
+        use_cache: bool,
+        main_engine: &str,
+    ) -> Option<String> {
+        let engine = self.second;
+        if engine.is_empty() || engine == main_engine {
+            return None;
+        }
+        let res = match engine {
+            ENGINE_DEEPL => self.translate_deepl_only(text, src_lang, context, use_cache),
+            ENGINE_GOOGLE => match self.cached(text, ENGINE_GOOGLE, use_cache) {
+                Some(hit) => Ok(TranslateResult { text: hit, engine, cached: true, notice: String::new() }),
+                None => self.google.translate(text, src_lang, self.target).map(|out| {
+                    self.store(text, ENGINE_GOOGLE, &out);
+                    TranslateResult { text: out, engine, cached: false, notice: String::new() }
+                }),
+            },
+            _ => self.translate_selected(engine, text, src_lang, context, use_cache),
+        };
+        res.ok().map(|r| r.text).filter(|t| !t.trim().is_empty())
     }
 
     pub fn set_deepl_key(&mut self, key: &str) {
@@ -961,6 +1000,18 @@ mod tests {
             serde_json::json!({"text": ["こんにちは"], "target_lang": "RU", "source_lang": "JA", "context": "前の文"})
         );
         assert!(req.headers.contains(&("Authorization".to_string(), "DeepL-Auth-Key key:fx".to_string())));
+    }
+
+    #[test]
+    fn second_engine_only_when_chosen_and_different() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("key", None, http(&s));
+        assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "deepl"), None, "второй не выбран");
+        m.set_second("google");
+        assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "google"), None, "совпал с основным");
+        assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "deepl").as_deref(), Some("G:こんにちは"));
+        m.set_second("неизвестный");
+        assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "deepl"), None);
     }
 
     #[test]

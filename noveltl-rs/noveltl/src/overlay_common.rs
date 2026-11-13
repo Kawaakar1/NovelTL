@@ -51,7 +51,8 @@ pub fn parse_color(s: &str, fallback: u32) -> u32 {
 
 pub enum Cmd {
     Target(isize, Option<Frac>),
-    Line { name: String, text: String },
+    /// реплика: имя, перевод и второй перевод (мелко под основным; пусто — нет)
+    Line { name: String, text: String, alt: String },
     Note { note: String, keep_text: bool },
     Clear,
     EditMode(bool),

@@ -389,7 +389,7 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd_to(w.viewport_id(), egui::ViewportCommand::Focus)
                 }
                 _ => {
-                    if let Some(w) = glossary::GlossaryWindow::new(&self.shared, &id, side_pos(560.0)) {
+                    if let Some(w) = glossary::GlossaryWindow::new(&self.shared, &id, side_pos(760.0)) {
                         self.glossary = Some(w);
                     }
                 }

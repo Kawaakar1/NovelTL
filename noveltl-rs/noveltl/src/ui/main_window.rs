@@ -51,6 +51,20 @@ enum Action {
     Glossary(String),
     Settings,
     SetLang(String, Lang),
+    OpenLog(String),
+}
+
+/// 12345 → "12 345".
+fn thousands(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 pub struct MainWindow {
@@ -423,6 +437,13 @@ impl MainWindow {
                 actions.push(Action::SetLang(profile.id.clone(), lang));
             }
         });
+        let stats = s.map_or(&profile.stats, |s| &s.profile.stats);
+        if stats.lines > 0 {
+            ui.label(theme::small(tf(
+                "Прочитано реплик: {} · символов: {}",
+                &[&thousands(stats.lines), &thousands(stats.chars)],
+            )));
+        }
 
         // статус
         let (mut color, mut text, mut retry) =
@@ -475,10 +496,23 @@ impl MainWindow {
             ui.set_min_height(fill_h);
             ui.spacing_mut().item_spacing.y = 6.0;
             let history = s.map_or(&[][..], |s| s.history.as_slice());
-            ui.label(theme::step(match history.len() {
-                0 | 1 => t("ПОСЛЕДНЯЯ РЕПЛИКА").to_string(),
-                n => tf("ИСТОРИЯ ДИАЛОГА · {}", &[&n]),
-            }));
+            let log = crate::controller::log_path(&profile.id);
+            ui.horizontal(|ui| {
+                ui.label(theme::step(match history.len() {
+                    0 | 1 => t("ПОСЛЕДНЯЯ РЕПЛИКА").to_string(),
+                    n => tf("ИСТОРИЯ ДИАЛОГА · {}", &[&n]),
+                }));
+                if log.exists() {
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let r = button(ui, t("Открыть журнал"), BtnKind::Link, true, None).on_hover_text(t(
+                            "Все переведённые реплики этой игры — по нему можно искать (Ctrl+F)",
+                        ));
+                        if r.clicked() {
+                            actions.push(Action::OpenLog(log.to_string_lossy().into_owned()));
+                        }
+                    });
+                }
+            });
             if history.is_empty() {
                 let hint = if s.is_some() { t("Здесь появится текст из игры и его перевод.") } else { "—" };
                 ui.add(egui::Label::new(theme::jp(hint)).wrap_mode(egui::TextWrapMode::Wrap));
@@ -498,6 +532,9 @@ impl MainWindow {
                     let dst = if res.name.is_empty() { res.text.clone() } else { format!("{}: {}", res.name, res.text) };
                     ui.add(egui::Label::new(theme::jp(src)).wrap_mode(egui::TextWrapMode::Wrap));
                     ui.add(egui::Label::new(theme::tr(dst)).wrap_mode(egui::TextWrapMode::Wrap));
+                    if !res.alt.is_empty() {
+                        ui.add(egui::Label::new(theme::small(res.alt.as_str())).wrap_mode(egui::TextWrapMode::Wrap));
+                    }
                     if i == 0 {
                         ui.label(theme::small(format!(
                             "{}{}",
@@ -570,6 +607,7 @@ impl MainWindow {
                     lock_ctl(&shared.controller).set_profile_lang(&id, lang);
                     self.profiles_at = None;
                 }
+                Action::OpenLog(path) => winutil::reveal_in_explorer(&path),
                 Action::Glossary(id) => windows.open_glossary(id),
                 Action::AskDelete(id, name) => self.confirm_delete = Some((id, name)),
                 Action::Report => {

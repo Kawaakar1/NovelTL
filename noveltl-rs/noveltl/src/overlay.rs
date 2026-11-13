@@ -117,6 +117,8 @@ struct State {
     style: Style,
     name: String,
     text: String,
+    /// второй перевод (мелко под основным)
+    alt: String,
     note: String,
     edit: bool,
     /// замочек открыт: плашку можно двигать во время игры
@@ -242,6 +244,7 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 style: Style::default(),
                 name: String::new(),
                 text: String::new(),
+                alt: String::new(),
                 note: String::new(),
                 edit: false,
                 unlocked: false,
@@ -402,9 +405,10 @@ impl State {
                         self.frac = f;
                     }
                 }
-                Cmd::Line { name, text } => {
+                Cmd::Line { name, text, alt } => {
                     self.name = name;
                     self.text = text;
+                    self.alt = alt;
                     self.note.clear();
                 }
                 Cmd::Note { note, keep_text } => {
@@ -412,11 +416,13 @@ impl State {
                     if !keep_text {
                         self.name.clear();
                         self.text.clear();
+                        self.alt.clear();
                     }
                 }
                 Cmd::Clear => {
                     self.name.clear();
                     self.text.clear();
+                    self.alt.clear();
                     self.note.clear();
                 }
                 Cmd::EditMode(on) => {
@@ -597,7 +603,7 @@ impl State {
     fn fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (&self.name, &self.text, &self.note, self.edit, &self.style.font_family).hash(&mut h);
+        (&self.name, &self.text, &self.alt, &self.note, self.edit, &self.style.font_family).hash(&mut h);
         (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
         (self.style.font_size as u32, self.style.text_color, self.style.name_color).hash(&mut h);
         (self.style.outline_color, self.style.bg_color, self.style.bg_opacity).hash(&mut h);
@@ -692,15 +698,22 @@ impl State {
                     let name_size = (size * 0.8).max(MIN_FONT);
                     let name_layout = if name.is_empty() { None } else { Some(self.layout(name, name_size, true, inner_w, inner_h)?) };
                     let body = self.layout(text, size, false, inner_w, inner_h)?;
+                    // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
+                    let alt_size = (size * 0.7).max(MIN_FONT);
+                    let alt = if self.alt.is_empty() || self.edit { None } else { Some(self.layout(&self.alt, alt_size, false, inner_w, inner_h)?) };
                     let name_h = match &name_layout { Some(l) => metrics(l)?.height + 2.0, None => 0.0 };
                     let body_h = metrics(&body)?.height;
-                    if name_h + body_h <= inner_h || size <= MIN_FONT {
+                    let alt_h = match &alt { Some(l) => metrics(l)?.height + 4.0, None => 0.0 };
+                    if name_h + body_h + alt_h <= inner_h || size <= MIN_FONT {
                         let mut y = top;
                         if let Some(l) = &name_layout {
                             self.outlined(rt, l, left, y, s.name_color, name_size)?;
                             y += name_h;
                         }
                         self.outlined(rt, &body, left, y, s.text_color, size)?;
+                        if let Some(l) = &alt {
+                            self.outlined(rt, l, left, y + body_h + 4.0, 0xC9CBE0, alt_size)?;
+                        }
                         break;
                     }
                     size -= 1.0;

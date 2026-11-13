@@ -116,6 +116,8 @@ pub enum WorkerCmd {
     SetTarget(Lang),
     /// режим выбора переводчика (см. `ENGINE_MODES`)
     SetMode(String),
+    /// второй переводчик (мелко под основным); "" — нет
+    SetSecond(String),
     SetHttp(Arc<dyn Http>),
     /// клиент для локального ИИ (без прокси)
     SetLocalHttp(Arc<dyn Http>),
@@ -192,6 +194,11 @@ fn worker_loop(
                     idle.set_mode(&m);
                     if let Some(p) = pipeline.as_mut() {
                         p.manager.set_mode(&m);
+                    }
+                }
+                WorkerCmd::SetSecond(e) => {
+                    if let Some(p) = pipeline.as_mut() {
+                        p.manager.set_second(&e);
                     }
                 }
                 WorkerCmd::SetHttp(h) => {
@@ -325,6 +332,30 @@ pub struct Session {
 
 /// Сколько реплик хранит история диалога.
 pub const HISTORY_LEN: usize = 50;
+
+/// Убирает из текста фрагменты-фильтры игры (точное совпадение) и лишние пробелы по краям.
+fn apply_filters(text: &str, filters: &[String]) -> String {
+    let mut out = text.to_string();
+    for f in filters.iter().filter(|f| !f.is_empty()) {
+        out = out.replace(f.as_str(), "");
+    }
+    out.trim().to_string()
+}
+
+/// Журнал реплик игры: `data\logs\<профиль>.txt`, дописывается по одной реплике.
+pub fn log_path(profile_id: &str) -> PathBuf {
+    sub_data_dir("logs").join(format!("{profile_id}.txt"))
+}
+
+fn append_log(profile_id: &str, r: &LineResult) {
+    use std::io::Write as _;
+    let src = if r.src_name.is_empty() { r.src_text.clone() } else { format!("{}\u{3000}{}", r.src_name, r.src_text) };
+    let dst = if r.name.is_empty() { r.text.clone() } else { format!("{}: {}", r.name, r.text) };
+    let entry = format!("[{}] {src}\n{dst}\n\n", local_time_text("%Y-%m-%d %H:%M"));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path(profile_id)) {
+        let _ = f.write_all(entry.as_bytes());
+    }
+}
 
 /// Добавляет реплику в историю; повторный перевод той же реплики заменяет запись.
 fn push_history(history: &mut VecDeque<LineResult>, r: LineResult) {
@@ -624,6 +655,7 @@ impl Controller {
         let mut manager = TranslatorManager::new(&self.settings.deepl_key, self.cache.clone(), self.http.clone());
         manager.set_target(self.settings.target_lang);
         manager.set_mode(&self.settings.engine_mode);
+        manager.set_second(&self.settings.second_engine);
         manager.set_microsoft(&self.settings.ms_key, &self.settings.ms_region);
         manager.set_local_ai(&self.settings.local_ai_url, &self.settings.local_ai_model);
         manager.set_local_http(self.local_http.clone());
@@ -671,6 +703,10 @@ impl Controller {
         self.pending.clear();
         self.window_lost_since = None;
         let Some(s) = self.session.take() else { return };
+        if s.saved && !s.setup {
+            // досохраняем статистику чтения
+            let _ = self.store.save(&s.profile);
+        }
         self.worker.send(WorkerCmd::SetPipeline(None));
         self.cache = None;
         self.overlay.send(Cmd::EditMode(false));
@@ -814,6 +850,8 @@ impl Controller {
     fn handle_line(&mut self, raw: &str, use_cache: bool, force: bool, t_line: Option<f64>) {
         let mut res = clean(raw);
         let Some(s) = self.session.as_ref() else { return };
+        // фильтры игры: убрать заданные фрагменты (служебные значки и т. п.)
+        res.text = apply_filters(&res.text, &s.profile.filters);
         if s.setup || res.text.is_empty() {
             return;
         }
@@ -841,8 +879,19 @@ impl Controller {
         if seq != self.seq {
             return;
         }
-        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone() });
+        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone(), alt: result.alt.clone() });
         let notice = result.notice.clone();
+        // новая реплика (не повторный перевод той же) — в статистику и журнал
+        let new_line = s.history.back().is_none_or(|b| b.src_text != result.src_text || b.src_name != result.src_name);
+        if new_line && s.saved && !s.setup {
+            s.profile.stats.lines += 1;
+            s.profile.stats.chars += result.src_text.chars().count() as u64;
+            append_log(&s.profile.id, &result);
+            // статистику на диск — не на каждой реплике
+            if s.profile.stats.lines % 10 == 0 {
+                let _ = self.store.save(&s.profile);
+            }
+        }
         push_history(&mut s.history, result.clone());
         s.last_result = Some(result);
         if !notice.is_empty() {
@@ -1055,7 +1104,8 @@ impl Controller {
         self.retranslate();
     }
 
-    pub fn save_glossary(&mut self, profile_id: &str, entries: Vec<GlossaryEntry>) {
+    /// Глоссарий и фильтры текста игры (их правят в одном окне).
+    pub fn save_glossary(&mut self, profile_id: &str, entries: Vec<GlossaryEntry>, filters: Vec<String>) {
         let in_session = self.session.as_ref().is_some_and(|s| s.profile.id == profile_id);
         let profile = if in_session {
             self.session.as_ref().map(|s| s.profile.clone())
@@ -1064,10 +1114,12 @@ impl Controller {
         };
         let Some(mut profile) = profile else { return };
         profile.glossary = entries.clone();
+        profile.filters = filters.clone();
         let _ = self.store.save(&profile);
         if in_session {
             if let Some(s) = self.session.as_mut() {
                 s.profile.glossary = entries.clone();
+                s.profile.filters = filters;
             }
             self.worker.send(WorkerCmd::SetGlossary(entries));
             self.retranslate();
@@ -1114,6 +1166,7 @@ impl Controller {
         self.worker.send(WorkerCmd::SetDeeplKey(self.settings.deepl_key.clone()));
         self.worker.send(WorkerCmd::SetTarget(self.settings.target_lang));
         self.worker.send(WorkerCmd::SetMode(self.settings.engine_mode.clone()));
+        self.worker.send(WorkerCmd::SetSecond(self.settings.second_engine.clone()));
         self.worker.send(WorkerCmd::SetMicrosoft(self.settings.ms_key.clone(), self.settings.ms_region.clone()));
         self.worker
             .send(WorkerCmd::SetLocalAi(self.settings.local_ai_url.clone(), self.settings.local_ai_model.clone()));
@@ -1287,6 +1340,13 @@ mod tests {
     use crate::paths::set_data_dir_override;
 
     #[test]
+    fn filters_remove_fragments() {
+        let f = vec!["%r".to_string(), String::new(), "[ruby]".to_string()];
+        assert_eq!(apply_filters("  「おは%rよう[ruby]」 ", &f), "「おはよう」");
+        assert_eq!(apply_filters("%r", &f), "", "реплика из одного мусора пропадает");
+    }
+
+    #[test]
     fn history_keeps_last_lines_and_replaces_retranslation() {
         let line = |src: &str, text: &str| LineResult {
             name: String::new(),
@@ -1296,6 +1356,7 @@ mod tests {
             engine: "google",
             cached: false,
             notice: String::new(),
+            alt: String::new(),
         };
         let mut h = VecDeque::new();
         for i in 0..HISTORY_LEN + 5 {
@@ -1469,6 +1530,7 @@ mod tests {
             engine: "test",
             cached: false,
             notice: String::new(),
+            alt: String::new(),
         };
         let old_seq = c.seq - 1;
         c.session.as_mut().unwrap().last_result = None;
