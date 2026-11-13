@@ -43,6 +43,30 @@ fn accept(text: &str, last: &str) -> bool {
     !trimmed.is_empty() && trimmed != last.trim() && trimmed.chars().count() <= MAX_CHARS
 }
 
+/// Текст, который сама программа положила в буфер (кнопка «копировать» на плашке): один раз не переводим.
+static IGNORED: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Запомнить текст, который не надо переводить при первом появлении в буфере.
+pub fn ignore_next(text: &str) {
+    *IGNORED.lock().unwrap_or_else(|e| e.into_inner()) = text.trim().to_string();
+}
+
+/// true, если это запомненный текст (запись при этом сбрасывается).
+fn take_ignored(text: &str) -> bool {
+    let mut g = IGNORED.lock().unwrap_or_else(|e| e.into_inner());
+    let hit = !g.is_empty() && g.as_str() == text.trim();
+    if hit {
+        g.clear();
+    }
+    hit
+}
+
+/// Кладёт текст в буфер обмена так, чтобы режим «Буфер обмена» не перевёл его снова.
+pub fn copy_text(text: &str) -> bool {
+    ignore_next(text);
+    arboard::Clipboard::new().and_then(|mut c| c.set_text(text.to_string())).is_ok()
+}
+
 /// Основной источник (LunaHook / демо) плюс буфер обмена для `CLIPBOARD_PID`.
 pub struct WithClipboard {
     inner: Box<dyn HookSource>,
@@ -80,7 +104,7 @@ impl WithClipboard {
             while !stop.load(Ordering::SeqCst) {
                 std::thread::sleep(POLL);
                 if let Ok(text) = cb.get_text() {
-                    if accept(&text, &last) {
+                    if !take_ignored(&text) && accept(&text, &last) {
                         send(HookEvent::Text(thread(), text.trim().to_string()));
                     }
                     last = text;
@@ -133,5 +157,13 @@ mod tests {
         assert!(!accept("「おはよう」", "「おはよう」\n"));
         assert!(!accept("   ", ""));
         assert!(!accept(&"あ".repeat(MAX_CHARS + 1), ""));
+    }
+
+    #[test]
+    fn ignored_text_is_skipped_once() {
+        ignore_next("Привет");
+        assert!(take_ignored(" Привет "));
+        assert!(!take_ignored("Привет"));
+        assert!(accept("Привет", ""));
     }
 }

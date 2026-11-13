@@ -1,10 +1,11 @@
 //! Темы оформления (чёрно-белые, цветные, своя) и значок приложения (перенос `noveltl/ui/theme.py`).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Response, RichText, Sense, Stroke,
-    StrokeKind, Theme, ThemePreference, Ui, Vec2, Visuals,
+    self, Align, Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Frame, Layout, Margin, Pos2, Rect,
+    Response, RichText, Sense, Stroke, StrokeKind, Theme, ThemePreference, Ui, UiBuilder, Vec2, Visuals,
 };
 use noveltl_core::profiles::AppSettings;
 
@@ -13,16 +14,22 @@ pub const THEME_DARK: &str = "dark";
 #[allow(dead_code)]
 pub const THEME_LIGHT: &str = "light";
 
-/// Готовые темы: (id, название).
-pub const PRESETS: [(&str, &str); 8] = [
+/// Режимы темы: (id, название).
+pub const MODES: [(&str, &str); 4] = [
     ("system", "Как в Windows"),
-    ("dark", "Чёрно-белая тёмная"),
-    ("light", "Чёрно-белая светлая"),
-    ("violet", "Фиолетовая"),
-    ("midnight", "Полночь"),
-    ("sakura", "Сакура"),
-    ("forest", "Лес"),
+    ("dark", "Тёмная"),
+    ("light", "Светлая"),
     ("custom", "Своя"),
+];
+
+/// Акценты: (hex или "" для монохрома, название).
+pub const ACCENTS: [(&str, &str); 6] = [
+    ("", "Монохром"),
+    ("#8B7CFF", "Фиолетовый"),
+    ("#4A9DFF", "Синий"),
+    ("#2FBF8A", "Зелёный"),
+    ("#FF6B9A", "Розовый"),
+    ("#FFB547", "Янтарный"),
 ];
 
 // набор цветов целиком, как в theme.py (часть пока не используется)
@@ -103,102 +110,6 @@ const BW_LIGHT: Palette = Palette {
     handle: rgb(0x111111),
 };
 
-/// Фиолетовая тёмная (прежняя тёмная тема).
-const VIOLET: Palette = Palette {
-    bg: rgb(0x14151F),
-    panel: rgb(0x1B1D2A),
-    card: rgb(0x232537),
-    border: rgb(0x313450),
-    text: rgb(0xE9EAF4),
-    dim: rgb(0x9497B3),
-    accent: rgb(0x8B7CFF),
-    accent_hover: rgb(0xA094FF),
-    on_accent: rgb(0x14122B),
-    ok: rgb(0x5DD39E),
-    warn: rgb(0xF2B45A),
-    bad: rgb(0xF07178),
-    selected: rgb(0x2E2B55),
-    menu_selected: rgb(0x3A3670),
-    disabled_text: rgb(0x5D6080),
-    disabled_border: rgb(0x282A40),
-    primary_disabled: rgb(0x3A3766),
-    primary_disabled_text: rgb(0x8684A8),
-    notice_bg: rgb(0x3A3120),
-    handle: rgb(0xE9EAF4),
-};
-
-/// Тёмно-синяя.
-const MIDNIGHT: Palette = Palette {
-    bg: rgb(0x0D1320),
-    panel: rgb(0x131A2B),
-    card: rgb(0x1A2338),
-    border: rgb(0x2A3753),
-    text: rgb(0xE6ECF7),
-    dim: rgb(0x8F9BB5),
-    accent: rgb(0x5AA9FF),
-    accent_hover: rgb(0x7DBBFF),
-    on_accent: rgb(0x08111F),
-    ok: rgb(0x5DD39E),
-    warn: rgb(0xF2B45A),
-    bad: rgb(0xF07178),
-    selected: rgb(0x1E2D4D),
-    menu_selected: rgb(0x273B66),
-    disabled_text: rgb(0x55617D),
-    disabled_border: rgb(0x222C44),
-    primary_disabled: rgb(0x25406B),
-    primary_disabled_text: rgb(0x7F93B5),
-    notice_bg: rgb(0x3A3120),
-    handle: rgb(0xE6ECF7),
-};
-
-/// Светлая с розовым.
-const SAKURA: Palette = Palette {
-    bg: rgb(0xFFF5F7),
-    panel: rgb(0xFCE8ED),
-    card: rgb(0xFFFFFF),
-    border: rgb(0xF0CCD6),
-    text: rgb(0x3A2530),
-    dim: rgb(0x8A6574),
-    accent: rgb(0xE0567A),
-    accent_hover: rgb(0xC94468),
-    on_accent: rgb(0xFFFFFF),
-    ok: rgb(0x178A5B),
-    warn: rgb(0xA8660B),
-    bad: rgb(0xCF3B48),
-    selected: rgb(0xFCDDE5),
-    menu_selected: rgb(0xF8CCD8),
-    disabled_text: rgb(0xC3A8B2),
-    disabled_border: rgb(0xF3DCE2),
-    primary_disabled: rgb(0xF1BCC9),
-    primary_disabled_text: rgb(0xFFFFFF),
-    notice_bg: rgb(0xFFF1D0),
-    handle: rgb(0xE0567A),
-};
-
-/// Тёмно-зелёная.
-const FOREST: Palette = Palette {
-    bg: rgb(0x0F1A14),
-    panel: rgb(0x15231B),
-    card: rgb(0x1B2C22),
-    border: rgb(0x2B4235),
-    text: rgb(0xE4F2EA),
-    dim: rgb(0x8DA89A),
-    accent: rgb(0x5FD39A),
-    accent_hover: rgb(0x83E0B2),
-    on_accent: rgb(0x0A1A11),
-    ok: rgb(0x5DD39E),
-    warn: rgb(0xF2B45A),
-    bad: rgb(0xF07178),
-    selected: rgb(0x21402F),
-    menu_selected: rgb(0x2B5640),
-    disabled_text: rgb(0x566B5F),
-    disabled_border: rgb(0x233529),
-    primary_disabled: rgb(0x2D5A44),
-    primary_disabled_text: rgb(0x8DB5A0),
-    notice_bg: rgb(0x3A3120),
-    handle: rgb(0xE4F2EA),
-};
-
 /// Текущая палитра и признак «visuals уже выставлены».
 struct Current {
     pal: Palette,
@@ -230,39 +141,49 @@ pub fn is_dark(p: &Palette) -> bool {
     luma(p.bg) < 0.5
 }
 
+/// Перекрашивает в `accent` всё, что от него зависит (фон, текст и карточки остаются).
+pub fn with_accent(p: Palette, accent: Color32) -> Palette {
+    let bg = p.bg;
+    let accent_hover = if luma(accent) > 0.5 { mix(accent, Color32::BLACK, 0.15) } else { mix(accent, Color32::WHITE, 0.2) };
+    let on_accent = if luma(accent) > 0.55 { rgb(0x0B0B0C) } else { Color32::WHITE };
+    Palette {
+        accent,
+        accent_hover,
+        on_accent,
+        selected: mix(bg, accent, 0.2),
+        menu_selected: mix(bg, accent, 0.3),
+        primary_disabled: mix(bg, accent, 0.35),
+        primary_disabled_text: mix(on_accent, bg, 0.3),
+        handle: accent,
+        ..p
+    }
+}
+
 /// Из четырёх основных цветов выводит остальные.
 pub fn custom_palette(bg: Color32, card: Color32, text: Color32, accent: Color32) -> Palette {
     let dark = luma(bg) < 0.5;
-    let accent_hover = if luma(accent) > 0.5 { mix(accent, Color32::BLACK, 0.15) } else { mix(accent, Color32::WHITE, 0.2) };
-    let on_accent = if luma(accent) > 0.55 { rgb(0x0B0B0C) } else { Color32::WHITE };
     let (ok, warn, bad) = if dark {
         (rgb(0x5DD39E), rgb(0xF2B45A), rgb(0xF07178))
     } else {
         (rgb(0x178A5B), rgb(0xA8660B), rgb(0xCF3B48))
     };
     let notice_bg = if dark { mix(bg, rgb(0xF2B45A), 0.2) } else { mix(bg, rgb(0xFFD25A), 0.3) };
-    Palette {
+    let base = Palette {
         bg,
         panel: mix(bg, card, 0.5),
         card,
         border: mix(card, text, 0.15),
         text,
         dim: mix(text, bg, 0.4),
-        accent,
-        accent_hover,
-        on_accent,
         ok,
         warn,
         bad,
-        selected: mix(bg, accent, 0.2),
-        menu_selected: mix(bg, accent, 0.3),
         disabled_text: mix(text, bg, 0.65),
         disabled_border: mix(bg, card, 0.6),
-        primary_disabled: mix(bg, accent, 0.35),
-        primary_disabled_text: mix(on_accent, bg, 0.3),
         notice_bg,
-        handle: accent,
-    }
+        ..BW_DARK
+    };
+    with_accent(base, accent)
 }
 
 /// "#RRGGBB" -> цвет; при ошибке — `fallback`.
@@ -284,18 +205,14 @@ pub fn to_hex(c: Color32) -> String {
 
 /// Палитра пресета; неизвестный id — как «system».
 pub fn palette_for(theme: &str, s: &AppSettings, system_dark: bool) -> Palette {
-    match theme {
+    let base = match theme {
         "dark" => BW_DARK,
         "light" => BW_LIGHT,
-        "violet" => VIOLET,
-        "midnight" => MIDNIGHT,
-        "sakura" => SAKURA,
-        "forest" => FOREST,
         "custom" => custom_palette(
             parse_hex(&s.custom_bg, rgb(0x101012)),
             parse_hex(&s.custom_card, rgb(0x1C1C20)),
             parse_hex(&s.custom_text, rgb(0xF2F2F2)),
-            parse_hex(&s.custom_accent, Color32::WHITE),
+            parse_hex(&s.accent, parse_hex(&s.custom_accent, Color32::WHITE)),
         ),
         _ => {
             if system_dark {
@@ -304,6 +221,14 @@ pub fn palette_for(theme: &str, s: &AppSettings, system_dark: bool) -> Palette {
                 BW_LIGHT
             }
         }
+    };
+    if theme == "custom" {
+        return base;
+    }
+    // TRANSPARENT — признак «акцент не задан или не разобрался»
+    match parse_hex(&s.accent, Color32::TRANSPARENT) {
+        Color32::TRANSPARENT => base,
+        a => with_accent(base, a),
     }
 }
 
@@ -388,6 +313,74 @@ pub fn bold_family() -> FontFamily {
 
 pub fn jp_family() -> FontFamily {
     FontFamily::Name("jp".into())
+}
+
+/// Семейство значков: системный Segoe Fluent Icons / Segoe MDL2 Assets (если нашёлся) + шрифты egui.
+pub fn icon_family() -> FontFamily {
+    FontFamily::Name("icons".into())
+}
+
+static ICON_FONT: AtomicBool = AtomicBool::new(false);
+
+pub fn set_icon_font(loaded: bool) {
+    ICON_FONT.store(loaded, Ordering::Relaxed);
+}
+
+/// Загружен ли системный шрифт значков.
+pub fn has_icon_font() -> bool {
+    ICON_FONT.load(Ordering::Relaxed)
+}
+
+// часть значков нужна только плашке
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Icon {
+    Palette,
+    Translate,
+    Overlay,
+    Network,
+    Keyboard,
+    Book,
+    Settings,
+    Refresh,
+    Copy,
+    Lock,
+    Unlock,
+    Eye,
+    EyeOff,
+    Menu,
+    Plus,
+    Chevron,
+    Original,
+}
+
+/// Значок: кодовая точка Segoe Fluent/MDL2, а без шрифта — символ из встроенных шрифтов egui.
+pub fn icon(i: Icon) -> &'static str {
+    // (Segoe, запасной): запасные символы проверены по таблицам Noto Emoji / emoji-icon-font / Hack / Ubuntu
+    let (seg, fallback) = match i {
+        Icon::Palette => ("\u{E790}", "🎨"),
+        Icon::Translate => ("\u{E8C1}", "🔤"),
+        Icon::Overlay => ("\u{E8BD}", "💬"),
+        Icon::Network => ("\u{E774}", "🌐"),
+        Icon::Keyboard => ("\u{E765}", "⌨"),
+        Icon::Book => ("\u{E82D}", "📖"),
+        Icon::Settings => ("\u{E713}", "⚙"),
+        Icon::Refresh => ("\u{E72C}", "↻"),
+        Icon::Copy => ("\u{E8C8}", "📋"),
+        Icon::Lock => ("\u{E72E}", "🔒"),
+        Icon::Unlock => ("\u{E785}", "🔓"),
+        Icon::Eye => ("\u{E7B3}", "👁"),
+        Icon::EyeOff => ("\u{ED1A}", "🙈"),
+        Icon::Menu => ("\u{E700}", "☰"),
+        Icon::Plus => ("\u{E710}", "✚"),
+        Icon::Chevron => ("\u{E76C}", "›"),
+        Icon::Original => ("あ", "あ"),
+    };
+    if has_icon_font() {
+        seg
+    } else {
+        fallback
+    }
 }
 
 pub fn h1(text: impl Into<String>) -> RichText {
@@ -502,6 +495,133 @@ pub fn hline(ui: &mut Ui) {
     ui.painter().rect_filled(rect, 0.0, pal().border);
 }
 
+// ---------- строки настроек: подпись, карточка, строка, переключатель, сегменты ----------
+
+/// Маленькая тусклая подпись над карточкой.
+pub fn section_label(ui: &mut Ui, text: &str) {
+    ui.add_space(6.0);
+    ui.label(small(text));
+}
+
+fn first_row_id() -> egui::Id {
+    egui::Id::new("theme_card_first_row")
+}
+
+/// Карточка: заливка, рамка 1 px, скругление 10. Внутри — `row`.
+pub fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    let p = pal();
+    ui.data_mut(|d| d.insert_temp(first_row_id(), true));
+    Frame::new()
+        .fill(p.card)
+        .stroke(Stroke::new(1.0_f32, p.border))
+        .corner_radius(CornerRadius::same(10))
+        .inner_margin(Margin::symmetric(16, 0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui);
+        });
+}
+
+/// Строка карточки с управлением шириной до 220 px.
+pub fn row(ui: &mut Ui, title: &str, desc: Option<&str>, add: impl FnOnce(&mut Ui)) {
+    row_w(ui, title, desc, 220.0, add);
+}
+
+/// Строка карточки: слева название и пояснение, справа элемент шириной `need`.
+/// Если места мало, элемент переносится под текст — наложения не бывает.
+pub fn row_w(ui: &mut Ui, title: &str, desc: Option<&str>, need: f32, add: impl FnOnce(&mut Ui)) {
+    let p = pal();
+    let first = ui.data_mut(|d| {
+        let f = d.get_temp::<bool>(first_row_id()).unwrap_or(false);
+        d.insert_temp(first_row_id(), false);
+        f
+    });
+    if !first {
+        hline(ui);
+    }
+    ui.add_space(12.0);
+    let w = ui.available_width();
+    let wide = need > 0.0 && w >= need + 190.0;
+    let text_w = if wide { w - need - 16.0 } else { w };
+    let tg = ui.painter().layout(title.to_string(), FontId::new(14.0, FontFamily::Proportional), p.text, text_w);
+    let dg = desc.map(|d| ui.painter().layout(d.to_string(), FontId::new(12.0, FontFamily::Proportional), p.dim, text_w));
+    let th = tg.size().y + dg.as_ref().map_or(0.0, |g| g.size().y + 2.0);
+    let h = if wide { th.max(32.0) } else { th };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, h), Sense::hover());
+    let top = rect.top() + (h - th) / 2.0;
+    let dpos = Pos2::new(rect.left(), top + tg.size().y + 2.0);
+    ui.painter().galley(Pos2::new(rect.left(), top), tg, p.text);
+    if let Some(g) = dg {
+        ui.painter().galley(dpos, g, p.dim);
+    }
+    if wide {
+        let ctl = Rect::from_min_size(Pos2::new(rect.right() - need, rect.top()), Vec2::new(need, h));
+        let b = UiBuilder::new().id_salt(("row_ctl", title)).max_rect(ctl).layout(Layout::left_to_right(Align::Center));
+        add(&mut ui.new_child(b));
+    } else if need > 0.0 {
+        ui.add_space(8.0);
+        ui.horizontal(add);
+    }
+    ui.add_space(12.0);
+}
+
+/// Пояснение на всю ширину карточки (без элемента управления).
+pub fn note(ui: &mut Ui, text: RichText) {
+    hline(ui);
+    ui.add_space(10.0);
+    ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Wrap));
+    ui.add_space(10.0);
+}
+
+/// Переключатель-«пилюля» 36x20.
+pub fn toggle(ui: &mut Ui, on: &mut bool) -> Response {
+    let p = pal();
+    let (rect, mut resp) = ui.allocate_exact_size(Vec2::new(36.0, 20.0), Sense::click());
+    if resp.clicked() {
+        *on = !*on;
+        resp.mark_changed();
+    }
+    // ручка — цвет текста на акценте: у монохромной тёмной темы акцент белый, белая ручка на нём не видна
+    let (fill, knob, x) = if *on { (p.accent, p.on_accent, rect.right() - 10.0) } else { (p.border, Color32::WHITE, rect.left() + 10.0) };
+    ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
+    ui.painter().circle_filled(Pos2::new(x, rect.center().y), 7.0, knob);
+    resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Ширина сегментного переключателя с такими подписями.
+pub fn segmented_width(ui: &Ui, labels: &[&str]) -> f32 {
+    let f = FontId::new(13.0, FontFamily::Proportional);
+    let w: f32 = labels.iter().map(|l| ui.painter().layout_no_wrap(l.to_string(), f.clone(), Color32::WHITE).size().x + 24.0).sum();
+    w + 6.0
+}
+
+/// Сегментный переключатель: тёмная подложка, выбранный сегмент подсвечен. Возвращает номер нажатого.
+pub fn segmented(ui: &mut Ui, labels: &[&str], cur: usize) -> Option<usize> {
+    let p = pal();
+    let f = FontId::new(13.0, FontFamily::Proportional);
+    let widths: Vec<f32> =
+        labels.iter().map(|l| ui.painter().layout_no_wrap(l.to_string(), f.clone(), Color32::WHITE).size().x + 24.0).collect();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(widths.iter().sum::<f32>() + 6.0, 30.0), Sense::hover());
+    ui.painter().rect(rect, CornerRadius::same(8), p.bg, Stroke::new(1.0_f32, p.border), StrokeKind::Inside);
+    let mut x = rect.left() + 3.0;
+    let mut clicked = None;
+    for (i, l) in labels.iter().enumerate() {
+        let seg = Rect::from_min_size(Pos2::new(x, rect.top() + 3.0), Vec2::new(widths[i], 24.0));
+        let resp = ui.interact(seg, ui.id().with(("seg", i)), Sense::click()).on_hover_cursor(CursorIcon::PointingHand);
+        if i == cur {
+            ui.painter().rect_filled(seg, CornerRadius::same(6), p.selected);
+        }
+        let color = if i == cur { p.text } else { p.dim };
+        ui.painter().text(seg.center(), Align2::CENTER_CENTER, *l, f.clone(), color);
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+        x += widths[i];
+    }
+    clicked
+}
+
 // ---------- значок программы ----------
 
 const GLYPH: &[(f32, f32, f32, f32)] = &[
@@ -585,4 +705,28 @@ pub fn icon_rgba(size: u32) -> Vec<u8> {
 
 pub fn icon_data(size: u32) -> egui::IconData {
     egui::IconData { rgba: icon_rgba(size), width: size, height: size }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accent_applies() {
+        let mut s = AppSettings::default();
+        assert_eq!(palette_for("dark", &s, true), BW_DARK);
+        s.accent = "#4A9DFF".into();
+        assert_eq!(palette_for("dark", &s, true).accent, rgb(0x4A9DFF));
+        assert_eq!(palette_for("dark", &s, true).bg, BW_DARK.bg);
+        assert_eq!(palette_for("system", &s, false).accent, rgb(0x4A9DFF));
+        s.accent = "мусор".into();
+        assert_eq!(palette_for("light", &s, true), BW_LIGHT);
+    }
+
+    #[test]
+    fn icons_fall_back_to_plain_glyphs() {
+        assert!(!has_icon_font());
+        assert_eq!(icon(Icon::Settings), "⚙");
+        assert_eq!(icon(Icon::Original), "あ");
+    }
 }

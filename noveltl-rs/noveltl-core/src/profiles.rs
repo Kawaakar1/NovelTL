@@ -323,6 +323,14 @@ pub struct AppSettings {
     pub learn_mode: bool,
     /// Язык интерфейса; None — по языку Windows.
     pub ui_lang: Option<crate::i18n::UiLang>,
+    /// Акцентный цвет "#RRGGBB"; пусто — чёрно-белая тема без акцента.
+    pub accent: String,
+    /// Показывать оригинал мелко под переводом на плашке.
+    pub overlay_show_original: bool,
+    /// Панель кнопок на плашке приглушена: почти прозрачная, ярче только под курсором.
+    pub overlay_toolbar_dim: bool,
+    /// Сочетание клавиш «Открыть настройки».
+    pub hotkey_settings: String,
 }
 
 impl Default for AppSettings {
@@ -360,6 +368,10 @@ impl Default for AppSettings {
             second_engine: String::new(),
             learn_mode: false,
             ui_lang: None,
+            accent: String::new(),
+            overlay_show_original: false,
+            overlay_toolbar_dim: false,
+            hotkey_settings: "Ctrl+Alt+S".into(),
         }
     }
 }
@@ -374,6 +386,7 @@ impl AppSettings {
         let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(Self::default()) else {
             return Self::default();
         };
+        let had_accent = file.contains_key("accent");
         for (key, value) in file {
             if let Some(default) = merged.get(&key) {
                 let mut probe = merged.clone();
@@ -388,7 +401,25 @@ impl AppSettings {
         s.deepl_key = secret::unprotect(&s.deepl_key);
         s.proxy_pass = secret::unprotect(&s.proxy_pass);
         s.ms_key = secret::unprotect(&s.ms_key);
+        if !had_accent {
+            s.migrate_theme();
+        }
         s
+    }
+
+    /// Старые цветные темы -> режим + акцент (только для файла, где ещё нет поля accent).
+    fn migrate_theme(&mut self) {
+        let (theme, accent) = match self.theme.as_str() {
+            "violet" => ("dark", "#8B7CFF"),
+            "midnight" => ("dark", "#4A9DFF"),
+            "forest" => ("dark", "#2FBF8A"),
+            "sakura" => ("light", "#E0507E"),
+            "custom" => ("custom", self.custom_accent.as_str()),
+            _ => return,
+        };
+        let accent = accent.to_string();
+        self.theme = theme.to_string();
+        self.accent = accent;
     }
 
     /// Ключ DeepL и пароль прокси на диск пишутся зашифрованными (DPAPI).
@@ -635,6 +666,41 @@ mod tests {
         assert_eq!(s.deepl_key, "k:fx");
         assert_eq!(s.font_size, 30);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn theme_migration() {
+        let dir = tmp_dir("mig");
+        let path = dir.join("settings.json");
+        let load = |json: &str| {
+            fs::write(&path, json).unwrap();
+            AppSettings::load(&path)
+        };
+        let s = load(r#"{"theme":"sakura"}"#);
+        assert_eq!((s.theme.as_str(), s.accent.as_str()), ("light", "#E0507E"));
+        let s = load(r#"{"theme":"violet"}"#);
+        assert_eq!((s.theme.as_str(), s.accent.as_str()), ("dark", "#8B7CFF"));
+        let s = load(r#"{"theme":"midnight"}"#);
+        assert_eq!((s.theme.as_str(), s.accent.as_str()), ("dark", "#4A9DFF"));
+        let s = load(r#"{"theme":"forest"}"#);
+        assert_eq!((s.theme.as_str(), s.accent.as_str()), ("dark", "#2FBF8A"));
+        let s = load(r##"{"theme":"custom","custom_accent":"#123456"}"##);
+        assert_eq!((s.theme.as_str(), s.accent.as_str()), ("custom", "#123456"));
+        let s = load(r#"{"theme":"dark","accent":""}"#);
+        assert_eq!((s.theme.as_str(), s.accent.as_str()), ("dark", ""));
+        // поле accent уже есть — миграция не трогает тему
+        let s = load(r##"{"theme":"sakura","accent":"#111111"}"##);
+        assert_eq!((s.theme.as_str(), s.accent.as_str()), ("sakura", "#111111"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn defaults_new_fields() {
+        let s = AppSettings::default();
+        assert_eq!(s.hotkey_settings, "Ctrl+Alt+S");
+        assert_eq!(s.accent, "");
+        assert!(!s.overlay_show_original);
+        assert!(!s.overlay_toolbar_dim);
     }
 
     #[test]

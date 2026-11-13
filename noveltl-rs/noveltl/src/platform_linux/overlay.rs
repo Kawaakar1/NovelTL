@@ -17,6 +17,8 @@ use eframe::egui::{
 };
 use noveltl_core::i18n::t;
 
+use crate::ui::theme::{icon, icon_family, Icon};
+
 pub use crate::overlay_common::*;
 
 const MIN_W: f32 = 220.0;
@@ -24,10 +26,6 @@ const MIN_H: f32 = 70.0;
 const PAD: f32 = 18.0;
 const MIN_FONT: f32 = 11.0;
 const EDGE: f32 = 10.0;
-/// кнопки: размер, отступ от краёв плашки и между кнопками (как в Windows-плашке)
-const BTN: f32 = 22.0;
-const BTN_INSET: f32 = 12.0;
-const BTN_GAP: f32 = 10.0;
 const MENU_IDS: [&str; 5] =
     [crate::tray::ID_OPEN, crate::tray::ID_TOGGLE, crate::tray::ID_RETR, crate::tray::ID_SETTINGS, crate::tray::ID_QUIT];
 const MENU_ROW: f32 = 30.0;
@@ -42,11 +40,15 @@ struct State {
     text: String,
     /// второй перевод (мелко под основным)
     alt: String,
+    /// исходная реплика (рисуется мелко, если включено в стиле)
+    orig: String,
     note: String,
     edit: bool,
     unlocked: bool,
     user_hidden: bool,
     menu_open: bool,
+    /// курсор был над плашкой или панелью кнопок в прошлом кадре
+    hover: bool,
     /// последнее положение окна плашки, о котором сообщили контроллеру
     reported: Option<Rect>,
 }
@@ -61,11 +63,6 @@ impl State {
         self.edit || self.unlocked
     }
 
-    /// Кнопки — во время игры; в мастере плашка и так двигается.
-    fn buttons_shown(&self) -> bool {
-        !self.edit
-    }
-
     fn apply(&mut self, cmd: Cmd) {
         match cmd {
             Cmd::Target(h, frac) => {
@@ -74,10 +71,11 @@ impl State {
                     self.frac = f;
                 }
             }
-            Cmd::Line { name, text, alt } => {
+            Cmd::Line { name, text, alt, orig } => {
                 self.name = name;
                 self.text = text;
                 self.alt = alt;
+                self.orig = orig;
                 self.note.clear();
             }
             Cmd::Note { note, keep_text } => {
@@ -86,12 +84,14 @@ impl State {
                     self.name.clear();
                     self.text.clear();
                     self.alt.clear();
+                    self.orig.clear();
                 }
             }
             Cmd::Clear => {
                 self.name.clear();
                 self.text.clear();
                 self.alt.clear();
+                self.orig.clear();
                 self.note.clear();
             }
             Cmd::EditMode(on) => self.edit = on,
@@ -133,11 +133,13 @@ impl Overlay {
             name: String::new(),
             text: String::new(),
             alt: String::new(),
+            orig: String::new(),
             note: String::new(),
             edit: false,
             unlocked: false,
             user_hidden: false,
             menu_open: false,
+            hover: false,
             reported: None,
         }));
         *lock(&CURRENT) = Some(state.clone());
@@ -186,6 +188,7 @@ pub fn show(ctx: &egui::Context) {
     if !s.should_show() {
         s.reported = None;
         s.menu_open = false;
+        s.hover = false;
         return;
     }
     let screen = ctx.input(|i| i.viewport().monitor_size).filter(|v| v.x > 0.0 && v.y > 0.0).unwrap_or(vec2(1920.0, 1080.0));
@@ -237,19 +240,14 @@ pub fn show(ctx: &egui::Context) {
         }
     });
 
-    if s.buttons_shown() {
-        show_buttons(ctx, &mut s, plate);
-    }
+    show_buttons(ctx, &mut s, plate);
 }
 
-/// Окно с кнопками (замочек, меню) у правого верхнего угла плашки.
+/// Окно с панелью кнопок у правого верхнего угла плашки: те же кнопки и порядок, что в Windows.
 fn show_buttons(ctx: &egui::Context, s: &mut State, plate: Rect) {
-    let strip_w = BTN_INSET + 2.0 * (BTN + BTN_GAP);
-    let size = if s.menu_open {
-        vec2(MENU_W, BTN_INSET + BTN + 10.0 + MENU_IDS.len() as f32 * MENU_ROW + 8.0)
-    } else {
-        vec2(strip_w, BTN_INSET + BTN + 6.0)
-    };
+    let (pl, pt, pr, pb) = tb_pill(plate.width() as i32);
+    let bar = vec2((pr - pl + TB_INSET) as f32, pb as f32 + 4.0);
+    let size = if s.menu_open { vec2(MENU_W.max(bar.x), bar.y + 6.0 + MENU_IDS.len() as f32 * MENU_ROW + 8.0) } else { bar };
     let pos = pos2(plate.max.x - size.x, plate.min.y);
     let builder = ViewportBuilder::default()
         .with_title("NovelTL overlay buttons")
@@ -261,39 +259,62 @@ fn show_buttons(ctx: &egui::Context, s: &mut State, plate: Rect) {
         .with_active(false)
         .with_position(pos)
         .with_inner_size(size);
+    let mut over = false;
     ctx.show_viewport_immediate(ViewportId::from_hash_of("noveltl_overlay_buttons"), builder, |ctx, _| {
         egui::CentralPanel::default().frame(Frame::NONE).show(ctx, |ui| {
             let full = ui.max_rect();
-            let hover_any = ui.rect_contains_pointer(full);
-            for (i, kind) in [(0, "lock"), (1, "menu")] {
-                let right = full.max.x - BTN_INSET - i as f32 * (BTN + BTN_GAP);
-                let r = Rect::from_min_size(pos2(right - BTN, full.min.y + BTN_INSET), vec2(BTN, BTN));
-                let resp = ui.interact(r.expand(4.0), Id::new(("overlay_btn", i)), Sense::click());
-                let hot = resp.hovered();
-                let alpha = if hot { 1.0 } else if hover_any || s.unlocked || s.menu_open { 0.85 } else { 0.3 };
-                let p = ui.painter();
-                if hot {
-                    p.rect_filled(r.expand(4.0), CornerRadius::same(6), rgba(0x000000, 0.45));
+            over = ui.rect_contains_pointer(full);
+            // без наведения, замочка и настройки панель бледная: Linux не знает, где мышь над плашкой
+            if !(s.hover || s.unlocked || s.edit || s.menu_open) {
+                ui.set_opacity(0.35);
+            }
+            // приглушённая панель: почти прозрачна, пока курсор не над ней (в настройке — всегда яркая)
+            if s.style.toolbar_dim && !s.edit && !over {
+                ui.set_opacity(0.22);
+            }
+            // подложка-«пилюля»; координаты панели считаются от правого края окна кнопок
+            let dx = full.max.x - plate.width();
+            let pill = Rect::from_min_max(pos2(pl as f32 + dx, pt as f32), pos2(pr as f32 + dx, pb as f32));
+            ui.painter().rect_filled(pill, CornerRadius::same(9), rgba(0x1B1C25, 1.0));
+            ui.painter().rect_stroke(pill, CornerRadius::same(9), Stroke::new(1.0_f32, rgba(0xFFFFFF, 0.18)), StrokeKind::Inside);
+            let icons = icon_family();
+            for i in 0..TB_BUTTONS {
+                let (l, t, r, bt) = tb_button(plate.width() as i32, i);
+                let rect = Rect::from_min_max(pos2(l as f32 + dx, t as f32), pos2(r as f32 + dx, bt as f32));
+                let resp = ui.interact(rect, Id::new(("overlay_btn", i)), Sense::click());
+                let active = i == TB_ORIGINAL && s.style.show_original;
+                if resp.hovered() || active {
+                    ui.painter().rect_filled(rect, CornerRadius::same(6), rgba(0xFFFFFF, if resp.hovered() { 0.18 } else { 0.10 }));
                 }
-                if kind == "lock" {
-                    draw_lock(p, r, s.unlocked, alpha);
-                } else {
-                    for k in 0..3 {
-                        let y = r.min.y + 6.0 + k as f32 * 5.0;
-                        p.line_segment([pos2(r.min.x + 4.0, y), pos2(r.max.x - 4.0, y)], Stroke::new(2.4_f32, rgba(0xFFFFFF, alpha)));
-                    }
-                }
+                let alpha = if resp.hovered() || active { 1.0 } else { 0.8 };
+                let glyph = match i {
+                    0 => icon(Icon::Refresh),
+                    1 => icon(Icon::Copy),
+                    TB_ORIGINAL => icon(Icon::Original),
+                    TB_LOCK if s.unlocked => icon(Icon::Unlock),
+                    TB_LOCK => icon(Icon::Lock),
+                    4 => icon(Icon::Settings),
+                    5 => icon(Icon::EyeOff),
+                    _ => icon(Icon::Menu),
+                };
+                let family = if i == TB_ORIGINAL { FontFamily::Proportional } else { icons.clone() };
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(15.0, family), rgba(0xFFFFFF, alpha));
                 if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
-                    if kind == "lock" {
-                        s.unlocked = !s.unlocked;
-                        s.menu_open = false;
-                    } else {
-                        s.menu_open = !s.menu_open;
+                    match TB_IDS[i] {
+                        Some(id) => {
+                            s.menu_open = false;
+                            let _ = s.events.send(Event::Menu(id));
+                        }
+                        None if i == TB_LOCK => {
+                            s.unlocked = !s.unlocked;
+                            s.menu_open = false;
+                        }
+                        None => s.menu_open = !s.menu_open,
                     }
                 }
             }
             if s.menu_open {
-                let top = full.min.y + BTN_INSET + BTN + 10.0;
+                let top = pb as f32 + 6.0;
                 let box_rect = Rect::from_min_max(pos2(full.min.x, top), pos2(full.max.x, full.max.y));
                 ui.painter().rect_filled(box_rect, CornerRadius::same(8), rgba(0x1C1C20, 0.97));
                 for (k, id) in MENU_IDS.into_iter().enumerate() {
@@ -317,29 +338,7 @@ fn show_buttons(ctx: &egui::Context, s: &mut State, plate: Rect) {
             }
         });
     });
-}
-
-/// Замочек: закрытый — плашка закреплена, открытый — дужка приподнята, правая нога висит в воздухе.
-fn draw_lock(p: &Painter, r: Rect, unlocked: bool, alpha: f32) {
-    let white = rgba(0xFFFFFF, alpha);
-    let (l, t0, s) = (r.min.x, r.min.y, BTN);
-    let (lx, rx, rad) = (l + 6.5, l + s - 6.5, (s - 13.0) / 2.0);
-    let lift = if unlocked { 4.0 } else { 0.0 };
-    let cy = t0 + 2.5 + rad - lift;
-    let body_top = t0 + 10.0;
-    let right_end = if unlocked { body_top - 3.5 } else { body_top + 1.0 };
-    let mut pts = vec![pos2(lx, body_top + 1.0), pos2(lx, cy)];
-    let cx = (lx + rx) / 2.0;
-    for k in 1..12 {
-        let a = std::f32::consts::PI * (1.0 - k as f32 / 12.0);
-        pts.push(pos2(cx + rad * a.cos(), cy - rad * a.sin()));
-    }
-    pts.push(pos2(rx, cy));
-    pts.push(pos2(rx, right_end));
-    p.add(Shape::line(pts, Stroke::new(2.6_f32, white)));
-    let body = Rect::from_min_max(pos2(l + 2.5, body_top), pos2(l + s - 2.5, t0 + s));
-    p.rect_filled(body, CornerRadius::same(3), white);
-    p.circle_filled(pos2(l + s / 2.0, body.center().y), 2.0, rgba(0x000000, alpha));
+    s.hover = over;
 }
 
 fn edge_dir(r: Rect, p: Pos2) -> Option<ResizeDirection> {
@@ -377,8 +376,7 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
     } else {
         (s.name.as_str(), s.text.as_str())
     };
-    let right_pad = if s.buttons_shown() { BTN_INSET + 2.0 * (BTN + BTN_GAP) } else { PAD };
-    let inner_w = (rect.width() - PAD - right_pad).max(10.0);
+    let inner_w = (rect.width() - 2.0 * PAD).max(10.0);
     let inner_h = (rect.height() - 1.2 * PAD).max(10.0);
     let (left, top) = (rect.min.x + PAD, rect.min.y + 0.6 * PAD);
 
@@ -393,9 +391,14 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
             // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
             let alt_size = (size * 0.7).max(MIN_FONT);
             let alt_g = (!s.alt.is_empty() && !s.edit).then(|| p.layout(s.alt.clone(), font(alt_size), rgba(0xC9CBE0, 1.0), inner_w));
+            // оригинал — ещё мельче и бледнее, под переводом (по настройке; в режиме настройки — нет)
+            let orig_size = (size * 0.62).max(MIN_FONT);
+            let orig_g = (!s.orig.is_empty() && !s.edit && st.show_original)
+                .then(|| p.layout(s.orig.clone(), font(orig_size), rgba(0xA2A4B8, 1.0), inner_w));
             let name_h = name_g.as_ref().map_or(0.0, |g| g.size().y + 2.0);
             let alt_h = alt_g.as_ref().map_or(0.0, |g| g.size().y + 4.0);
-            if name_h + body_g.size().y + alt_h <= inner_h || size <= MIN_FONT {
+            let orig_h = orig_g.as_ref().map_or(0.0, |g| g.size().y + 4.0);
+            if name_h + body_g.size().y + alt_h + orig_h <= inner_h || size <= MIN_FONT {
                 let mut y = top;
                 if let Some(g) = name_g {
                     outlined(p, pos2(left, y), g, st.outline_color, name_size);
@@ -405,6 +408,9 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
                 outlined(p, pos2(left, y), body_g, st.outline_color, size);
                 if let Some(g) = alt_g {
                     outlined(p, pos2(left, y + body_h + 4.0), g, st.outline_color, alt_size);
+                }
+                if let Some(g) = orig_g {
+                    outlined(p, pos2(left, y + body_h + alt_h + 4.0), g, st.outline_color, orig_size);
                 }
                 break;
             }

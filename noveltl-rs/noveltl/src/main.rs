@@ -185,6 +185,9 @@ fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
         }
     };
     let segoe = add("segoe", "segoeui.ttf");
+    // шрифт значков: Segoe Fluent Icons (Windows 11) или Segoe MDL2 Assets (Windows 10)
+    let icons = add("icons", "SegoeIcons.ttf") || add("icons", "segmdl2.ttf");
+    theme::set_icon_font(icons);
     // «жирное» семейство — полужирный Segoe UI Semibold: обычный Bold выглядел слишком тяжёлым
     let segoe_bold = add("segoe_bold", "seguisb.ttf") || add("segoe_bold", "segoeuib.ttf");
     let yu = needs.ja && add("yugothic", "YuGothM.ttc");
@@ -229,6 +232,7 @@ fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
     fonts.families.insert(FontFamily::Proportional, prop);
     fonts.families.insert(theme::bold_family(), bold);
     fonts.families.insert(theme::jp_family(), jp);
+    fonts.families.insert(theme::icon_family(), compose(pick(&[("icons", icons)])));
     ctx.set_fonts(fonts);
 }
 
@@ -345,6 +349,10 @@ fn main() {
             if let Some(l) = lang_arg {
                 controller.settings.ui_lang = Some(l);
                 noveltl_core::i18n::set_lang(l);
+                // демо переводит только на русский и английский: для других языков интерфейса — английский
+                if cfg.demo && l != noveltl_core::i18n::UiLang::Ru {
+                    controller.set_demo_target(noveltl_core::langdetect::Lang::En);
+                }
             }
             let controller = Arc::new(Mutex::new(controller));
             let shared = Arc::new(Shared::new(controller, ctx));

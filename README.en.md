@@ -16,7 +16,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 ![Rust](https://img.shields.io/badge/Rust-egui-CE422B?style=for-the-badge&logo=rust)
 ![License GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge)
 
-<img src="shots/08_overlay_in_game.png" width="760" alt="Translation box over the game">
+<img src="shots_en/08_overlay_in_game.png" width="760" alt="Translation box over the game">
 
 </div>
 
@@ -24,28 +24,43 @@ No manual hook codes, no command line — three wizard steps and you are playing
 
 ## Features
 
-- 🌍 **Interface in 5 languages.** Русский, English, 日本語, 中文, 한국어 — switch in Settings → General.
-- 🎯 **Automatic hook detection.** Click through 3–4 lines — the program finds the dialogue text thread by itself, and a separate thread with character names.
-- 🪟 **Overlay on top of the game.** Clicks go through it, it never steals focus, it follows the game window. Size and position are set once with the mouse.
-- 🔒 **Lock and menu right on the overlay.** Open the lock — move and resize the box during play; close it — the box is fixed again. The ☰ button opens the same menu as the tray icon.
-- 🔍 **Reading from the screen (OCR).** If text capture finds nothing, NovelTL recognizes the text right on screen with the built-in Windows OCR — under the overlay placed on the dialogue box (needs the Windows language pack with optical character recognition).
-- 📋 **Clipboard mode.** NovelTL translates everything you copy — for games the text hooker cannot handle, and for Linux.
-- 🎓 **Mode for Japanese learners.** Furigana over kanji in the dialogue history, word meanings on hover (verbs are reduced to the dictionary form), right click — “Add to Anki” (via AnkiConnect). The [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) dictionary (© EDRDG, CC BY-SA 4.0) is downloaded with one button in Settings.
-- 📜 **Dialogue history.** The main window keeps the last 50 lines with original and translation — handy if you skipped a line.
-- 🗺️ **5 languages, any direction.** Japanese, English, Chinese (Simplified), Korean and Russian. The target language is chosen in Settings, the source language per game (or “Auto”).
-- 🌐 **DeepL and Google.** “Auto” mode: Google without a key, DeepL with a key (the free plan works too) — DeepL uses the previous lines as context, and if DeepL refuses, the program switches to Google by itself. You can also choose “DeepL only” or “Google only”.
-- 🆓 **Free alternatives.** **Local AI** via [Ollama](https://ollama.com) or LM Studio — free, offline, aware of the scene context. **Microsoft Translator** — the official free tier (2 million characters per month). If the chosen translator does not answer, the line is translated by Google.
-- 📖 **Glossary.** Names and terms are translated the way you set: “灯里 → Akari”. A name can have a note (gender, way of speaking) — DeepL and local AI get it.
+### 🌐 Translation
+- 🗺️ **5 languages, any direction.** Japanese, English, Chinese, Korean, Russian; source language per game (or “Auto”).
+- 🌐 **DeepL and Google.** Google without a key, DeepL with one (uses previous lines as context); if DeepL refuses, Google takes over.
+- 🆓 **Free options.** Local AI ([Ollama](https://ollama.com), LM Studio), offline, and Microsoft Translator (2M characters a month).
 - ⚖️ **Second translation.** A smaller line under the main one from another translator, to cross-check the meaning.
-- 🧾 **Log and statistics.** Every translated line of a game is saved to a text file (easy to search); the main window shows how much you have read.
-- 🧽 **Per-game filters.** Fragments that are removed from the text before translation.
-- 💾 **Translation cache.** Repeated lines appear instantly and do not use up translator limits.
-- 🧹 **Text cleanup.** Removes KiriKiri engine tags, doubled characters and repeated phrases.
-- 🔌 **A profile for each game.** Start the game — NovelTL connects by itself, no wizard needed.
-- 🛡️ **Network.** SOCKS5 / HTTP proxy with login and password, choice of network interface — in case Google limits requests through a VPN.
-- 🎨 **Themes.** Strict black-and-white dark and light (or “follow Windows”), ready palettes “Violet”, “Midnight”, “Sakura”, “Forest” and **your own theme** — background, panels, text and accent from a color picker.
-- 🖌️ **Overlay style.** Font, size, colors and opacity — with a live preview.
-- ⌨️ **Hotkeys** work right in the game; tray icon.
+- 📖 **Glossary.** Names and terms come out the way you set them (“灯里 → Akari”); DeepL and local AI also get a “who is this” note.
+- 💾 **Cache and cleanup.** Repeats are instant and use no limits; KiriKiri tags, doubled characters and repeated phrases are removed.
+
+### 🪟 Overlay on top of the game
+- 🪟 **Stays out of the way.** Clicks go through it, it never steals focus, it follows the game window.
+- 🖱️ **Button bar on hover.** Translate again, copy translation, show original, pin/move, settings, hide, menu.
+- 👻 **Dimmed bar.** Make the buttons almost transparent so they do not distract.
+- 🔒 **Lock.** Open it to move and resize the box during play; close it and the box stays put.
+- 🔤 **Original in small text under the translation.** Optional.
+- 🖌️ **Your own look.** Font, size, colors and opacity, with a live preview.
+
+### 🎓 For Japanese learners
+- 🈶 **Furigana** over kanji in the dialogue history.
+- 📚 **Word meanings on hover.** Verbs are shown in dictionary form; the [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) dictionary (© EDRDG, CC BY-SA 4.0) downloads with one button.
+- 🗂️ **“Add to Anki”** on right click, via AnkiConnect.
+
+### 🎯 Text capture
+- 🎯 **Automatic hook detection.** Click through 3–4 lines; it finds the dialogue thread and a separate names thread.
+- 🔍 **OCR.** If capture finds nothing, text is read from the screen with Windows OCR (needs a language pack with text recognition).
+- 📋 **Clipboard mode.** Translates whatever you copy, for unsupported games and Linux.
+- 🧽 **Filters.** Fragments removed from the game text before translation.
+- 🔌 **A profile for each game.** Start the game and NovelTL connects by itself, no wizard.
+
+### ⚙️ Settings and comfort
+- 🗂️ **New settings window.** Sections with icons on the left, options in cards: Appearance, Translation, Overlay, Network, Hotkeys, Japanese, General.
+- 🎨 **Theme.** Mode: Follow Windows, Dark, Light or Custom (your own background, card and text colors).
+- 🌈 **Accent color.** Six presets or any color you like.
+- 🌍 **Interface in 5 languages.** Русский, English, 日本語, 中文, 한국어.
+- ⌨️ **Hotkeys in the game.** Ctrl+Alt+S settings, Ctrl+Alt+H overlay, Ctrl+Alt+R translate again; tray icon.
+- 📜 **History, log, statistics.** Last 50 lines, a text log per game and a reading counter.
+- 🛡️ **Network.** SOCKS5 / HTTP proxy with login, network interface choice, for when Google limits requests over a VPN.
+- 👤 **Profile.** Your own nickname and avatar in the main window.
 - 🪶 **Lightweight.** A single Rust exe: ~6 MB installer, ~90 MB of memory, starts in under a second.
 
 Made first of all for YUZUSOFT games on the KiriKiri engine (Senren\*Banka and others); LunaHook supports many other engines as well.
@@ -54,16 +69,39 @@ Made first of all for YUZUSOFT games on the KiriKiri engine (Senren\*Banka and o
 
 <table>
 <tr>
-<td width="50%"><img src="shots/09_main_running.png" alt="Main window"><br><sub>Main window: the game is connected, original and translation are shown</sub></td>
-<td width="50%"><img src="shots/02_wizard_step1.png" alt="Wizard, step 1"><br><sub>Wizard, step 1 — choose the game window and language</sub></td>
+<td width="50%"><img src="shots_en/09_main_running.png" alt="Main window"><br><sub>Main window: the game is connected, original and translation are shown</sub></td>
+<td width="50%"><img src="shots_en/02_wizard_step1.png" alt="Wizard, step 1"><br><sub>Wizard, step 1 — choose the game window and language</sub></td>
 </tr>
 <tr>
-<td><img src="shots/04_wizard_step2_found.png" alt="Wizard, step 2"><br><sub>Step 2 — the program found the dialogue text by itself</sub></td>
-<td><img src="shots/07_overlay_edit_mode.png" alt="Wizard, step 3"><br><sub>Step 3 — drag the box onto the dialogue window</sub></td>
+<td><img src="shots_en/04_wizard_step2_found.png" alt="Wizard, step 2"><br><sub>Step 2 — the program found the dialogue text by itself</sub></td>
+<td><img src="shots_en/06_wizard_step3.png" alt="Wizard, step 3"><br><sub>Step 3 — drag the box onto the dialogue window</sub></td>
+</tr>
+<tr>
+<td><img src="shots_en/07_overlay_edit_mode.png" alt="Overlay with button bar"><br><sub>Overlay in setup mode: the button bar on hover</sub></td>
+<td><img src="shots_en/12_settings_plate.png" alt="Overlay settings"><br><sub>Settings, “Overlay” section</sub></td>
+</tr>
+<tr>
+<td><img src="shots_en/11_settings_translate.png" alt="Translation settings"><br><sub>Settings, “Translation”: translator and languages</sub></td>
+<td><img src="shots_en/17_settings_theme_custom.png" alt="Custom theme"><br><sub>“Appearance”: mode, accent and a custom palette</sub></td>
+</tr>
+<tr>
+<td><img src="shots_en/19_glossary.png" alt="Glossary"><br><sub>Glossary of names and terms</sub></td>
+<td><img src="shots_en/08_overlay_in_game.png" alt="Overlay in game"><br><sub>The translation box over the game</sub></td>
 </tr>
 </table>
 
-The screenshots show the Russian interface; the English one looks the same.
+<details>
+<summary><b>Other settings sections</b> (click to expand)</summary>
+<br>
+<p align="center">
+<img src="shots_en/10_settings_look.png" width="400" alt="Appearance">
+<img src="shots_en/15_settings_japanese.png" width="400" alt="Japanese">
+<img src="shots_en/18_settings_local_ai.png" width="400" alt="Local AI">
+<img src="shots_en/13_settings_network.png" width="400" alt="Network">
+<img src="shots_en/14_settings_hotkeys.png" width="400" alt="Hotkeys">
+<img src="shots_en/16_settings_general.png" width="400" alt="General">
+</p>
+</details>
 
 ## Installation
 
@@ -104,6 +142,7 @@ Want to look at the program without a game? Run `NovelTL.exe --demo` (or the “
 
 | Keys | Action |
 |---|---|
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> | open settings |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>H</kbd> | hide / show the overlay |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd> | translate the line again, bypassing the cache |
 

@@ -480,12 +480,14 @@ impl Shots {
                 }
             },
             Stage::SettingsSection(i) => {
-                const NAMES: [&str; 5] = [
-                    "10_settings_personal.png",
+                const NAMES: [&str; 7] = [
+                    "10_settings_look.png",
                     "11_settings_translate.png",
-                    "12_settings_network.png",
-                    "13_settings_hotkeys.png",
-                    "14_settings_general.png",
+                    "12_settings_plate.png",
+                    "13_settings_network.png",
+                    "14_settings_hotkeys.png",
+                    "15_settings_japanese.png",
+                    "16_settings_general.png",
                 ];
                 if !self.fronted {
                     // выбрать раздел (для сети — ещё и подставить прокси-заглушки)
@@ -494,7 +496,7 @@ impl Shots {
                         if i == 0 {
                             w.fill_profile_for_shots("Reader");
                         }
-                        if i == 2 {
+                        if i == 3 {
                             w.fill_net_for_shots(NET_PROXY, "socks5h://127.0.0.1:1080", "user", "secret");
                         }
                     }
@@ -522,7 +524,7 @@ impl Shots {
                 // тема применяется через предпросмотр — даём время на перерисовку
                 if waited > Duration::from_millis(1200) {
                     if let Some(w) = settings.as_ref() {
-                        self.shot_window(w.window_title(), "16_settings_theme_custom.png", Stage::SettingsClose);
+                        self.shot_window(w.window_title(), "17_settings_theme_custom.png", Stage::SettingsClose);
                     } else {
                         self.go(Stage::SettingsClose);
                     }
@@ -538,7 +540,7 @@ impl Shots {
                 }
                 if waited > Duration::from_millis(1200) {
                     if let Some(w) = settings.as_ref() {
-                        self.shot_window(w.window_title(), "17_settings_local_ai.png", Stage::SettingsCustom);
+                        self.shot_window(w.window_title(), "18_settings_local_ai.png", Stage::SettingsCustom);
                     } else {
                         self.go(Stage::SettingsClose);
                     }
@@ -579,7 +581,7 @@ impl Shots {
             Stage::GlossaryShot => {
                 if waited > Duration::from_millis(900) {
                     if let Some(g) = glossary.as_ref() {
-                        self.shot_window(g.window_title(), "15_glossary.png", Stage::GlossaryClose);
+                        self.shot_window(g.window_title(), "19_glossary.png", Stage::GlossaryClose);
                     } else {
                         self.go(Stage::GlossaryClose);
                     }

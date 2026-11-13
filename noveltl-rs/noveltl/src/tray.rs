@@ -23,6 +23,8 @@ use crate::winutil;
 pub const ID_OPEN: &str = "open";
 pub const ID_TOGGLE: &str = "toggle";
 pub const ID_RETR: &str = "retr";
+pub const ID_COPY: &str = "copy";
+pub const ID_ORIGINAL: &str = "original";
 pub const ID_SETTINGS: &str = "settings";
 pub const ID_QUIT: &str = "quit";
 

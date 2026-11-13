@@ -4,7 +4,8 @@
 //! через Direct2D (системный подбор шрифтов, японский, контур). Своё окно и свой поток: плашка
 //! не забирает фокус, клики проходят сквозь неё в игру. В режиме настройки и при открытом замочке
 //! (значок в углу плашки) её можно двигать и растягивать мышью средствами самой Windows (WM_NCHITTEST).
-//! Рядом с замочком — кнопка меню: те же пункты, что у значка в трее.
+//! При наведении мыши (или в режиме настройки) в углу плашки появляется панель кнопок: перевести
+//! заново, копировать, показать оригинал, замочек, настройки, скрыть и меню (те же пункты, что у значка в трее).
 
 use noveltl_core::i18n::t;
 use std::cell::RefCell;
@@ -29,7 +30,8 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextLayout, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_WRAP,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
+    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -84,13 +86,8 @@ const MIN_W: i32 = 220;
 const MIN_H: i32 = 70;
 const PAD: f32 = 18.0;
 const MIN_FONT: f32 = 11.0;
-/// кнопки в правом верхнем углу (замочек, меню): размер, отступ от краёв и между кнопками
+/// размер запасного замочка, нарисованного фигурами (когда нет шрифта значков)
 const LOCK: i32 = 22;
-const LOCK_INSET: i32 = 12;
-const BTN_GAP: i32 = 10;
-const BTN_LOCK: usize = 0;
-const BTN_MENU: usize = 1;
-const BUTTONS: usize = 2;
 /// пункты меню плашки: (команда, id пункта меню трея, не используется); 0 — разделитель
 const MENU: [(u32, &str, &str); 6] = [
     (1, crate::tray::ID_OPEN, ""),
@@ -119,6 +116,10 @@ struct State {
     text: String,
     /// второй перевод (мелко под основным)
     alt: String,
+    /// исходная реплика (рисуется мелко, если включено в стиле)
+    orig: String,
+    /// шрифт значков панели кнопок (нет в системе — рисуем запасные формы)
+    icon_font: Option<String>,
     note: String,
     edit: bool,
     /// замочек открыт: плашку можно двигать во время игры
@@ -229,6 +230,7 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
             Err(e) => bail!(format!("CreateStrokeStyle: {e}")),
         };
 
+        let icon_font = find_icon_font(&dw);
         STATE.with(|s| {
             *s.borrow_mut() = Some(State {
                 hwnd,
@@ -245,6 +247,8 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 name: String::new(),
                 text: String::new(),
                 alt: String::new(),
+                orig: String::new(),
+                icon_font,
                 note: String::new(),
                 edit: false,
                 unlocked: false,
@@ -297,8 +301,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
             let mut r = RECT::default();
             let _ = GetWindowRect(hwnd, &mut r);
-            let (movable, lock_shown) = with_state(|st| (st.movable(), st.lock_shown())).unwrap_or((false, false));
-            if lock_shown && button_at(r.right - r.left, x - r.left, y - r.top).is_some() {
+            let (movable, bar_shown) = with_state(|st| (st.movable(), st.toolbar_shown())).unwrap_or((false, false));
+            if bar_shown && tb_button_at(r.right - r.left, x - r.left, y - r.top).is_some() {
                 return LRESULT(HTCLIENT as isize);
             }
             if !movable {
@@ -328,22 +332,30 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let (x, y) = ((lp.0 & 0xFFFF) as i16 as i32, ((lp.0 >> 16) & 0xFFFF) as i16 as i32);
             let mut r = RECT::default();
             let _ = GetClientRect(hwnd, &mut r);
-            let shown = with_state(|st| st.lock_shown()).unwrap_or(false);
-            match button_at(r.right, x, y).filter(|_| shown) {
-                Some(BTN_LOCK) => {
+            let shown = with_state(|st| st.toolbar_shown()).unwrap_or(false);
+            match tb_button_at(r.right, x, y).filter(|_| shown) {
+                Some(TB_LOCK) => {
                     with_state(|st| st.toggle_lock());
                 }
-                Some(BTN_MENU) => {
+                Some(TB_MENU) => {
                     // меню показываем вне заимствования состояния: у него свой цикл сообщений
                     if let Some((target, events)) = with_state(|st| (st.target, st.events.clone())) {
-                        let mut p = POINT { x: r.right - LOCK_INSET - LOCK, y: LOCK_INSET + LOCK + 4 };
+                        let b = tb_button(r.right, TB_MENU);
+                        let mut p = POINT { x: b.2, y: b.3 + 4 };
                         let _ = ClientToScreen(hwnd, &mut p);
                         if let Some(id) = show_menu(hwnd, target, p) {
                             let _ = events.send(Event::Menu(id));
                         }
                     }
                 }
-                _ => {}
+                Some(i) => {
+                    if let Some(id) = TB_IDS[i] {
+                        if let Some(e) = with_state(|st| st.events.clone()) {
+                            let _ = e.send(Event::Menu(id));
+                        }
+                    }
+                }
+                None => {}
             }
             LRESULT(0)
         }
@@ -406,10 +418,11 @@ impl State {
                         self.frac = f;
                     }
                 }
-                Cmd::Line { name, text, alt } => {
+                Cmd::Line { name, text, alt, orig } => {
                     self.name = name;
                     self.text = text;
                     self.alt = alt;
+                    self.orig = orig;
                     self.note.clear();
                 }
                 Cmd::Note { note, keep_text } => {
@@ -418,12 +431,14 @@ impl State {
                         self.name.clear();
                         self.text.clear();
                         self.alt.clear();
+                        self.orig.clear();
                     }
                 }
                 Cmd::Clear => {
                     self.name.clear();
                     self.text.clear();
                     self.alt.clear();
+                    self.orig.clear();
                     self.note.clear();
                 }
                 Cmd::EditMode(on) => {
@@ -452,9 +467,9 @@ impl State {
         self.edit || self.unlocked
     }
 
-    /// Замочек рисуем во время игры; в мастере плашка и так двигается.
-    fn lock_shown(&self) -> bool {
-        !self.edit
+    /// Панель кнопок: когда мышь над плашкой, замочек открыт или идёт настройка.
+    fn toolbar_shown(&self) -> bool {
+        self.hover || self.unlocked || self.edit
     }
 
     fn toggle_lock(&mut self) {
@@ -465,7 +480,7 @@ impl State {
 
     /// Клики проходят сквозь плашку, кроме режима перемещения и наведения на кнопки.
     fn update_click_through(&self) {
-        self.set_click_through(!(self.movable() || (self.lock_shown() && self.hover_btn.is_some())));
+        self.set_click_through(!(self.movable() || (self.toolbar_shown() && self.hover_btn.is_some())));
     }
 
     /// Следит за курсором: подсветка замочка и кликабельность только над ним.
@@ -477,7 +492,7 @@ impl State {
             let _ = GetWindowRect(self.hwnd, &mut r);
         }
         let hover = self.visible && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
-        let hover_btn = if hover { button_at(r.right - r.left, p.x - r.left, p.y - r.top) } else { None };
+        let hover_btn = if hover { tb_button_at(r.right - r.left, p.x - r.left, p.y - r.top) } else { None };
         if (hover, hover_btn) != (self.hover, self.hover_btn) {
             self.hover = hover;
             self.hover_btn = hover_btn;
@@ -607,7 +622,8 @@ impl State {
     fn fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
-        (&self.name, &self.text, &self.alt, &self.note, self.edit, &self.style.font_family).hash(&mut h);
+        (&self.name, &self.text, &self.alt, &self.orig, &self.note, self.edit, &self.style.font_family).hash(&mut h);
+        (self.style.show_original, self.style.toolbar_dim).hash(&mut h);
         (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
         (self.style.font_size as u32, self.style.text_color, self.style.name_color).hash(&mut h);
         (self.style.outline_color, self.style.bg_color, self.style.bg_opacity).hash(&mut h);
@@ -689,9 +705,7 @@ impl State {
             } else {
                 (self.name.as_str(), self.text.as_str())
             };
-            // справа место под кнопки, чтобы они не закрывали конец первой строки
-            let right_pad = if self.lock_shown() { (LOCK_INSET + BUTTONS as i32 * (LOCK + BTN_GAP)) as f32 } else { PAD };
-            let inner_w = (w as f32 - PAD - right_pad).max(10.0);
+            let inner_w = (w as f32 - 2.0 * PAD).max(10.0);
             let inner_h = (h as f32 - 1.2 * PAD).max(10.0);
             let (left, top) = (PAD, 0.6 * PAD);
 
@@ -705,10 +719,14 @@ impl State {
                     // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
                     let alt_size = (size * 0.7).max(MIN_FONT);
                     let alt = if self.alt.is_empty() || self.edit { None } else { Some(self.layout(&self.alt, alt_size, false, inner_w, inner_h)?) };
+                    // оригинал — ещё мельче и бледнее, под переводом (по настройке; в режиме настройки — нет)
+                    let orig_size = (size * 0.62).max(MIN_FONT);
+                    let orig = if self.orig.is_empty() || self.edit || !s.show_original { None } else { Some(self.layout(&self.orig, orig_size, false, inner_w, inner_h)?) };
                     let name_h = match &name_layout { Some(l) => metrics(l)?.height + 2.0, None => 0.0 };
                     let body_h = metrics(&body)?.height;
                     let alt_h = match &alt { Some(l) => metrics(l)?.height + 4.0, None => 0.0 };
-                    if name_h + body_h + alt_h <= inner_h || size <= MIN_FONT {
+                    let orig_h = match &orig { Some(l) => metrics(l)?.height + 4.0, None => 0.0 };
+                    if name_h + body_h + alt_h + orig_h <= inner_h || size <= MIN_FONT {
                         let mut y = top;
                         if let Some(l) = &name_layout {
                             self.outlined(rt, l, left, y, s.name_color, name_size)?;
@@ -717,6 +735,9 @@ impl State {
                         self.outlined(rt, &body, left, y, s.text_color, size)?;
                         if let Some(l) = &alt {
                             self.outlined(rt, l, left, y + body_h + 4.0, 0xC9CBE0, alt_size)?;
+                        }
+                        if let Some(l) = &orig {
+                            self.outlined(rt, l, left, y + body_h + alt_h + 4.0, 0xA2A4B8, orig_size)?;
                         }
                         break;
                     }
@@ -734,8 +755,8 @@ impl State {
                 };
                 self.outlined(rt, &l, x, y, 0xC9CBE0, small)?;
             }
-            if self.lock_shown() {
-                self.draw_buttons(rt, w)?;
+            if self.toolbar_shown() {
+                self.draw_toolbar(rt, w)?;
             }
             if self.movable() {
                 // рамка режима перемещения — белая, в тон чёрно-белому интерфейсу
@@ -751,58 +772,122 @@ impl State {
         }
     }
 
-    /// Кнопки в углу: замочек (закрытый — плашка закреплена, открытый — её можно двигать
-    /// и растягивать) и меню.
-    fn draw_buttons(&self, rt: &ID2D1RenderTarget, w: i32) -> windows::core::Result<()> {
+    /// Панель кнопок: подложка-«пилюля» у правого верхнего края и семь кнопок. Значки — шрифтом
+    /// Segoe Fluent Icons / MDL2 Assets, а без него — простые формы и символы.
+    fn draw_toolbar(&self, rt: &ID2D1RenderTarget, w: i32) -> windows::core::Result<()> {
         unsafe {
-            for i in 0..BUTTONS {
+            // приглушённая панель: почти прозрачна, пока курсор не над ней (в настройке — всегда яркая)
+            let k = if self.style.toolbar_dim && !self.edit && self.hover_btn.is_none() { 0.22 } else { 1.0 };
+            let (pl, pt, pr, pb) = tb_pill(w);
+            let pill = D2D1_ROUNDED_RECT {
+                rect: D2D_RECT_F { left: pl as f32, top: pt as f32, right: pr as f32, bottom: pb as f32 },
+                radiusX: 9.0,
+                radiusY: 9.0,
+            };
+            rt.FillRoundedRectangle(&pill, &rt.CreateSolidColorBrush(&color(0x1B1C25, k), None)?);
+            rt.DrawRoundedRectangle(&pill, &rt.CreateSolidColorBrush(&color(0xFFFFFF, 0.18 * k), None)?, 1.0, &self.round);
+            for i in 0..TB_BUTTONS {
                 let hot = self.hover_btn == Some(i);
-                // заметны, когда мышь над плашкой или замок открыт; иначе почти не мешают тексту
-                let alpha = if hot { 1.0 } else if self.hover || self.unlocked { 0.85 } else { 0.3 };
-                let r = button_rect(w, i);
-                let (l, t, s) = (r.left as f32, r.top as f32, LOCK as f32);
-                if hot {
-                    let back = rt.CreateSolidColorBrush(&color(0x000000, 0.45), None)?;
-                    let rect = D2D_RECT_F { left: l - 4.0, top: t - 4.0, right: l + s + 4.0, bottom: t + s + 4.0 };
-                    rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 }, &back);
+                let active = i == TB_ORIGINAL && self.style.show_original;
+                let b = tb_button(w, i);
+                if hot || active {
+                    let a = if hot { 0.18 } else { 0.10 };
+                    let rect = D2D_RECT_F { left: b.0 as f32, top: b.1 as f32, right: b.2 as f32, bottom: b.3 as f32 };
+                    rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 }, &rt.CreateSolidColorBrush(&color(0xFFFFFF, a * k), None)?);
                 }
-                let white = rt.CreateSolidColorBrush(&color(0xFFFFFF, alpha), None)?;
-                if i == BTN_MENU {
-                    // три полоски
-                    for k in 0..3 {
-                        let y = t + 6.0 + k as f32 * 5.0;
-                        rt.DrawLine(D2D_POINT_2F { x: l + 4.0, y }, D2D_POINT_2F { x: l + s - 4.0, y }, &white, 2.4, &self.round);
-                    }
+                let alpha = (if hot || active { 1.0 } else { 0.8 }) * k;
+                if i == TB_ORIGINAL {
+                    self.glyph(rt, "あ", "Yu Gothic UI", 16.0, b, 0xFFFFFF, alpha)?;
                     continue;
                 }
-                // дужка — перевёрнутая «U»; у открытого замка приподнята, правая нога висит над корпусом
-                let (lx, rx, rad) = (l + 6.5, l + s - 6.5, (s - 13.0) / 2.0);
-                let lift = if self.unlocked { 4.0 } else { 0.0 };
-                let top_y = t + 2.5 + rad - lift; // центр дуги по вертикали
-                let body_top = t + 10.0;
-                let right_end = if self.unlocked { body_top - 3.5 } else { body_top + 1.0 };
-                let geo = self.d2d.CreatePathGeometry()?;
-                let sink = geo.Open()?;
-                sink.BeginFigure(D2D_POINT_2F { x: lx, y: body_top + 1.0 }, D2D1_FIGURE_BEGIN_HOLLOW);
-                sink.AddLine(D2D_POINT_2F { x: lx, y: top_y });
-                sink.AddArc(&D2D1_ARC_SEGMENT {
-                    point: D2D_POINT_2F { x: rx, y: top_y },
-                    size: D2D_SIZE_F { width: rad, height: rad },
-                    rotationAngle: 0.0,
-                    sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
-                    arcSize: D2D1_ARC_SIZE_SMALL,
-                });
-                sink.AddLine(D2D_POINT_2F { x: rx, y: right_end });
-                sink.EndFigure(D2D1_FIGURE_END_OPEN);
-                sink.Close()?;
-                rt.DrawGeometry(&geo, &white, 2.6, &self.round);
-                // корпус с замочной скважиной
-                let body = D2D_RECT_F { left: l + 2.5, top: body_top, right: l + s - 2.5, bottom: t + s };
-                rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: body, radiusX: 3.0, radiusY: 3.0 }, &white);
-                let dark = rt.CreateSolidColorBrush(&color(0x000000, alpha), None)?;
-                let hole = D2D_POINT_2F { x: l + s / 2.0, y: body_top + (t + s - body_top) / 2.0 };
-                rt.FillEllipse(&D2D1_ELLIPSE { point: hole, radiusX: 2.0, radiusY: 2.0 }, &dark);
+                if let Some(font) = &self.icon_font {
+                    let code = match i {
+                        0 => "\u{E72C}",
+                        1 => "\u{E8C8}",
+                        TB_LOCK if self.unlocked => "\u{E785}",
+                        TB_LOCK => "\u{E72E}",
+                        4 => "\u{E713}",
+                        5 => "\u{ED1A}",
+                        _ => "\u{E700}",
+                    };
+                    self.glyph(rt, code, font, 15.0, b, 0xFFFFFF, alpha)?;
+                    continue;
+                }
+                // запасной вариант без шрифта значков
+                match i {
+                    TB_LOCK => self.draw_lock_shape(rt, b.0 as f32 + 4.0, b.1 as f32 + 3.0, alpha)?,
+                    TB_MENU => {
+                        let white = rt.CreateSolidColorBrush(&color(0xFFFFFF, alpha), None)?;
+                        for k in 0..3 {
+                            let y = b.1 as f32 + 8.0 + k as f32 * 5.0;
+                            rt.DrawLine(D2D_POINT_2F { x: b.0 as f32 + 8.0, y }, D2D_POINT_2F { x: b.2 as f32 - 8.0, y }, &white, 2.4, &self.round);
+                        }
+                    }
+                    _ => {
+                        let sym = ["↻", "⧉", "", "", "⚙", "⊘", ""][i];
+                        self.glyph(rt, sym, "Segoe UI Symbol", 15.0, b, 0xFFFFFF, alpha)?;
+                    }
+                }
             }
+        }
+        Ok(())
+    }
+
+    /// Строка из одного значка по центру прямоугольника кнопки.
+    #[allow(clippy::too_many_arguments)]
+    fn glyph(&self, rt: &ID2D1RenderTarget, text: &str, font: &str, size: f32, b: (i32, i32, i32, i32), rgb: u32, alpha: f32) -> windows::core::Result<()> {
+        unsafe {
+            let format = self.dw.CreateTextFormat(
+                &HSTRING::from(font),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!("ru-ru"),
+            )?;
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            let wide: Vec<u16> = text.encode_utf16().collect();
+            let layout = self.dw.CreateTextLayout(&wide, &format, (b.2 - b.0) as f32, (b.3 - b.1) as f32)?;
+            let brush = rt.CreateSolidColorBrush(&color(rgb, alpha), None)?;
+            rt.DrawTextLayout(D2D_POINT_2F { x: b.0 as f32, y: b.1 as f32 }, &layout, &brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+        }
+        Ok(())
+    }
+
+    /// Запасной замочек без шрифта значков (закрытый — плашка закреплена, открытый — дужка приподнята).
+    fn draw_lock_shape(&self, rt: &ID2D1RenderTarget, l: f32, t: f32, alpha: f32) -> windows::core::Result<()> {
+        unsafe {
+            let s = LOCK as f32;
+            let white = rt.CreateSolidColorBrush(&color(0xFFFFFF, alpha), None)?;
+            // дужка — перевёрнутая «U»; у открытого замка приподнята, правая нога висит над корпусом
+            let (lx, rx, rad) = (l + 6.5, l + s - 6.5, (s - 13.0) / 2.0);
+            let lift = if self.unlocked { 4.0 } else { 0.0 };
+            let top_y = t + 2.5 + rad - lift; // центр дуги по вертикали
+            let body_top = t + 10.0;
+            let right_end = if self.unlocked { body_top - 3.5 } else { body_top + 1.0 };
+            let geo = self.d2d.CreatePathGeometry()?;
+            let sink = geo.Open()?;
+            sink.BeginFigure(D2D_POINT_2F { x: lx, y: body_top + 1.0 }, D2D1_FIGURE_BEGIN_HOLLOW);
+            sink.AddLine(D2D_POINT_2F { x: lx, y: top_y });
+            sink.AddArc(&D2D1_ARC_SEGMENT {
+                point: D2D_POINT_2F { x: rx, y: top_y },
+                size: D2D_SIZE_F { width: rad, height: rad },
+                rotationAngle: 0.0,
+                sweepDirection: D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                arcSize: D2D1_ARC_SIZE_SMALL,
+            });
+            sink.AddLine(D2D_POINT_2F { x: rx, y: right_end });
+            sink.EndFigure(D2D1_FIGURE_END_OPEN);
+            sink.Close()?;
+            rt.DrawGeometry(&geo, &white, 2.6, &self.round);
+            // корпус с замочной скважиной
+            let body = D2D_RECT_F { left: l + 2.5, top: body_top, right: l + s - 2.5, bottom: t + s };
+            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: body, radiusX: 3.0, radiusY: 3.0 }, &white);
+            let dark = rt.CreateSolidColorBrush(&color(0x000000, alpha), None)?;
+            let hole = D2D_POINT_2F { x: l + s / 2.0, y: body_top + (t + s - body_top) / 2.0 };
+            rt.FillEllipse(&D2D1_ELLIPSE { point: hole, radiusX: 2.0, radiusY: 2.0 }, &dark);
         }
         Ok(())
     }
@@ -843,18 +928,17 @@ impl State {
     }
 }
 
-/// Где кнопка `i` (0 — замочек, 1 — меню) внутри плашки шириной `w` (координаты плашки).
-fn button_rect(w: i32, i: usize) -> RECT {
-    let right = w - LOCK_INSET - i as i32 * (LOCK + BTN_GAP);
-    RECT { left: right - LOCK, top: LOCK_INSET, right, bottom: LOCK_INSET + LOCK }
-}
-
-/// Какая кнопка в точке (x, y) плашки шириной `w`; с запасом в 4 px, чтобы легко попасть.
-fn button_at(w: i32, x: i32, y: i32) -> Option<usize> {
-    (0..BUTTONS).find(|&i| {
-        let b = button_rect(w, i);
-        x >= b.left - 4 && x < b.right + 4 && y >= b.top - 4 && y < b.bottom + 4
-    })
+/// Шрифт значков, если он есть в системе: Segoe Fluent Icons (Windows 11) или Segoe MDL2 Assets (Windows 10).
+fn find_icon_font(dw: &IDWriteFactory) -> Option<String> {
+    unsafe {
+        let mut coll = None;
+        dw.GetSystemFontCollection(&mut coll, false).ok()?;
+        let coll = coll?;
+        ["Segoe Fluent Icons", "Segoe MDL2 Assets"].into_iter().find(|name| {
+            let (mut idx, mut exists) = (0u32, BOOL(0));
+            coll.FindFamilyName(&HSTRING::from(*name), &mut idx, &mut exists).is_ok() && exists.as_bool()
+        }).map(String::from)
+    }
 }
 
 /// Меню плашки у точки `p` (экран). Возвращает id выбранного пункта меню трея.

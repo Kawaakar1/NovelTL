@@ -393,6 +393,8 @@ fn style_from(s: &AppSettings) -> Style {
         outline_color: parse_color(&s.outline_color, d.outline_color),
         bg_color: parse_color(&s.bg_color, d.bg_color),
         bg_opacity: s.bg_opacity.min(100) as u8,
+        show_original: s.overlay_show_original,
+        toolbar_dim: s.overlay_toolbar_dim,
     }
 }
 
@@ -620,6 +622,8 @@ impl Controller {
             match ev {
                 overlay::Event::Moved(f) => self.on_overlay_moved(f),
                 overlay::Event::Failed(msg) => self.notice(tf("Не удалось создать плашку перевода: {}", &[&msg])),
+                overlay::Event::Menu(crate::tray::ID_COPY) => self.copy_last_translation(),
+                overlay::Event::Menu(crate::tray::ID_ORIGINAL) => self.toggle_show_original(),
                 overlay::Event::Menu(id) => self.menu_requests.push(id),
             }
         }
@@ -627,6 +631,7 @@ impl Controller {
             match ev {
                 HotkeyEvent::Fired(0) => self.toggle_overlay(),
                 HotkeyEvent::Fired(1) => self.retranslate(),
+                HotkeyEvent::Fired(2) => self.menu_requests.push(crate::tray::ID_SETTINGS),
                 HotkeyEvent::Fired(_) => {}
             }
         }
@@ -1054,7 +1059,7 @@ impl Controller {
         if seq != self.seq {
             return;
         }
-        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone(), alt: result.alt.clone() });
+        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone(), alt: result.alt.clone(), orig: result.src_text.clone() });
         let notice = result.notice.clone();
         // новая реплика (не повторный перевод той же) — в статистику и журнал
         let new_line = s.history.back().is_none_or(|b| b.src_text != result.src_text || b.src_name != result.src_name);
@@ -1337,6 +1342,9 @@ impl Controller {
             if attempted.contains(&self.settings.hotkey_retranslate) {
                 self.settings.hotkey_retranslate = old.hotkey_retranslate.clone();
             }
+            if attempted.contains(&self.settings.hotkey_settings) {
+                self.settings.hotkey_settings = old.hotkey_settings.clone();
+            }
             self.register_hotkeys();
         }
         self.hotkey_errors = attempted;
@@ -1375,13 +1383,40 @@ impl Controller {
         }
     }
 
+    /// Кнопка «копировать» на плашке: последний перевод — в буфер обмена (и не переводится заново).
+    fn copy_last_translation(&mut self) {
+        let text = self.session.as_ref().and_then(|s| s.last_result.as_ref()).map(|r| r.text.clone());
+        if let Some(text) = text.filter(|t| !t.is_empty()) {
+            crate::clipboard::copy_text(&text);
+        }
+    }
+
+    /// Кнопка «あ» на плашке: показывать или прятать оригинал под переводом.
+    fn toggle_show_original(&mut self) {
+        self.settings.overlay_show_original = !self.settings.overlay_show_original;
+        if let Err(e) = self.settings.save_checked(&self.settings_path) {
+            self.notice(tf("Не удалось сохранить настройки: {}", &[&e]));
+        }
+        self.apply_overlay_style();
+    }
+
+    /// Язык перевода в демо по `--lang` (без записи в файл настроек).
+    pub fn set_demo_target(&mut self, l: Lang) {
+        self.settings.target_lang = l;
+        self.worker.send(WorkerCmd::SetTarget(l));
+    }
+
     /// Стиль плашки из `self.settings` (для предпросмотра без сохранения).
     pub fn apply_overlay_style(&mut self) {
         self.overlay.send(Cmd::Style(style_from(&self.settings)));
     }
 
     fn register_hotkeys(&mut self) {
-        let combos = vec![self.settings.hotkey_toggle.clone(), self.settings.hotkey_retranslate.clone()];
+        let combos = vec![
+            self.settings.hotkey_toggle.clone(),
+            self.settings.hotkey_retranslate.clone(),
+            self.settings.hotkey_settings.clone(),
+        ];
         let failed = self.hotkeys.set(&combos);
         // пустое сочетание — «не задано», это не ошибка
         self.hotkey_errors = failed.into_iter().filter(|c| !c.is_empty()).collect();
