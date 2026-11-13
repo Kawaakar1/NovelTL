@@ -1,7 +1,7 @@
 //! Контроллер: связывает источник текста, автоподбор хука, перевод и плашку (перенос `noveltl/controller.py`).
 //! Без Qt: интерфейс каждый кадр вызывает `poll()`, всё остальное происходит там.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -316,7 +316,23 @@ pub struct Session {
     pub error: String,
     pub last_src: (String, String),
     pub last_result: Option<LineResult>,
+    /// последние переведённые реплики, самая новая — в конце
+    pub history: VecDeque<LineResult>,
     pub started: f64,
+}
+
+/// Сколько реплик хранит история диалога.
+pub const HISTORY_LEN: usize = 50;
+
+/// Добавляет реплику в историю; повторный перевод той же реплики заменяет запись.
+fn push_history(history: &mut VecDeque<LineResult>, r: LineResult) {
+    if history.back().is_some_and(|b| b.src_text == r.src_text && b.src_name == r.src_name) {
+        history.pop_back();
+    }
+    history.push_back(r);
+    while history.len() > HISTORY_LEN {
+        history.pop_front();
+    }
 }
 
 fn to_frac(f: OverlayFrac) -> Frac {
@@ -615,6 +631,7 @@ impl Controller {
             error: String::new(),
             last_src: (String::new(), String::new()),
             last_result: None,
+            history: VecDeque::new(),
             started: now_secs(),
         });
         self.overlay.send(Cmd::Clear);
@@ -800,6 +817,7 @@ impl Controller {
         }
         self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone() });
         let notice = result.notice.clone();
+        push_history(&mut s.history, result.clone());
         s.last_result = Some(result);
         if !notice.is_empty() {
             self.notices.push(notice);
@@ -1216,6 +1234,29 @@ mod tests {
     use super::*;
     use crate::demo::{demo_translations, DemoSource, DEMO_TITLE, SCRIPT};
     use crate::paths::set_data_dir_override;
+
+    #[test]
+    fn history_keeps_last_lines_and_replaces_retranslation() {
+        let line = |src: &str, text: &str| LineResult {
+            name: String::new(),
+            text: text.into(),
+            src_name: String::new(),
+            src_text: src.into(),
+            engine: "google",
+            cached: false,
+            notice: String::new(),
+        };
+        let mut h = VecDeque::new();
+        for i in 0..HISTORY_LEN + 5 {
+            push_history(&mut h, line(&i.to_string(), "x"));
+        }
+        assert_eq!(h.len(), HISTORY_LEN);
+        assert_eq!(h.front().unwrap().src_text, "5");
+        // повторный перевод последней реплики не дублирует её
+        push_history(&mut h, line(&(HISTORY_LEN + 4).to_string(), "y"));
+        assert_eq!(h.len(), HISTORY_LEN);
+        assert_eq!(h.back().unwrap().text, "y");
+    }
 
     // проверка на этапе компиляции: Controller можно передавать между потоками
     fn _assert_send() {

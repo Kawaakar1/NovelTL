@@ -27,7 +27,8 @@ struct SessSnap {
     setup: bool,
     has_selected: bool,
     error: String,
-    last_result: Option<LineResult>,
+    /// история диалога, самая новая реплика — первая
+    history: Vec<LineResult>,
 }
 
 struct Snap {
@@ -112,7 +113,7 @@ impl MainWindow {
                 setup: s.setup,
                 has_selected: s.selected.is_some(),
                 error: s.error.clone(),
-                last_result: s.last_result.clone(),
+                history: s.history.iter().rev().cloned().collect(),
             }),
             user_hidden: c.user_hidden,
             hotkey_toggle: c.settings.hotkey_toggle.clone(),
@@ -459,16 +460,28 @@ impl MainWindow {
             });
         });
 
-        // последняя реплика (занимает всё свободное место)
+        // история диалога (занимает всё свободное место), самая новая реплика — сверху
         let fill_h = (ui.available_height() - 24.0).max(60.0);
         theme::card_frame().inner_margin(Margin { left: 16, right: 16, top: 12, bottom: 14 }).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.set_min_height(fill_h);
             ui.spacing_mut().item_spacing.y = 6.0;
-            ui.label(theme::step("ПОСЛЕДНЯЯ РЕПЛИКА"));
-            let res = s.and_then(|s| s.last_result.as_ref());
-            match res {
-                Some(res) => {
+            let history = s.map_or(&[][..], |s| s.history.as_slice());
+            ui.label(theme::step(match history.len() {
+                0 | 1 => "ПОСЛЕДНЯЯ РЕПЛИКА".to_string(),
+                n => format!("ИСТОРИЯ ДИАЛОГА · {n}"),
+            }));
+            if history.is_empty() {
+                let hint = if s.is_some() { "Здесь появится текст из игры и его перевод." } else { "—" };
+                ui.add(egui::Label::new(theme::jp(hint)).wrap_mode(egui::TextWrapMode::Wrap));
+                return;
+            }
+            egui::ScrollArea::vertical().id_salt("history").auto_shrink([false, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                for (i, res) in history.iter().enumerate() {
+                    if i > 0 {
+                        hline(ui);
+                    }
                     let src = if res.src_name.is_empty() {
                         res.src_text.clone()
                     } else {
@@ -477,17 +490,15 @@ impl MainWindow {
                     let dst = if res.name.is_empty() { res.text.clone() } else { format!("{}: {}", res.name, res.text) };
                     ui.add(egui::Label::new(theme::jp(src)).wrap_mode(egui::TextWrapMode::Wrap));
                     ui.add(egui::Label::new(theme::tr(dst)).wrap_mode(egui::TextWrapMode::Wrap));
-                    ui.label(theme::small(format!(
-                        "{}{}",
-                        engine_title(res.engine),
-                        if res.cached { " · из кэша" } else { "" }
-                    )));
+                    if i == 0 {
+                        ui.label(theme::small(format!(
+                            "{}{}",
+                            engine_title(res.engine),
+                            if res.cached { " · из кэша" } else { "" }
+                        )));
+                    }
                 }
-                None => {
-                    let hint = if s.is_some() { "Здесь появится текст из игры и его перевод." } else { "—" };
-                    ui.add(egui::Label::new(theme::jp(hint)).wrap_mode(egui::TextWrapMode::Wrap));
-                }
-            }
+            });
         });
     }
 

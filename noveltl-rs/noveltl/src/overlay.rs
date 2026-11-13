@@ -2,8 +2,8 @@
 //!
 //! Родное окно Windows с попиксельной прозрачностью (UpdateLayeredWindow), текст — DirectWrite
 //! через Direct2D (системный подбор шрифтов, японский, контур). Своё окно и свой поток: плашка
-//! не забирает фокус, клики проходят сквозь неё в игру. В режиме настройки её можно двигать и
-//! растягивать мышью средствами самой Windows (WM_NCHITTEST).
+//! не забирает фокус, клики проходят сквозь неё в игру. В режиме настройки и при открытом замочке
+//! (значок в углу плашки) её можно двигать и растягивать мышью средствами самой Windows (WM_NCHITTEST).
 
 use std::cell::RefCell;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -144,6 +144,9 @@ const MIN_W: i32 = 220;
 const MIN_H: i32 = 70;
 const PAD: f32 = 18.0;
 const MIN_FONT: f32 = 11.0;
+/// замочек в правом верхнем углу: размер и отступ от краёв
+const LOCK: i32 = 22;
+const LOCK_INSET: i32 = 12;
 const SAMPLE_NAME: &str = "Акари";
 const SAMPLE_TEXT: &str =
     "«Так будет выглядеть перевод. Перетащите плашку на окно диалога игры и растяните по размеру».";
@@ -163,6 +166,11 @@ struct State {
     text: String,
     note: String,
     edit: bool,
+    /// замочек открыт: плашку можно двигать во время игры
+    unlocked: bool,
+    /// курсор над плашкой / над замочком
+    hover: bool,
+    hover_lock: bool,
     user_hidden: bool,
     force_active: bool,
     visible: bool,
@@ -267,6 +275,9 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 text: String::new(),
                 note: String::new(),
                 edit: false,
+                unlocked: false,
+                hover: false,
+                hover_lock: false,
                 user_hidden: false,
                 force_active: false,
                 visible: false,
@@ -309,14 +320,17 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(0)
         }
         WM_NCHITTEST => {
-            let edit = with_state(|st| st.edit).unwrap_or(false);
-            if !edit {
-                return LRESULT(HTTRANSPARENT as isize);
-            }
             let x = (lp.0 & 0xFFFF) as i16 as i32;
             let y = ((lp.0 >> 16) & 0xFFFF) as i16 as i32;
             let mut r = RECT::default();
             let _ = GetWindowRect(hwnd, &mut r);
+            let (movable, lock_shown) = with_state(|st| (st.movable(), st.lock_shown())).unwrap_or((false, false));
+            if lock_shown && in_lock(&r, x, y) {
+                return LRESULT(HTCLIENT as isize);
+            }
+            if !movable {
+                return LRESULT(HTTRANSPARENT as isize);
+            }
             let (l, t, rr, b) = (x - r.left <= EDGE, y - r.top <= EDGE, r.right - x <= EDGE, r.bottom - y <= EDGE);
             let code = match (l, t, rr, b) {
                 (true, true, _, _) => HTTOPLEFT,
@@ -332,6 +346,15 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             LRESULT(code as isize)
         }
         WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
+        WM_SETCURSOR if (lp.0 & 0xFFFF) as u32 == HTCLIENT => {
+            // над замочком — «рука»
+            SetCursor(LoadCursorW(None, IDC_HAND).unwrap_or_default());
+            LRESULT(1)
+        }
+        WM_LBUTTONDOWN => {
+            with_state(|st| st.toggle_lock());
+            LRESULT(0)
+        }
         WM_ENTERSIZEMOVE => {
             with_state(|st| st.in_size_move = true);
             LRESULT(0)
@@ -410,7 +433,7 @@ impl State {
                 }
                 Cmd::EditMode(on) => {
                     self.edit = on;
-                    self.set_click_through(!on);
+                    self.update_click_through();
                 }
                 Cmd::UserHidden(h) => self.user_hidden = h,
                 Cmd::Style(s) => self.style = s,
@@ -424,6 +447,44 @@ impl State {
             self.sync();
         }
         false
+    }
+
+    /// Можно двигать и растягивать мышью.
+    fn movable(&self) -> bool {
+        self.edit || self.unlocked
+    }
+
+    /// Замочек рисуем во время игры; в мастере плашка и так двигается.
+    fn lock_shown(&self) -> bool {
+        !self.edit
+    }
+
+    fn toggle_lock(&mut self) {
+        self.unlocked = !self.unlocked;
+        self.update_click_through();
+        self.render(false);
+    }
+
+    /// Клики проходят сквозь плашку, кроме режима перемещения и наведения на замочек.
+    fn update_click_through(&self) {
+        self.set_click_through(!(self.movable() || (self.lock_shown() && self.hover_lock)));
+    }
+
+    /// Следит за курсором: подсветка замочка и кликабельность только над ним.
+    fn track_mouse(&mut self) {
+        let mut p = POINT::default();
+        let mut r = RECT::default();
+        unsafe {
+            let _ = GetCursorPos(&mut p);
+            let _ = GetWindowRect(self.hwnd, &mut r);
+        }
+        let hover = self.visible && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
+        let hover_lock = hover && in_lock(&r, p.x, p.y);
+        if (hover, hover_lock) != (self.hover, self.hover_lock) {
+            self.hover = hover;
+            self.hover_lock = hover_lock;
+            self.update_click_through();
+        }
     }
 
     fn set_click_through(&self, on: bool) {
@@ -470,7 +531,9 @@ impl State {
                 // в режиме настройки окно NovelTL (мастер) обычно активно — плашку всё равно показываем
                 return true;
             }
-            GetForegroundWindow() == h
+            // пока плашку тянут мышью, активной может стать она сама
+            let fg = GetForegroundWindow();
+            fg == h || fg == self.hwnd
         }
     }
 
@@ -490,6 +553,7 @@ impl State {
         }
         let Some(game) = self.game_client_rect() else { return };
         self.game = game;
+        self.track_mouse();
         let gw = (game.right - game.left) as f32;
         let gh = (game.bottom - game.top) as f32;
         let f = self.frac;
@@ -534,6 +598,7 @@ impl State {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&self.name, &self.text, &self.note, self.edit, &self.style.font_family).hash(&mut h);
+        (self.unlocked, self.hover, self.hover_lock).hash(&mut h);
         (self.style.font_size as u32, self.style.text_color, self.style.name_color).hash(&mut h);
         (self.style.outline_color, self.style.bg_color, self.style.bg_opacity).hash(&mut h);
         h.finish()
@@ -650,7 +715,10 @@ impl State {
                 };
                 self.outlined(rt, &l, x, y, 0xC9CBE0, small)?;
             }
-            if self.edit {
+            if self.lock_shown() {
+                self.draw_lock(rt, w)?;
+            }
+            if self.movable() {
                 // рамка режима перемещения — белая, в тон чёрно-белому интерфейсу
                 let accent = rt.CreateSolidColorBrush(&color(0xFFFFFF, 0.9), None)?;
                 rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: 12.0, radiusY: 12.0 }, &accent, 2.0, &self.dashes);
@@ -662,6 +730,32 @@ impl State {
             }
             rt.EndDraw(None, None)
         }
+    }
+
+    /// Замочек: закрытый — плашка закреплена, открытый — её можно двигать и растягивать.
+    fn draw_lock(&self, rt: &ID2D1RenderTarget, w: i32) -> windows::core::Result<()> {
+        // заметен, когда мышь над плашкой или замок открыт; иначе почти не мешает тексту
+        let alpha = if self.hover_lock { 1.0 } else if self.hover || self.unlocked { 0.85 } else { 0.3 };
+        let r = lock_rect(w);
+        let (l, t, s) = (r.left as f32, r.top as f32, LOCK as f32);
+        unsafe {
+            if self.hover_lock {
+                let back = rt.CreateSolidColorBrush(&color(0x000000, 0.45), None)?;
+                let rect = D2D_RECT_F { left: l - 4.0, top: t - 4.0, right: l + s + 4.0, bottom: t + s + 4.0 };
+                rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 }, &back);
+            }
+            let white = rt.CreateSolidColorBrush(&color(0xFFFFFF, alpha), None)?;
+            let dark = rt.CreateSolidColorBrush(&color(0x000000, alpha), None)?;
+            // дужка: у открытого замка поднята и сдвинута влево, правая нога висит в воздухе
+            let (dx, dy) = if self.unlocked { (-5.0, -4.0) } else { (0.0, 0.0) };
+            let arc = D2D_RECT_F { left: l + 5.0 + dx, top: t + 1.0 + dy, right: l + s - 5.0 + dx, bottom: t + 15.0 + dy };
+            rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: arc, radiusX: 6.0, radiusY: 6.0 }, &white, 2.6, None);
+            let body = D2D_RECT_F { left: l + 2.0, top: t + 9.0, right: l + s - 2.0, bottom: t + s };
+            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: body, radiusX: 3.0, radiusY: 3.0 }, &white);
+            let hole = D2D_POINT_2F { x: l + s / 2.0, y: t + 15.5 };
+            rt.FillEllipse(&D2D1_ELLIPSE { point: hole, radiusX: 2.2, radiusY: 2.2 }, &dark);
+        }
+        Ok(())
     }
 
     fn layout(&self, text: &str, size: f32, bold: bool, w: f32, h: f32) -> windows::core::Result<IDWriteTextLayout> {
@@ -698,6 +792,18 @@ impl State {
             Ok(())
         }
     }
+}
+
+/// Где замочек внутри плашки шириной `w` (координаты плашки).
+fn lock_rect(w: i32) -> RECT {
+    RECT { left: w - LOCK_INSET - LOCK, top: LOCK_INSET, right: w - LOCK_INSET, bottom: LOCK_INSET + LOCK }
+}
+
+/// Точка экрана (x, y) — над замочком плашки с прямоугольником `r`? С запасом в 4 px, чтобы легко попасть.
+fn in_lock(r: &RECT, x: i32, y: i32) -> bool {
+    let l = lock_rect(r.right - r.left);
+    let (x, y) = (x - r.left, y - r.top);
+    x >= l.left - 4 && x < l.right + 4 && y >= l.top - 4 && y < l.bottom + 4
 }
 
 fn metrics(l: &IDWriteTextLayout) -> windows::core::Result<DWRITE_TEXT_METRICS> {

@@ -490,119 +490,122 @@ impl Wizard {
             });
         });
         egui::CentralPanel::default().frame(central_frame()).show(ctx, |ui| {
-            let p = pal();
-            header(
-                ui,
-                2,
-                "Поиск текста",
-                "Перейдите в игру и прокликайте 3–4 реплики. NovelTL сам найдёт, откуда брать текст, и покажет его здесь.",
-            );
-            let best = snap.rows.first();
-            let (color, text) = if !snap.has_session {
-                (p.bad, "Игра закрыта. Запустите её и начните заново.".to_string())
-            } else if !snap.error.is_empty() {
-                (p.bad, snap.error.clone())
-            } else if !snap.connected {
-                (p.warn, "Подключаюсь к игре…".to_string())
-            } else if let Some(b) = best {
-                if snap.confident {
-                    (p.ok, "Текст найден. Проверьте, что ниже — реплики из игры.".to_string())
-                } else {
-                    (
-                        p.warn,
-                        format!(
-                            "Поймано реплик: {} из {}. Кликайте дальше.",
-                            b.distinct.min(CONFIDENT_DISTINCT),
-                            CONFIDENT_DISTINCT
-                        ),
-                    )
-                }
-            } else {
-                (p.warn, "Подключено. Жду текст — кликайте в игре.".to_string())
-            };
-            wrap(ui, RichText::new(text).size(14.0).color(color));
-            let shown = if snap.has_session { best } else { None };
-            progress(ui, shown.map_or(0, |b| b.distinct.min(CONFIDENT_DISTINCT)), CONFIDENT_DISTINCT);
-
-            // рамка с найденным текстом
-            Frame::new()
-                .fill(p.card)
-                .stroke(Stroke::new(2.0_f32, p.accent))
-                .corner_radius(CornerRadius::same(12))
-                .inner_margin(Margin { left: 18, right: 18, top: 14, bottom: 16 })
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    ui.spacing_mut().item_spacing.y = 8.0;
-                    ui.label(theme::step("НАЙДЕННЫЙ ТЕКСТ"));
-                    ui.vertical(|ui| {
-                        ui.set_min_height(96.0);
-                        ui.set_width(ui.available_width());
-                        match shown {
-                            Some(b) => {
-                                let lines: Vec<String> = b.last.iter().map(|t| elide(t, 90)).collect();
-                                wrap(ui, RichText::new(lines.join("\n")).size(17.0).family(theme::jp_family()).color(p.text));
-                            }
-                            None => wrap(
-                                ui,
-                                RichText::new(
-                                    "Пока пусто.\nЗдесь появятся реплики, как только вы начнёте кликать в игре.",
-                                )
-                                .size(17.0)
-                                .family(theme::jp_family())
-                                .color(p.text),
+            // всё содержимое прокручивается: в маленьком окне иначе не добраться до «Других вариантов»
+            egui::ScrollArea::vertical().id_salt("wiz_search").auto_shrink([false, false]).show(ui, |ui| {
+                let p = pal();
+                header(
+                    ui,
+                    2,
+                    "Поиск текста",
+                    "Перейдите в игру и прокликайте 3–4 реплики. NovelTL сам найдёт, откуда брать текст, и покажет его здесь.",
+                );
+                let best = snap.rows.first();
+                let (color, text) = if !snap.has_session {
+                    (p.bad, "Игра закрыта. Запустите её и начните заново.".to_string())
+                } else if !snap.error.is_empty() {
+                    (p.bad, snap.error.clone())
+                } else if !snap.connected {
+                    (p.warn, "Подключаюсь к игре…".to_string())
+                } else if let Some(b) = best {
+                    if snap.confident {
+                        (p.ok, "Текст найден. Проверьте, что ниже — реплики из игры.".to_string())
+                    } else {
+                        (
+                            p.warn,
+                            format!(
+                                "Поймано реплик: {} из {}. Кликайте дальше.",
+                                b.distinct.min(CONFIDENT_DISTINCT),
+                                CONFIDENT_DISTINCT
                             ),
+                        )
+                    }
+                } else {
+                    (p.warn, "Подключено. Жду текст — кликайте в игре.".to_string())
+                };
+                wrap(ui, RichText::new(text).size(14.0).color(color));
+                let shown = if snap.has_session { best } else { None };
+                progress(ui, shown.map_or(0, |b| b.distinct.min(CONFIDENT_DISTINCT)), CONFIDENT_DISTINCT);
+
+                // рамка с найденным текстом
+                Frame::new()
+                    .fill(p.card)
+                    .stroke(Stroke::new(2.0_f32, p.accent))
+                    .corner_radius(CornerRadius::same(12))
+                    .inner_margin(Margin { left: 18, right: 18, top: 14, bottom: 16 })
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.spacing_mut().item_spacing.y = 8.0;
+                        ui.label(theme::step("НАЙДЕННЫЙ ТЕКСТ"));
+                        ui.vertical(|ui| {
+                            ui.set_min_height(96.0);
+                            ui.set_width(ui.available_width());
+                            match shown {
+                                Some(b) => {
+                                    let lines: Vec<String> = b.last.iter().map(|t| elide(t, 90)).collect();
+                                    wrap(ui, RichText::new(lines.join("\n")).size(17.0).family(theme::jp_family()).color(p.text));
+                                }
+                                None => wrap(
+                                    ui,
+                                    RichText::new(
+                                        "Пока пусто.\nЗдесь появятся реплики, как только вы начнёте кликать в игре.",
+                                    )
+                                    .size(17.0)
+                                    .family(theme::jp_family())
+                                    .color(p.text),
+                                ),
+                            }
+                        });
+                        let hint = match shown {
+                            Some(b) => {
+                                let engine =
+                                    if snap.engine.is_empty() { String::new() } else { format!(" · движок {}", snap.engine) };
+                                let name = if b.name.is_empty() { "хук" } else { b.name.as_str() };
+                                format!("Источник: {name}{engine} · оценка {:.0}", b.score)
+                            }
+                            None => String::new(),
+                        };
+                        wrap(ui, theme::small(hint));
+                        let w = ui.available_width();
+                        if button(ui, "Это текст диалога", BtnKind::Big, shown.is_some(), Some(w)).clicked() {
+                            if let Some(b) = shown {
+                                acts.push(Act::Confirm(b.key.clone()));
+                            }
                         }
                     });
-                    let hint = match shown {
-                        Some(b) => {
-                            let engine =
-                                if snap.engine.is_empty() { String::new() } else { format!(" · движок {}", snap.engine) };
-                            let name = if b.name.is_empty() { "хук" } else { b.name.as_str() };
-                            format!("Источник: {name}{engine} · оценка {:.0}", b.score)
-                        }
-                        None => String::new(),
-                    };
-                    wrap(ui, theme::small(hint));
-                    let w = ui.available_width();
-                    if button(ui, "Это текст диалога", BtnKind::Big, shown.is_some(), Some(w)).clicked() {
-                        if let Some(b) = shown {
-                            acts.push(Act::Confirm(b.key.clone()));
-                        }
-                    }
-                });
 
-            let others: &[Row] = if snap.rows.len() > 1 { &snap.rows[1..] } else { &[] };
-            if !others.is_empty() || self.show_others {
-                let arrow = if self.show_others { "↓" } else { "→" };
-                let label = format!("{arrow}  Это не то? Другие варианты ({})", others.len());
-                if button(ui, &label, BtnKind::Link, true, None).clicked() {
-                    acts.push(Act::ToggleOthers);
+                let others: &[Row] = if snap.rows.len() > 1 { &snap.rows[1..] } else { &[] };
+                if !others.is_empty() || self.show_others {
+                    let arrow = if self.show_others { "↓" } else { "→" };
+                    let label = format!("{arrow}  Это не то? Другие варианты ({})", others.len());
+                    if button(ui, &label, BtnKind::Link, true, None).clicked() {
+                        acts.push(Act::ToggleOthers);
+                    }
                 }
-            }
-            if self.show_others {
-                egui::ScrollArea::vertical().id_salt("wiz_others").auto_shrink([false, false]).show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 6.0;
-                    for r in others {
-                        let line = r.last.last().map(|t| elide(t, 46)).unwrap_or_default();
-                        let name = if r.name.is_empty() { "хук" } else { r.name.as_str() };
-                        theme::card_frame().inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 8 }).show(ui, |ui| {
-                            ui.set_width(ui.available_width());
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 2.0;
-                                    ui.label(theme::jp(line));
-                                    ui.label(theme::small(format!("{name} · оценка {:.0}", r.score)));
-                                });
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    if button(ui, "Выбрать", BtnKind::Normal, true, None).clicked() {
-                                        acts.push(Act::Confirm(r.key.clone()));
-                                    }
+                if self.show_others {
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 6.0;
+                        for r in others {
+                            let line = r.last.last().map(|t| elide(t, 46)).unwrap_or_default();
+                            let name = if r.name.is_empty() { "хук" } else { r.name.as_str() };
+                            theme::card_frame().inner_margin(Margin { left: 12, right: 8, top: 8, bottom: 8 }).show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.vertical(|ui| {
+                                        ui.spacing_mut().item_spacing.y = 2.0;
+                                        ui.label(theme::jp(line));
+                                        ui.label(theme::small(format!("{name} · оценка {:.0}", r.score)));
+                                    });
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if button(ui, "Выбрать", BtnKind::Normal, true, None).clicked() {
+                                            acts.push(Act::Confirm(r.key.clone()));
+                                        }
+                                    });
                                 });
                             });
-                        });
-                    }
-                });
-            }
+                        }
+                    });
+                }
+            });
         });
     }
 
