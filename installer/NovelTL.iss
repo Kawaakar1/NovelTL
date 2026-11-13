@@ -25,7 +25,8 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist_installer
 OutputBaseFilename=NovelTL-Setup-{#AppVersion}
-SetupIconFile=..\build\icon.ico
+; значок из репозитория (папка build\ временная и в git не хранится)
+SetupIconFile=..\noveltl-rs\noveltl\assets\icon.ico
 UninstallDisplayIcon={app}\NovelTL.exe
 UninstallDisplayName=NovelTL
 Compression=lzma2/max

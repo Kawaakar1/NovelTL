@@ -679,7 +679,9 @@ impl State {
             } else {
                 (self.name.as_str(), self.text.as_str())
             };
-            let inner_w = (w as f32 - 2.0 * PAD).max(10.0);
+            // справа место под замочек, чтобы он не закрывал конец первой строки
+            let right_pad = if self.lock_shown() { (LOCK_INSET + LOCK + 6) as f32 } else { PAD };
+            let inner_w = (w as f32 - PAD - right_pad).max(10.0);
             let inner_h = (h as f32 - 1.2 * PAD).max(10.0);
             let (left, top) = (PAD, 0.6 * PAD);
 

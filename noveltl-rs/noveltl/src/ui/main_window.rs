@@ -305,19 +305,23 @@ impl MainWindow {
                     ui.add_space(2.0);
                     hline(ui);
                     ui.add_space(2.0);
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if button(ui, "Удалить игру", BtnKind::Link, true, None).clicked() {
-                            actions.push(Action::AskDelete(profile.id.clone(), profile.name.clone()));
-                        }
-                        ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                            let keys = format!(
-                                "{} — скрыть плашку, {} — перевести заново",
-                                snap.hotkey_toggle, snap.hotkey_retranslate
-                            );
-                            ui.add(
-                                egui::Label::new(theme::small(format!("Переводчик: {}\n{}", snap.translator, keys)))
-                                    .wrap_mode(egui::TextWrapMode::Wrap),
-                            );
+                    // horizontal ограничивает высоту строки: без него right_to_left(Center) занимает всю
+                    // высоту панели, и после уведомления панель так и остаётся высокой
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if button(ui, "Удалить игру", BtnKind::Link, true, None).clicked() {
+                                actions.push(Action::AskDelete(profile.id.clone(), profile.name.clone()));
+                            }
+                            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                                let keys = format!(
+                                    "{} — скрыть плашку, {} — перевести заново",
+                                    snap.hotkey_toggle, snap.hotkey_retranslate
+                                );
+                                ui.add(
+                                    egui::Label::new(theme::small(format!("Переводчик: {}\n{}", snap.translator, keys)))
+                                        .wrap_mode(egui::TextWrapMode::Wrap),
+                                );
+                            });
                         });
                     });
                     if let Some((text, _)) = &self.notice {
