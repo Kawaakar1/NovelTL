@@ -167,4 +167,6 @@ Text capture — [**LunaHook**](https://github.com/HIllya51/LunaHook) from the [
 
 NovelTL is distributed under the **GPL-3.0-or-later** license — see [LICENSE](LICENSE).
 
+The licenses of the bundled Rust libraries and fonts are collected at build time into `THIRD-PARTY-RUST.txt` (in the installed program: `files\licenses`; in the Linux archive: next to the program).
+
 NovelTL does not modify game files. Use it with games you own legally.

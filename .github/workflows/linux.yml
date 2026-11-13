@@ -44,6 +44,7 @@ jobs:
           cp noveltl-rs/target/release/noveltl "$NAME/noveltl"
           cp packaging/linux/install.sh packaging/linux/noveltl.png packaging/linux/README-Linux.txt "$NAME/"
           cp LICENSE "$NAME/"
+          (cd noveltl-rs && python3 tools/third_party.py "../$NAME/THIRD-PARTY-RUST.txt")
           chmod +x "$NAME/noveltl" "$NAME/install.sh"
           tar czf "$NAME.tar.gz" "$NAME"
           echo "ARCHIVE=$NAME.tar.gz" >> "$GITHUB_ENV"

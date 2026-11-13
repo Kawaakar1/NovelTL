@@ -20,6 +20,8 @@ New-Item -ItemType Directory -Force $dist | Out-Null
 Copy-Item "$env:CARGO_TARGET_DIR\release\noveltl.exe" "$dist\NovelTL.exe"
 Copy-Item "$repo\files" "$dist\files" -Recurse
 Copy-Item "$repo\ИНСТРУКЦИЯ.txt" $dist
+python "$root\tools\third_party.py" "$dist\files\licenses\THIRD-PARTY-RUST.txt"
+if ($LASTEXITCODE) { throw 'не удалось собрать лицензии библиотек' }
 
 # самопроверка: движок LunaHook грузится из собранной папки
 $p = Start-Process "$dist\NovelTL.exe" -ArgumentList '--selfcheck' -PassThru -Wait
