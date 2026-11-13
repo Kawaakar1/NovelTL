@@ -498,7 +498,10 @@ mod tests {
         assert_ne!(q.id, p.id);
         assert_eq!(store.get(&p.id).unwrap().name, "Игра A");
         assert_eq!(store.find_for_exe(&b.join("Game.exe")).unwrap().id, q.id);
-        assert_eq!(store.find_for_exe(&a.join("GAME.EXE")).unwrap().id, p.id);
+        // регистр имени файла не важен только в Windows; в Linux GAME.EXE — другой файл
+        if cfg!(windows) {
+            assert_eq!(store.find_for_exe(&a.join("GAME.EXE")).unwrap().id, p.id);
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 

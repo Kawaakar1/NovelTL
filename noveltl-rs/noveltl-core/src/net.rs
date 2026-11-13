@@ -208,10 +208,13 @@ fn map_error(e: &reqwest::Error, uses_proxy: bool) -> HttpError {
         return HttpError::ProxyAuth;
     }
     // код ОС бывает только в тексте (ошибка TLS-обёртки не отдаёт io::Error), поэтому смотрим и туда
-    if os_codes.contains(&10013) || all.contains("(os error 10013)") {
+    let has = |codes: &[i32]| codes.iter().any(|c| os_codes.contains(c) || all.contains(&format!("(os error {c})")));
+    // коды: Windows — WSAEACCES / WSAEADDRNOTAVAIL, Linux — EPERM, EACCES / EADDRNOTAVAIL
+    let (denied, unavailable): (&[i32], &[i32]) = if cfg!(windows) { (&[10013], &[10049]) } else { (&[1, 13], &[99]) };
+    if has(denied) {
         return HttpError::AccessDenied;
     }
-    if os_codes.contains(&10049) || all.contains("(os error 10049)") {
+    if has(unavailable) {
         return HttpError::AddressUnavailable;
     }
     if e.is_connect() {
