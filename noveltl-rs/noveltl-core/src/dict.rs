@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use crate::deinflect::deinflect;
 
-pub const JMDICT_URL: &str = "http://ftp.edrdg.org/pub/Nihongo/JMdict.gz";
+pub const JMDICT_URL: &str = "https://www.edrdg.org/pub/Nihongo/JMdict.gz";
 pub const ATTRIBUTION: &str = "JMdict © Electronic Dictionary Research and Development Group, CC BY-SA 4.0";
 
 #[derive(Clone, Debug, PartialEq)]
