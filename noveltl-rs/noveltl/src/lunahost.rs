@@ -2,7 +2,7 @@
 
 use noveltl_core::i18n::{t, tf};
 use std::collections::{HashMap, HashSet};
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_void};
 use std::panic::catch_unwind;
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex};
@@ -117,7 +117,17 @@ unsafe fn wide_to_string(p: *const u16) -> String {
 }
 
 unsafe fn thread_info(code: *const u16, name: *const c_char, tp: ThreadParam) -> ThreadInfo {
-    let name = if name.is_null() { String::new() } else { CStr::from_ptr(name).to_string_lossy().into_owned() };
+    let name = if name.is_null() {
+        String::new()
+    } else {
+        // ограничение длины, как в wide_to_string: не бежим по памяти без конца
+        const MAX_NAME: usize = 4096;
+        let mut n = 0usize;
+        while n < MAX_NAME && *name.add(n) != 0 {
+            n += 1;
+        }
+        String::from_utf8_lossy(std::slice::from_raw_parts(name.cast::<u8>(), n)).into_owned()
+    };
     ThreadInfo { code: wide_to_string(code), name, pid: tp.process_id, addr: tp.addr, ctx: tp.ctx, ctx2: tp.ctx2 }
 }
 
@@ -136,6 +146,8 @@ extern "C" fn on_disconnect(pid: u32) {
     let _ = catch_unwind(|| {
         if let Some(s) = lock_shared().as_mut() {
             s.attached.remove(&pid);
+            s.connected.remove(&pid);
+            s.gens.remove(&pid);
         }
         emit(HookEvent::Disconnected(pid));
     });

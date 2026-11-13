@@ -100,6 +100,11 @@ pub fn reveal_in_explorer(path: &str) {
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
+/// Открывает папку или ссылку программой по умолчанию.
+pub fn open_url(target: &str) {
+    let _ = std::process::Command::new("xdg-open").arg(target).spawn();
+}
+
 pub fn system_ui_lang() -> noveltl_core::i18n::UiLang {
     use noveltl_core::i18n::UiLang;
     for k in ["LC_ALL", "LC_MESSAGES", "LANG"] {

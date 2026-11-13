@@ -74,9 +74,22 @@ impl Dictionary {
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
         let _ = std::fs::remove_file(&tmp);
+        let mut bak: std::ffi::OsString = db.as_os_str().to_owned();
+        bak.push(".bak");
+        let bak = PathBuf::from(bak);
         let res = Self::build(xml, &tmp).and_then(|n| {
-            let _ = std::fs::remove_file(db);
-            std::fs::rename(&tmp, db).map_err(e2s)?;
+            // старая база уходит в .bak и возвращается, если новая не встала на место
+            match std::fs::remove_file(&bak) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e2s(e)),
+                _ => {}
+            }
+            let had_old = db.exists();
+            if had_old { std::fs::rename(db, &bak).map_err(e2s)?; }
+            if let Err(e) = std::fs::rename(&tmp, db) {
+                if had_old { std::fs::rename(&bak, db).map_err(|e2| format!("{e}; {e2}"))?; }
+                return Err(e2s(e));
+            }
+            let _ = std::fs::remove_file(&bak); // не критично: следующий импорт уберёт остаток
             Ok(n)
         });
         if res.is_err() { let _ = std::fs::remove_file(&tmp); }
@@ -137,6 +150,26 @@ impl Dictionary {
         Ok(count)
     }
 
+    /// Статьи по набору форм одним запросом: для каждой формы — лучшая (common, затем id).
+    fn find_many(&self, forms: &[String], prefer_ru: bool) -> std::collections::HashMap<String, Entry> {
+        let mut found = std::collections::HashMap::new();
+        if forms.is_empty() { return found; }
+        let marks = vec!["?"; forms.len()].join(",");
+        let sql = format!(
+            "SELECT f.form, e.forms, e.readings, e.en, e.ru FROM form f JOIN entry e ON e.id = f.entry
+             WHERE f.form IN ({marks}) ORDER BY e.common DESC, e.id");
+        let Ok(mut st) = self.conn.prepare(&sql) else { return found };
+        let Ok(rows) = st.query_map(rusqlite::params_from_iter(forms), |r| {
+            let sp = |s: String| s.split(SEP).filter(|x| !x.is_empty()).map(String::from).collect::<Vec<_>>();
+            let (en, ru) = (sp(r.get(3)?), sp(r.get(4)?));
+            let glosses = if (prefer_ru && !ru.is_empty()) || en.is_empty() { ru } else { en };
+            Ok((r.get::<_, String>(0)?, Entry { forms: sp(r.get(1)?), readings: sp(r.get(2)?), glosses }))
+        }) else { return found };
+        for (form, entry) in rows.flatten() { found.entry(form).or_insert(entry); }
+        found
+    }
+
+    #[cfg(test)] // эталон для теста эквивалентности
     fn find(&self, form: &str, prefer_ru: bool) -> Option<Entry> {
         let mut st = self.conn.prepare_cached(
             "SELECT e.forms, e.readings, e.en, e.ru FROM form f JOIN entry e ON e.id = f.entry
@@ -152,13 +185,15 @@ impl Dictionary {
     /// Слово, начинающееся с символа `pos` (char): самое длинное совпадение (до 12 символов), с учётом deinflect.
     pub fn lookup_at(&self, text: &str, pos: usize, prefer_ru: bool) -> Option<Match> {
         let chars: Vec<char> = text.chars().skip(pos).take(MAX_WORD).collect();
-        for len in (1..=chars.len()).rev() {
-            let word: String = chars[..len].iter().collect();
-            for form in deinflect(&word) {
-                if let Some(entry) = self.find(&form, prefer_ru) { return Some(Match { len, form, entry }); }
-            }
-        }
-        None
+        // кандидаты от длинных к коротким; все формы позиции — одним запросом
+        let cands: Vec<(usize, String)> = (1..=chars.len()).rev()
+            .flat_map(|len| { let word: String = chars[..len].iter().collect(); deinflect(&word).into_iter().map(move |f| (len, f)) })
+            .collect();
+        let mut forms: Vec<String> = cands.iter().map(|(_, f)| f.clone()).collect();
+        forms.sort();
+        forms.dedup();
+        let found = self.find_many(&forms, prefer_ru);
+        cands.into_iter().find_map(|(len, form)| found.get(&form).cloned().map(|entry| Match { len, form, entry }))
     }
 
     /// Разбивка текста на сегменты для фуриганы (жадно слева направо); несловарные символы склеиваются.
@@ -299,6 +334,49 @@ mod tests {
         assert_eq!(d.lookup_at("猫", 0, false).unwrap().entry.glosses, vec!["cat & kitten"]);
         assert_eq!(d.lookup_at("今日は", 0, false).unwrap().len, 2);
         drop(d);
+        let _ = std::fs::remove_file(db);
+    }
+
+    /// Старый алгоритм (по запросу на каждую форму) должен давать те же результаты.
+    #[test]
+    fn lookup_matches_per_form_search() {
+        let (d, db) = setup("equiv.db");
+        let naive = |text: &str, pos: usize, ru: bool| {
+            let chars: Vec<char> = text.chars().skip(pos).take(MAX_WORD).collect();
+            for len in (1..=chars.len()).rev() {
+                let word: String = chars[..len].iter().collect();
+                for form in deinflect(&word) {
+                    if let Some(entry) = d.find(&form, ru) { return Some(Match { len, form, entry }); }
+                }
+            }
+            None
+        };
+        for text in ["猫が食べました。今日は早くて行った", "食べさせられなかった", "あいうえお猫"] {
+            for pos in 0..text.chars().count() {
+                for ru in [false, true] {
+                    assert_eq!(d.lookup_at(text, pos, ru), naive(text, pos, ru), "{text} {pos}");
+                }
+            }
+        }
+        drop(d);
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[test]
+    fn failed_swap_keeps_old_db() {
+        let db = tmp("swap.db");
+        assert_eq!(Dictionary::import_xml("<entry>
+<reb>あ</reb>
+</entry>
+".as_bytes(), &db).unwrap(), 1);
+        // .bak занят каталогом: remove_file падает, ошибка не глушится, старая база цела
+        let mut bak = db.as_os_str().to_owned();
+        bak.push(".bak");
+        let bak = PathBuf::from(bak);
+        std::fs::create_dir(&bak).unwrap();
+        assert!(Dictionary::import_xml(XML.as_bytes(), &db).is_err());
+        assert!(Dictionary::open(&db).unwrap().lookup_at("あ", 0, false).is_some());
+        let _ = std::fs::remove_dir(&bak);
         let _ = std::fs::remove_file(db);
     }
 

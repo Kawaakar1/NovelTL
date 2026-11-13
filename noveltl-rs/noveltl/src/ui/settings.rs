@@ -86,6 +86,24 @@ const FONT_FILES: &[(&str, &[&str])] = &[
     ("Yu Gothic", &["YuGothR.ttc", "YuGothM.ttc", "yugothic.ttf"]),
 ];
 
+#[cfg(not(windows))]
+fn installed_fonts() -> Vec<String> {
+    // нет fc-list — пустой список, в выборе останется только текущий шрифт
+    let Ok(out) = std::process::Command::new("fc-list").arg(":").arg("family").output() else {
+        return Vec::new();
+    };
+    let mut v: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split(',').next())
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+#[cfg(windows)]
 fn installed_fonts() -> Vec<String> {
     let dir = std::path::PathBuf::from(r"C:\Windows\Fonts");
     FONT_FILES
@@ -178,6 +196,11 @@ impl PreviewKey {
     }
 }
 
+/// К чему откатывать превью при закрытии: к последнему сохранённому, а без сохранений — к исходному.
+fn rollback_key(orig: &AppSettings, saved: Option<&PreviewKey>) -> PreviewKey {
+    saved.cloned().unwrap_or_else(|| PreviewKey::of(orig))
+}
+
 /// Переносит правки из `d` и сочетания клавиш `hk` в копию `base`.
 fn draft_to_settings(d: &AppSettings, hk: &[String; 3], base: &AppSettings) -> AppSettings {
     let mut new = base.clone();
@@ -255,7 +278,8 @@ pub struct SettingsWindow {
     ms_key_show: bool,
     messages: Vec<(String, String)>,
     close_after_message: bool,
-    saved: bool,
+    /// что записано на диск при «Сохранить» (по нему откатывается превью при закрытии)
+    saved: Option<PreviewKey>,
     closed: bool,
     frames: u32,
     limit: f32,
@@ -330,7 +354,7 @@ impl SettingsWindow {
             ms_key_show: false,
             messages: Vec::new(),
             close_after_message: false,
-            saved: false,
+            saved: None,
             closed: false,
             frames: 0,
             limit,
@@ -462,12 +486,11 @@ impl SettingsWindow {
 
     /// Окно закрыто: без сохранения тема и вид плашки откатываются.
     pub fn close(&mut self, shared: &Shared) {
-        if self.saved {
-            return;
-        }
         // выбранные, но не сохранённые картинки удаляем
-        avatar::cleanup(&self.orig.avatar);
-        let key = PreviewKey::of(&self.orig);
+        if self.saved.is_none() {
+            avatar::cleanup(&self.orig.avatar);
+        }
+        let key = rollback_key(&self.orig, self.saved.as_ref());
         {
             let mut c = lock_ctl(&shared.controller);
             key.put(&mut c.settings);
@@ -599,7 +622,7 @@ impl SettingsWindow {
         new.proxy_user = user;
         new.proxy_pass = pass;
         new.bind_ip = self.bind_ip.clone();
-        self.saved = true;
+        self.saved = Some(PreviewKey::of(&new));
         avatar::cleanup(&new.avatar);
         let errors = {
             let mut c = lock_ctl(&shared.controller);
@@ -1359,7 +1382,7 @@ impl SettingsWindow {
         theme::card(ui, |ui| {
             theme::row_w(ui, t("Папка с данными"), Some(t("Настройки, профили игр и кэш перевода")), 230.0, |ui| {
                 if button(ui, t("Открыть папку с данными"), BtnKind::Normal, true, None).clicked() {
-                    let _ = std::process::Command::new("explorer.exe").arg(crate::paths::data_dir()).spawn();
+                    let _ = crate::winutil::open_url(&crate::paths::data_dir().to_string_lossy());
                 }
             });
         });
@@ -1373,7 +1396,7 @@ impl SettingsWindow {
                 140.0,
                 |ui| {
                     if button(ui, t("Страница проекта"), BtnKind::Normal, true, None).clicked() {
-                        let _ = std::process::Command::new("explorer.exe").arg(PROJECT_URL).spawn();
+                        let _ = crate::winutil::open_url(PROJECT_URL);
                     }
                 },
             );
@@ -1672,6 +1695,17 @@ mod tests {
         PreviewKey::of(&other).put(&mut s);
         assert_eq!(s.font_size, 40);
         assert_eq!(s.theme, "light");
+    }
+
+    #[test]
+    fn cancel_after_save_rolls_back_to_saved() {
+        let mut orig = AppSettings::default();
+        orig.theme = "dark".into();
+        let mut light = orig.clone();
+        light.theme = "light".into();
+        // без сохранения — к исходному; после «Сохранить» — к сохранённому (а не к тёмной из превью)
+        assert_eq!(rollback_key(&orig, None).theme, "dark");
+        assert_eq!(rollback_key(&orig, Some(&PreviewKey::of(&light))).theme, "light");
     }
 
     #[test]

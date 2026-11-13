@@ -433,6 +433,11 @@ pub fn reveal_in_explorer(path: &str) {
         .spawn();
 }
 
+/// Открывает папку или ссылку программой по умолчанию.
+pub fn open_url(target: &str) {
+    let _ = Command::new("explorer.exe").arg(target).spawn();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

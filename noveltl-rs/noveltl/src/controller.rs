@@ -32,6 +32,8 @@ const APP_NAME: &str = "NovelTL";
 /// Пауза перед обработкой реплики: имя говорящего может прийти из соседнего потока чуть позже.
 const LINE_DELAY: Duration = Duration::from_millis(120);
 const SCAN_INTERVAL: Duration = Duration::from_millis(1500);
+/// сколько ждём запоздалый `Disconnected` после собственного снятия хука
+const DETACH_GRACE: Duration = Duration::from_secs(5);
 
 fn now_secs() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
@@ -177,7 +179,11 @@ fn worker_loop(
         let mut stop = false;
         for cmd in batch {
             match cmd {
-                WorkerCmd::SetPipeline(p) => pipeline = p,
+                WorkerCmd::SetPipeline(p) => {
+                    pipeline = p;
+                    // реплика, поставленная до смены пайплайна, принадлежит старой сессии: не переводим её новым
+                    job = None;
+                }
                 WorkerCmd::SetDeeplKey(k) => {
                     idle.set_deepl_key(&k);
                     if let Some(p) = pipeline.as_mut() {
@@ -281,6 +287,7 @@ impl Worker {
 
     /// Ждёт, пока поток переводчика разберёт все отправленные команды (но не дольше `timeout`).
     /// Возвращает `true`, если все команды разобраны вовремя.
+    #[cfg(test)]
     fn flush(&self, timeout: Duration) -> bool {
         let until = Instant::now() + timeout;
         while self.applied.load(Ordering::SeqCst) < self.sent && Instant::now() < until {
@@ -451,6 +458,8 @@ pub struct Controller {
     window_lost_since: Option<Instant>,
     /// файлы кэша, которые не удалось удалить сразу
     stale_caches: Vec<PathBuf>,
+    /// pid, которые мы сами отсоединили: их запоздалый `Disconnected` не должен убивать новую сессию
+    detached: Vec<(u32, Instant)>,
     /// пункты меню, выбранные на плашке; их выполняет поток движка (`tray::handle_menu`)
     menu_requests: Vec<&'static str>,
     #[cfg(windows)]
@@ -571,6 +580,7 @@ impl Controller {
             closed: false,
             window_lost_since: None,
             stale_caches: Vec::new(),
+            detached: Vec::new(),
             menu_requests: Vec::new(),
             #[cfg(windows)]
             ocr,
@@ -823,7 +833,7 @@ impl Controller {
         let (pid, hwnd, lang) = (s.pid, s.hwnd, s.profile.lang);
         crate::ocr::available(lang)?;
         // перехват больше не нужен: текст берётся с экрана
-        self.source.detach(pid);
+        self.detach_source(pid);
         if let Some(s) = self.session.as_mut() {
             s.selected = Some(noveltl_core::scorer::make_key(crate::ocr::OCR_CODE, 0, 0));
             s.profile.set_hook(crate::ocr::OCR_CODE, &crate::ocr::thread_info(pid).name, 0, 0);
@@ -892,8 +902,27 @@ impl Controller {
         self.overlay.send(Cmd::EditMode(false));
         self.overlay.send(Cmd::Clear);
         self.overlay.send(Cmd::Target(0, None));
-        self.source.detach(s.pid);
+        self.detach_source(s.pid);
         self.tracker.clear();
+    }
+
+    /// Снимает хук и запоминает pid: DLL пришлёт `Disconnected` с задержкой, и он относится к старой сессии.
+    fn detach_source(&mut self, pid: u32) {
+        self.source.detach(pid);
+        self.detached.retain(|(_, t)| t.elapsed() < DETACH_GRACE);
+        self.detached.push((pid, Instant::now()));
+    }
+
+    /// `true`, если `Disconnected` — отклик на наше собственное снятие хука (один отклик на одно снятие).
+    fn is_own_disconnect(&mut self, pid: u32) -> bool {
+        self.detached.retain(|(_, t)| t.elapsed() < DETACH_GRACE);
+        match self.detached.iter().position(|(p, _)| *p == pid) {
+            Some(i) => {
+                self.detached.remove(i);
+                true
+            }
+            None => false,
+        }
     }
 
     // ---------- события источника ----------
@@ -911,7 +940,7 @@ impl Controller {
                 }
             }
             HookEvent::Disconnected(pid) => {
-                if self.is_mine(pid) {
+                if !self.is_own_disconnect(pid) && self.is_mine(pid) {
                     self.end_session();
                 }
             }
@@ -1222,20 +1251,22 @@ impl Controller {
     // ---------- профили и настройки ----------
 
     pub fn delete_profile(&mut self, id: &str) {
-        let mut flushed = true;
-        if self.session.as_ref().is_some_and(|s| s.profile.id == id) {
+        // кэш активной игры ещё открыт у переводчика: не ждём под замком, файл удалит `scan`
+        let active = self.session.as_ref().is_some_and(|s| s.profile.id == id);
+        if active {
             self.end_session();
-            // кэш открыт у переводчика — дожидаемся, пока он его отпустит
-            flushed = self.worker.flush(Duration::from_secs(2));
         }
         self.store.delete(id);
         let path = sub_data_dir("cache").join(format!("{id}.sqlite"));
-        let removed = match std::fs::remove_file(&path) {
-            Ok(()) => true,
-            Err(e) => e.kind() == std::io::ErrorKind::NotFound,
-        };
-        if !flushed || !removed {
-            self.notice(t("Файл кэша этой игры занят — он будет удалён позже."));
+        let removed = !active
+            && match std::fs::remove_file(&path) {
+                Ok(()) => true,
+                Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+            };
+        if !removed {
+            if !active {
+                self.notice(t("Файл кэша этой игры занят — он будет удалён позже."));
+            }
             if !self.stale_caches.contains(&path) {
                 self.stale_caches.push(path);
             }
@@ -1608,6 +1639,45 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    #[test]
+    fn worker_drops_job_queued_before_pipeline_swap() {
+        let (cmd_tx, cmd_rx) = channel();
+        let (msg_tx, msg_rx) = channel();
+        let status = Arc::new(Mutex::new(String::new()));
+        let applied = Arc::new(AtomicU64::new(0));
+        let http: Arc<dyn Http> = Arc::new(DemoHttp::new());
+        let pipe = || TranslationPipeline::new(TranslatorManager::new("", None, http.clone()), Lang::Ja, Vec::new());
+        // обе команды в очереди до старта потока: попадут в один батч
+        cmd_tx.send(WorkerCmd::Translate { seq: 1, name: String::new(), text: "灯里".into(), use_cache: false }).unwrap();
+        cmd_tx.send(WorkerCmd::SetPipeline(Some(pipe()))).unwrap();
+        let (st, ap, h2) = (status.clone(), applied.clone(), http.clone());
+        let th = std::thread::spawn(move || {
+            worker_loop(cmd_rx, msg_tx, Arc::new(|| {}), st, ap, String::new(), Lang::Ru, "auto".into(), h2)
+        });
+        let until = Instant::now() + Duration::from_secs(5);
+        while applied.load(Ordering::SeqCst) < 2 && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(msg_rx.try_recv().is_err(), "реплика старой сессии переведена новым пайплайном");
+        cmd_tx.send(WorkerCmd::Translate { seq: 2, name: String::new(), text: "灯里".into(), use_cache: false }).unwrap();
+        assert!(matches!(msg_rx.recv_timeout(Duration::from_secs(5)), Ok(WorkerMsg::Done { seq: 2, .. })));
+        cmd_tx.send(WorkerCmd::Stop).unwrap();
+        th.join().unwrap();
+    }
+
+    #[test]
+    fn own_disconnect_is_ignored_once() {
+        let waker: Waker = Arc::new(|| {});
+        let (tx, rx) = channel();
+        let src = DemoSource::new(tx, waker.clone());
+        let mut c = Controller::new(Box::new(src), rx, true, 0, waker);
+        assert!(!c.is_own_disconnect(7), "чужой Disconnected должен проходить");
+        c.detach_source(7);
+        assert!(c.is_own_disconnect(7));
+        assert!(!c.is_own_disconnect(7), "один отклик на одно снятие");
+        c.shutdown();
     }
 
     #[test]

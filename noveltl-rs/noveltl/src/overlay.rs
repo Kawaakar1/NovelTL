@@ -190,7 +190,7 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 format: DXGI_FORMAT_B8G8R8A8_UNORM,
                 alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
             },
-            dpiX: 96.0,
+            dpiX: 96.0, // реальный DPI окна выставляется в draw()
             dpiY: 96.0,
             usage: D2D1_RENDER_TARGET_USAGE_NONE,
             minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
@@ -302,7 +302,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut r = RECT::default();
             let _ = GetWindowRect(hwnd, &mut r);
             let (movable, bar_shown) = with_state(|st| (st.movable(), st.toolbar_shown())).unwrap_or((false, false));
-            if bar_shown && tb_button_at(r.right - r.left, x - r.left, y - r.top).is_some() {
+            let k = dpi_scale(hwnd);
+            if bar_shown && tb_button_at(dip(r.right - r.left, k), dip(x - r.left, k), dip(y - r.top, k)).is_some() {
                 return LRESULT(HTCLIENT as isize);
             }
             if !movable {
@@ -333,15 +334,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             let mut r = RECT::default();
             let _ = GetClientRect(hwnd, &mut r);
             let shown = with_state(|st| st.toolbar_shown()).unwrap_or(false);
-            match tb_button_at(r.right, x, y).filter(|_| shown) {
+            let k = dpi_scale(hwnd);
+            match tb_button_at(dip(r.right, k), dip(x, k), dip(y, k)).filter(|_| shown) {
                 Some(TB_LOCK) => {
                     with_state(|st| st.toggle_lock());
                 }
                 Some(TB_MENU) => {
                     // меню показываем вне заимствования состояния: у него свой цикл сообщений
                     if let Some((target, events)) = with_state(|st| (st.target, st.events.clone())) {
-                        let b = tb_button(r.right, TB_MENU);
-                        let mut p = POINT { x: b.2, y: b.3 + 4 };
+                        let b = tb_button(dip(r.right, k), TB_MENU);
+                        let mut p = POINT { x: (b.2 as f32 * k).round() as i32, y: ((b.3 + 4) as f32 * k).round() as i32 };
                         let _ = ClientToScreen(hwnd, &mut p);
                         if let Some(id) = show_menu(hwnd, target, p) {
                             let _ = events.send(Event::Menu(id));
@@ -492,7 +494,8 @@ impl State {
             let _ = GetWindowRect(self.hwnd, &mut r);
         }
         let hover = self.visible && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
-        let hover_btn = if hover { tb_button_at(r.right - r.left, p.x - r.left, p.y - r.top) } else { None };
+        let k = dpi_scale(self.hwnd);
+        let hover_btn = if hover { tb_button_at(dip(r.right - r.left, k), dip(p.x - r.left, k), dip(p.y - r.top, k)) } else { None };
         if (hover, hover_btn) != (self.hover, self.hover_btn) {
             self.hover = hover;
             self.hover_btn = hover_btn;
@@ -625,6 +628,7 @@ impl State {
         (&self.name, &self.text, &self.alt, &self.orig, &self.note, self.edit, &self.style.font_family).hash(&mut h);
         (self.style.show_original, self.style.toolbar_dim).hash(&mut h);
         (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
+        dpi_scale(self.hwnd).to_bits().hash(&mut h);
         (self.style.font_size as u32, self.style.text_color, self.style.name_color).hash(&mut h);
         (self.style.outline_color, self.style.bg_color, self.style.bg_opacity).hash(&mut h);
         h.finish()
@@ -692,6 +696,10 @@ impl State {
     fn draw(&self, dc: HDC, w: i32, h: i32) -> windows::core::Result<()> {
         unsafe {
             self.rt.BindDC(dc, &RECT { left: 0, top: 0, right: w, bottom: h })?;
+            // рисуем в DIP: размеры шрифта и отступы в «px при 100%», D2D сам умножает на DPI окна
+            let k = dpi_scale(self.hwnd);
+            self.rt.SetDpi(96.0 * k, 96.0 * k);
+            let (w, h) = ((w as f32 / k).round() as i32, (h as f32 / k).round() as i32);
             let rt: &ID2D1RenderTarget = &self.rt;
             rt.BeginDraw();
             rt.Clear(Some(&color(0, 0.0)));
@@ -964,6 +972,17 @@ fn show_menu(hwnd: HWND, game: isize, p: POINT) -> Option<&'static str> {
         }
         id
     }
+}
+
+/// Во сколько раз DPI окна больше 96 (1.0 на 100%).
+fn dpi_scale(hwnd: HWND) -> f32 {
+    let d = unsafe { windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) };
+    if d == 0 { 1.0 } else { d as f32 / 96.0 }
+}
+
+/// Пиксели окна -> DIP.
+fn dip(v: i32, k: f32) -> i32 {
+    (v as f32 / k).round() as i32
 }
 
 fn metrics(l: &IDWriteTextLayout) -> windows::core::Result<DWRITE_TEXT_METRICS> {

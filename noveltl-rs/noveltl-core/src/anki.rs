@@ -32,11 +32,17 @@ pub fn add_note(http: &dyn Http, front: &str, back: &str) -> Result<(), String> 
     // колода может уже существовать; настоящую недоступность Anki покажет следующий шаг
     let _ = call(http, "createDeck", json!({"deck": DECK}));
     let models = strings(&call(http, "modelNames", json!({}))?);
-    let model = if models.iter().any(|m| m == "Basic") { "Basic".to_string() } else { models.into_iter().next().ok_or_else(|| tf("Anki: {}", &[&"modelNames"]))? };
-    let fields = strings(&call(http, "modelFieldNames", json!({"modelName": model}))?);
-    if fields.len() < 2 {
-        return Err(tf("Anki: {}", &[&"modelFieldNames"]));
+    // «Basic», иначе первая не-cloze модель с двумя и более полями
+    let candidates = models.iter().filter(|m| *m == "Basic").chain(models.iter().filter(|m| *m != "Basic" && !m.to_lowercase().contains("cloze")));
+    let mut chosen = None;
+    for m in candidates {
+        let fields = strings(&call(http, "modelFieldNames", json!({"modelName": m}))?);
+        if fields.len() >= 2 {
+            chosen = Some((m.clone(), fields));
+            break;
+        }
     }
+    let (model, fields) = chosen.ok_or_else(|| t("Anki: нет подходящего типа заметки. Нужен тип с двумя и более полями, не Cloze (например, «Basic»).").to_string())?;
     let note = json!({
         "deckName": DECK,
         "modelName": model,
@@ -106,6 +112,24 @@ mod tests {
         let h = Fake::new(vec![ok(json!(1)), ok(json!(["Первая", "Вторая"])), ok(json!(["Front", "Back"])), ok(json!(1))]);
         add_note(&h, "a", "b").unwrap();
         assert_eq!(h.sent.lock().unwrap()[2]["params"]["modelName"], "Первая");
+    }
+
+    #[test]
+    fn cloze_and_one_field_models_are_skipped() {
+        let h = Fake::new(vec![ok(json!(1)), ok(json!(["Cloze", "Одно", "Другая"])), ok(json!(["Text"])), ok(json!(["Front", "Back"])), ok(json!(1))]);
+        add_note(&h, "a", "b").unwrap();
+        let sent = h.sent.lock().unwrap();
+        assert_eq!(sent[2]["params"]["modelName"], "Одно");
+        assert_eq!(sent[3]["params"]["modelName"], "Другая");
+        assert_eq!(sent[4]["params"]["note"]["modelName"], "Другая");
+    }
+
+    #[test]
+    fn only_cloze_gives_clear_error() {
+        let h = Fake::new(vec![ok(json!(1)), ok(json!(["Cloze"]))]);
+        let e = add_note(&h, "a", "b").unwrap_err();
+        assert_eq!(e, t("Anki: нет подходящего типа заметки. Нужен тип с двумя и более полями, не Cloze (например, «Basic»)."));
+        assert!(!e.contains("modelNames"));
     }
 
     #[test]

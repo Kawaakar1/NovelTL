@@ -12,7 +12,7 @@ static TAG_PERCENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"%[^;%\s「」『』（）。、]{1,40};").unwrap());
 // [r] [l] [p] [np] [ruby text="..."] [/b]
 static TAG_BRACKET: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[/?[a-z_][a-z0-9_]*(?:[\s=,][^\[\]]*)?\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[/?[a-z_][a-z0-9_]*(?:[=,][^\[\]]*|\s[^\[\]]*[=,][^\[\]]*)?\]").unwrap());
 static TAG_ANGLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^<>]*)?>").unwrap());
 static CONTROL: LazyLock<Regex> = LazyLock::new(|| {
@@ -125,7 +125,8 @@ fn looks_like_name(name: &str, limit: usize) -> bool {
     if name.is_empty() || name.chars().count() > limit {
         return false;
     }
-    !name.chars().any(|c| NAME_FORBIDDEN.contains(c))
+    // имя должно содержать букву/цифру/иероглифа: «—», «~», «♪» именем не считаем
+    name.chars().any(char::is_alphanumeric) && !name.chars().any(|c| NAME_FORBIDDEN.contains(c))
 }
 
 /// Отделяет имя говорящего. Возвращает (имя, текст); имя может быть пустым.
@@ -280,6 +281,23 @@ mod tests {
     fn test_clean_doubled_with_name() {
         let res = clean("【【芳芳乃乃】】「「ははいい」」");
         assert_eq!((res.name.as_str(), res.text.as_str()), ("芳乃", "「はい」"));
+    }
+
+    #[test]
+    fn test_punctuation_is_not_a_name() {
+        for src in ["—「そうだな」", "――
+「……」", "♪「ふんふん」"] {
+            assert_eq!(split_name(src).0, "", "{src}");
+        }
+        assert_eq!(clean("—「そうだな」").name, "");
+    }
+
+    #[test]
+    fn test_bracket_phrases_are_kept() {
+        assert_eq!(strip_tags("[good end]"), "[good end]");
+        assert_eq!(strip_tags("[to be continued]"), "[to be continued]");
+        assert_eq!(strip_tags("[ruby text=\"よ\"]芳"), "芳");
+        assert_eq!(strip_tags("[font size=3,color=red]赤"), "赤");
     }
 
     #[test]

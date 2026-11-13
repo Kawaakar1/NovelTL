@@ -190,10 +190,20 @@ impl DeepLTranslator {
 
 // ---------- Google ----------
 
-/// Максимум символов в одном GET-запросе Google.
-const GOOGLE_MAX_CHARS: usize = 1000;
+/// Максимум байт параметра `q` в одном GET-запросе Google после URL-кодирования
+/// (ASCII — 1, кириллица — 6, иероглиф — 9): длинные URL режут прокси и серверы (414/413).
+const GOOGLE_MAX_CHARS: usize = 3000;
 
-/// Делит текст на куски не длиннее `limit` символов. Возвращает (кусок, разделитель после него).
+/// Размер символа в URL после кодирования (не-ASCII и спецсимволы — по 3 байта на `%XX`).
+fn enc_len(c: char) -> usize {
+    if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') { 1 } else { 3 * c.len_utf8() }
+}
+
+fn enc_len_str(s: &str) -> usize {
+    s.chars().map(enc_len).sum()
+}
+
+/// Делит текст на куски не длиннее `limit` байт после URL-кодирования. Возвращает (кусок, разделитель после него).
 /// Режем по `\n`, слишком длинную строку — по концу предложения, в крайнем случае жёстко.
 fn split_for_google(text: &str, limit: usize) -> Vec<(String, &'static str)> {
     // элементарные части: (текст, разделитель после)
@@ -201,16 +211,20 @@ fn split_for_google(text: &str, limit: usize) -> Vec<(String, &'static str)> {
     let lines: Vec<&str> = text.split('\n').collect();
     for (i, line) in lines.iter().enumerate() {
         let line_sep = if i + 1 < lines.len() { "\n" } else { "" };
-        if line.chars().count() <= limit {
+        if enc_len_str(line) <= limit {
             units.push((line.to_string(), line_sep));
             continue;
         }
         let mut cur = String::new();
         let mut cur_len = 0;
         for c in line.chars() {
+            if cur_len + enc_len(c) > limit {
+                units.push((std::mem::take(&mut cur), ""));
+                cur_len = 0;
+            }
             cur.push(c);
-            cur_len += 1;
-            if cur_len == limit || "。！？!?.".contains(c) {
+            cur_len += enc_len(c);
+            if "。！？!?.".contains(c) {
                 units.push((std::mem::take(&mut cur), ""));
                 cur_len = 0;
             }
@@ -229,15 +243,15 @@ fn split_for_google(text: &str, limit: usize) -> Vec<(String, &'static str)> {
     let mut last_sep = "";
     let mut started = false;
     for (u, sep) in units {
-        let ulen = u.chars().count();
+        let ulen = enc_len_str(&u);
         if !started {
             cur = u;
             cur_len = ulen;
             started = true;
-        } else if cur_len + last_sep.len() + ulen <= limit {
+        } else if cur_len + enc_len_str(last_sep) + ulen <= limit {
             cur.push_str(last_sep);
             cur.push_str(&u);
-            cur_len += last_sep.len() + ulen;
+            cur_len += enc_len_str(last_sep) + ulen;
         } else {
             chunks.push((std::mem::take(&mut cur), last_sep));
             cur = u;
@@ -268,7 +282,7 @@ impl GoogleTranslator {
 
     /// Длинный текст режем на куски (GET с q раздувает URL), короткий — один запрос.
     pub fn translate(&self, text: &str, src_lang: Option<Lang>, target: Lang) -> Result<String, TranslateError> {
-        if text.chars().count() <= GOOGLE_MAX_CHARS {
+        if enc_len_str(text) <= GOOGLE_MAX_CHARS {
             return self.translate_one(text, src_lang, target);
         }
         let mut out = String::new();
@@ -439,6 +453,12 @@ fn clean_ai_reply(s: &str) -> String {
     strip_quotes(strip_think(s).trim())
 }
 
+/// Адрес сервера без хвостовых `/` и `/v1` (путь `/v1/...` добавляется сам).
+fn normalize_base_url(url: &str) -> String {
+    let u = url.trim().trim_end_matches('/');
+    u.strip_suffix("/v1").unwrap_or(u).trim_end_matches('/').to_string()
+}
+
 pub struct LocalAiTranslator {
     pub base_url: String,
     pub model: String,
@@ -448,7 +468,7 @@ pub struct LocalAiTranslator {
 impl LocalAiTranslator {
     pub fn new(base_url: &str, model: &str, http: Arc<dyn Http>) -> Self {
         LocalAiTranslator {
-            base_url: base_url.trim().trim_end_matches('/').to_string(),
+            base_url: normalize_base_url(base_url),
             model: model.trim().to_string(),
             http,
         }
@@ -518,7 +538,8 @@ impl LocalAiTranslator {
 
 /// Список моделей локального сервера: сначала `/v1/models` (OpenAI), затем `/api/tags` (Ollama).
 pub fn list_local_models(http: &dyn Http, base_url: &str) -> Result<Vec<String>, String> {
-    let base = base_url.trim().trim_end_matches('/');
+    let base = normalize_base_url(base_url);
+    let base = base.as_str();
     let fetch = |path: &str, list: &str, field: &str| -> Option<Vec<String>> {
         let resp = http.get(&format!("{base}{path}"), &[]).ok()?;
         if resp.status != 200 {
@@ -1104,6 +1125,25 @@ mod tests {
         let mut m2 = TranslatorManager::new("", None, http(&s2));
         m2.translate(&long, Some(Lang::Ja), "", true).unwrap();
         assert!(s2.gets().len() >= 3 && s2.gets().iter().all(|q| param(q, "q").chars().count() <= 1000));
+    }
+
+    #[test]
+    fn google_cjk_wall_fits_url_budget() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("", None, http(&s));
+        m.translate(&"漢".repeat(1000), Some(Lang::Ja), "", true).unwrap();
+        let g = s.gets();
+        assert!(g.len() >= 3);
+        for q in &g {
+            assert!(url::form_urlencoded::byte_serialize(param(q, "q").as_bytes()).count() <= GOOGLE_MAX_CHARS);
+        }
+    }
+
+    #[test]
+    fn local_ai_base_url_drops_v1() {
+        for u in ["http://h:1/v1", "http://h:1/v1/", " http://h:1/ "] {
+            assert_eq!(LocalAiTranslator::new(u, "m", http(&FakeHttp::new(200))).base_url, "http://h:1", "{u}");
+        }
     }
 
     #[test]
