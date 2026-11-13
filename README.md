@@ -151,9 +151,6 @@
 
 ## Сборка из исходников
 
-<details>
-<summary>Rust-версия (основная)</summary>
-
 Нужно: [rustup](https://rustup.rs) с тулчейном `x86_64-pc-windows-gnu`, MinGW-w64 (например, `winget install BrechtSanders.WinLibs.POSIX.UCRT`), для установщика — [Inno Setup 6](https://jrsoftware.org/isinfo.php).
 
 ```powershell
@@ -165,29 +162,14 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -NoInstaller
 Готовая папка — `noveltl-rs\dist\NovelTL`, установщик — `dist_installer\`.
 Устройство программы описано в [`noveltl-rs/ARCHITECTURE.md`](noveltl-rs/ARCHITECTURE.md).
 
-</details>
-
-<details>
-<summary>Python-версия (первая, сохранена для истории)</summary>
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\pip install PySide6 pyinstaller pytest requests pysocks psutil
-.\.venv\Scripts\python -m pytest -q tests
-.\.venv\Scripts\python main.py --demo
-.\.venv\Scripts\python build.py            # exe через PyInstaller + установщик
-```
-
-</details>
+Первая версия NovelTL была на Python (PySide6); она удалена из репозитория и осталась в истории git (последний коммит с ней — `ae7a790`, версия 0.4.3).
 
 ### Структура репозитория
 
 ```
-noveltl-rs/           Rust-версия (основная)
+noveltl-rs/           программа на Rust
   noveltl-core/       ядро: очистка текста, автоподбор хука, переводчики, кэш, профили, сеть
   noveltl/            окна (egui), плашка (Direct2D), LunaHook, трей, горячие клавиши
-noveltl/, main.py     Python-версия (PySide6)
-tests/                тесты Python-версии
 files/                движок LunaHook и тексты лицензий
 installer/            скрипт установщика Inno Setup
 shots/, shots_light/  скриншоты интерфейса

@@ -141,6 +141,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -NoInstaller
 The ready folder is `noveltl-rs\dist\NovelTL`, the installer is in `dist_installer\`.
 The program structure is described in [`noveltl-rs/ARCHITECTURE.md`](noveltl-rs/ARCHITECTURE.md) (in Russian).
 
+The first NovelTL version was written in Python (PySide6); it has been removed from the repository and remains in the git history (last commit with it: `ae7a790`, version 0.4.3).
+
 ## Credits and license
 
 Text capture — [**LunaHook**](https://github.com/HIllya51/LunaHook) from the [LunaTranslator](https://github.com/HIllya51/LunaTranslator) project (by HIllya51), used without changes. It is based on Textractor and MinHook. Their license texts are in [`files/licenses`](files/licenses).

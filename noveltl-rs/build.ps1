@@ -3,7 +3,7 @@
 param([switch]$NoInstaller)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$repo = Split-Path -Parent $root            # папка Python-версии: там files\, ИНСТРУКЦИЯ.txt, installer\
+$repo = Split-Path -Parent $root            # корень репозитория: там files\, ИНСТРУКЦИЯ.txt, installer\
 Set-Location $root
 . "$root\env.ps1"
 

@@ -3,9 +3,9 @@
 #ifndef AppVersion
   #define AppVersion "0.0.0"
 #endif
-; Откуда брать программу: Python-сборка (по умолчанию) или Rust-сборка (/DSourceDir=..\noveltl-rs\dist\NovelTL)
+; Откуда брать программу (build.ps1 передаёт /DSourceDir сам)
 #ifndef SourceDir
-  #define SourceDir "..\dist\NovelTL"
+  #define SourceDir "..\noveltl-rs\dist\NovelTL"
 #endif
 
 [Setup]
