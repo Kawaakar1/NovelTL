@@ -97,7 +97,8 @@ impl State {
             Cmd::EditMode(on) => self.edit = on,
             Cmd::UserHidden(h) => self.user_hidden = h,
             Cmd::Style(s) => self.style = s,
-            Cmd::ForceActive(_) | Cmd::Quit => {}
+            // OCR есть только в Windows
+            Cmd::ForceActive(_) | Cmd::ExcludeFromCapture(_) | Cmd::Quit => {}
         }
     }
 }

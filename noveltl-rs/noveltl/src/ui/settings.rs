@@ -391,6 +391,7 @@ impl SettingsWindow {
             .with_title(settings_title())
             .with_inner_size([780.0, h0])
             .with_min_inner_size([660.0, 320.0])
+            .with_active(!crate::winutil::test_area().is_some())
             .with_always_on_top()
             .with_icon(self.icon.clone());
         if let Some(pos) = self.pos {

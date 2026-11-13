@@ -17,6 +17,8 @@ pub struct DemoGame {
     pub index: i32,
     /// HWND окна (0 — ещё не найден)
     pub hwnd: isize,
+    /// только для проверок разработчиком: NOVELTL_TEST_AUTOPLAY — листать реплики самим раз в 4 с
+    autoplay: Option<std::time::Instant>,
 }
 
 fn hex(h: u32) -> Color32 {
@@ -40,7 +42,8 @@ fn vgradient(painter: &Painter, rect: Rect, stops: &[(f32, Color32)]) {
 
 impl DemoGame {
     pub fn new(source: DemoSource) -> Self {
-        DemoGame { source, index: -1, hwnd: 0 }
+        let autoplay = std::env::var_os("NOVELTL_TEST_AUTOPLAY").map(|_| std::time::Instant::now());
+        DemoGame { source, index: -1, hwnd: 0, autoplay }
     }
 
     /// «Игра» показала следующую реплику: хуки шлют её контроллеру.
@@ -50,6 +53,13 @@ impl DemoGame {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
+        if self.autoplay.is_some_and(|t| t.elapsed().as_secs() >= 4) {
+            self.autoplay = Some(std::time::Instant::now());
+            self.advance();
+        }
+        if self.autoplay.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        }
         let builder = ViewportBuilder::default()
             .with_title(DEMO_TITLE)
             .with_inner_size([GAME_W, GAME_H])
@@ -58,7 +68,9 @@ impl DemoGame {
             .with_position(match crate::winutil::test_area() {
                 Some([x, y, _, _]) => [x + 40.0, y + 40.0],
                 None => [80.0, 60.0],
-            });
+            })
+            // при проверках разработчиком окна не забирают фокус
+            .with_active(!crate::winutil::test_area().is_some());
         ctx.show_viewport_immediate(ViewportId::from_hash_of("noveltl_demo_game"), builder, |ctx, _class| {
             let mut clicked = false;
             egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {

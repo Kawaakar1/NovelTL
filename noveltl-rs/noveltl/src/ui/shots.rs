@@ -13,10 +13,9 @@ use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC,
     SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS, ROP_CODE, SRCCOPY,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::{keybd_event, KEYEVENTF_KEYUP, VK_MENU};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, SetForegroundWindow, ShowWindow, WindowFromPoint,
-    GA_ROOT, SW_RESTORE,
+    GetAncestor, GetWindowThreadProcessId, SetWindowPos, ShowWindow, WindowFromPoint, GA_ROOT, HWND_TOP,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE,
 };
 
 use super::demo_game::DemoGame;
@@ -123,19 +122,15 @@ pub fn capture_screen_region(x: i32, y: i32, w: i32, h: i32) -> Option<Vec<u8>> 
     }
 }
 
-/// Вынести окно на передний план (с обходом ограничения Windows на смену активного окна).
+/// Поднять окно над соседними, НЕ делая его активным: фокус остаётся у того, что открыл
+/// пользователь (полноэкранная игра на другом мониторе не свернётся).
 pub fn bring_to_front(hwnd: isize) {
     unsafe {
         let h = HWND(hwnd as _);
         if winutil::is_minimized(hwnd) {
-            let _ = ShowWindow(h, SW_RESTORE);
+            let _ = ShowWindow(h, SW_SHOWNOACTIVATE);
         }
-        let _ = SetForegroundWindow(h);
-        if GetForegroundWindow() != h {
-            keybd_event(VK_MENU.0 as u8, 0, Default::default(), 0);
-            let _ = SetForegroundWindow(h);
-            keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
-        }
+        let _ = SetWindowPos(h, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
     }
 }
 

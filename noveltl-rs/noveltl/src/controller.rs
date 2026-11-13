@@ -451,6 +451,28 @@ pub struct Controller {
     stale_caches: Vec<PathBuf>,
     /// пункты меню, выбранные на плашке; их выполняет поток движка (`tray::handle_menu`)
     menu_requests: Vec<&'static str>,
+    #[cfg(windows)]
+    ocr: OcrState,
+}
+
+/// Чтение текста с экрана (только Windows): поток OCR и где читать — окно игры и место плашки.
+#[cfg(windows)]
+struct OcrState {
+    worker: Option<crate::ocr::OcrWorker>,
+    region: Arc<Mutex<(isize, OverlayFrac)>>,
+    tx: Sender<HookEvent>,
+    rx: Receiver<HookEvent>,
+    waker: Waker,
+}
+
+/// Область чтения OCR на экране — там же, где плашка: её кладут на окно диалога.
+#[cfg(windows)]
+fn ocr_rect(hwnd: isize, f: OverlayFrac) -> Option<(i32, i32, i32, i32)> {
+    let (x, y, w, h) = winutil::client_rect_on_screen(hwnd)?;
+    let (w, h) = (w as f64, h as f64);
+    // минимум как у плашки (220×70)
+    let (rw, rh) = ((f.w * w).round().max(220.0), (f.h * h).round().max(70.0));
+    Some((x + (f.x * w).round() as i32, y + (f.y * h).round() as i32, rw as i32, rh as i32))
 }
 
 impl Controller {
@@ -493,6 +515,11 @@ impl Controller {
         let (overlay, overlay_rx) = Overlay::start();
         overlay.send(Cmd::Style(style_from(&settings)));
         let (hk_tx, hotkey_rx) = channel();
+        #[cfg(windows)]
+        let ocr = {
+            let (tx, rx) = channel();
+            OcrState { worker: None, region: Arc::new(Mutex::new((0, OverlayFrac::default()))), tx, rx, waker: waker.clone() }
+        };
         let hotkeys = Hotkeys::start(hk_tx, waker);
         let mut c = Controller {
             settings,
@@ -524,6 +551,8 @@ impl Controller {
             window_lost_since: None,
             stale_caches: Vec::new(),
             menu_requests: Vec::new(),
+            #[cfg(windows)]
+            ocr,
         };
         c.register_hotkeys();
         c
@@ -534,6 +563,10 @@ impl Controller {
     /// Вызывается интерфейсом каждый кадр.
     pub fn poll(&mut self) {
         while let Ok(ev) = self.hook_rx.try_recv() {
+            self.on_hook_event(ev);
+        }
+        #[cfg(windows)]
+        while let Ok(ev) = self.ocr.rx.try_recv() {
             self.on_hook_event(ev);
         }
         while let Ok(msg) = self.worker.rx.try_recv() {
@@ -614,6 +647,7 @@ impl Controller {
                         s.hwnd = w.hwnd;
                     }
                     self.overlay.send(Cmd::Target(w.hwnd, None));
+                    self.update_ocr_region();
                 } else {
                     // окна нет уже давно — завершаем сессию, дальше сработает автопоиск
                     let since = *self.window_lost_since.get_or_insert_with(Instant::now);
@@ -671,6 +705,8 @@ impl Controller {
         let pipeline = self.make_pipeline(profile.lang, profile.glossary.clone());
         self.worker.send(WorkerCmd::SetPipeline(Some(pipeline)));
         let lang = profile.lang;
+        #[cfg(windows)]
+        let ocr_profile = profile.hook.as_ref().is_some_and(|h| h.code == crate::ocr::OCR_CODE);
         self.overlay_frac = profile.overlay;
         let frac = to_frac(profile.overlay);
         self.session = Some(Session {
@@ -694,7 +730,72 @@ impl Controller {
         });
         self.overlay.send(Cmd::Clear);
         self.overlay.send(Cmd::Target(win.hwnd, Some(frac)));
+        #[cfg(windows)]
+        if ocr_profile {
+            self.start_ocr(win.pid, win.hwnd, lang);
+            return;
+        }
         self.source.attach(win.pid, lang.codepage());
+    }
+
+    /// Мастер, шаг 2: «читать с экрана». Err — нет распознавания для языка игры (текст для пользователя).
+    #[cfg(windows)]
+    pub fn choose_ocr(&mut self) -> Result<(), String> {
+        let Some(s) = self.session.as_ref() else { return Ok(()) };
+        let (pid, hwnd, lang) = (s.pid, s.hwnd, s.profile.lang);
+        crate::ocr::available(lang)?;
+        // перехват больше не нужен: текст берётся с экрана
+        self.source.detach(pid);
+        if let Some(s) = self.session.as_mut() {
+            s.selected = Some(noveltl_core::scorer::make_key(crate::ocr::OCR_CODE, 0, 0));
+            s.profile.set_hook(crate::ocr::OCR_CODE, &crate::ocr::thread_info(pid).name, 0, 0);
+            s.profile.name_hook = None;
+            s.name_key = None;
+            s.error.clear();
+        }
+        self.start_ocr(pid, hwnd, lang);
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    fn start_ocr(&mut self, pid: u32, hwnd: isize, lang: Lang) {
+        self.stop_ocr();
+        *self.ocr.region.lock().unwrap_or_else(|e| e.into_inner()) = (hwnd, self.overlay_frac);
+        self.overlay.send(Cmd::ExcludeFromCapture(true));
+        let region = self.ocr.region.clone();
+        let rect = Arc::new(move || {
+            let (h, f) = *region.lock().unwrap_or_else(|e| e.into_inner());
+            ocr_rect(h, f)
+        });
+        self.ocr.worker =
+            Some(crate::ocr::OcrWorker::start(pid, lang, rect, self.ocr.tx.clone(), self.ocr.waker.clone()));
+    }
+
+    /// Мастер в режиме «Найти текст заново» у игры с OCR: подключаем и перехват — вдруг он найдёт текст.
+    pub fn resume_hook_search(&mut self) -> bool {
+        #[cfg(windows)]
+        if self.ocr.worker.is_some() {
+            if let Some(s) = self.session.as_ref() {
+                self.source.attach(s.pid, s.profile.lang.codepage());
+            }
+        }
+        self.resume_setup()
+    }
+
+    fn stop_ocr(&mut self) {
+        #[cfg(windows)]
+        if let Some(w) = self.ocr.worker.take() {
+            w.stop();
+            self.overlay.send(Cmd::ExcludeFromCapture(false));
+        }
+    }
+
+    /// Плашку передвинули или окно игры сменилось — OCR читает новое место.
+    fn update_ocr_region(&self) {
+        #[cfg(windows)]
+        if let Some(s) = self.session.as_ref() {
+            *self.ocr.region.lock().unwrap_or_else(|e| e.into_inner()) = (s.hwnd, self.overlay_frac);
+        }
     }
 
     pub fn end_session(&mut self) {
@@ -702,6 +803,7 @@ impl Controller {
         self.seq += 1;
         self.pending.clear();
         self.window_lost_since = None;
+        self.stop_ocr();
         let Some(s) = self.session.take() else { return };
         if s.saved && !s.setup {
             // досохраняем статистику чтения
@@ -955,11 +1057,16 @@ impl Controller {
     pub fn choose_hook(&mut self, key: &HookKey) {
         let Some(s) = self.session.as_mut() else { return };
         let Some(st) = self.tracker.get(key) else { return };
+        let ocr = cfg!(windows) && st.hookcode == "OCR";
         s.selected = Some(key.clone());
         s.profile.set_hook(&st.hookcode, &st.hookname, st.ctx, st.ctx2);
         // поток имён подберётся заново
         s.profile.name_hook = None;
         s.name_key = None;
+        // выбран настоящий поток перехвата — чтение с экрана больше не нужно
+        if !ocr {
+            self.stop_ocr();
+        }
     }
 
     pub fn finish_setup(&mut self) {
@@ -991,6 +1098,7 @@ impl Controller {
             let pipeline = self.make_pipeline(stored.lang, stored.glossary.clone());
             self.worker.send(WorkerCmd::SetPipeline(Some(pipeline)));
             self.overlay_frac = stored.overlay;
+            self.update_ocr_region();
             self.overlay.send(Cmd::Target(hwnd, Some(to_frac(stored.overlay))));
             if let Some(s) = self.session.as_mut() {
                 s.profile = stored;
@@ -1009,6 +1117,7 @@ impl Controller {
     /// Вернуть плашку на место по умолчанию (запоминается при `finish_setup`).
     pub fn reset_overlay_position(&mut self) {
         self.overlay_frac = OverlayFrac::default();
+        self.update_ocr_region();
         let hwnd = self.session.as_ref().map_or(0, |s| s.hwnd);
         self.overlay.send(Cmd::Target(hwnd, Some(to_frac(self.overlay_frac))));
     }
@@ -1016,12 +1125,14 @@ impl Controller {
     /// Поставить плашку в заданное место (для снимков экрана).
     pub fn set_overlay_position(&mut self, frac: OverlayFrac) {
         self.overlay_frac = frac;
+        self.update_ocr_region();
         let hwnd = self.session.as_ref().map_or(0, |s| s.hwnd);
         self.overlay.send(Cmd::Target(hwnd, Some(to_frac(frac))));
     }
 
     fn on_overlay_moved(&mut self, frac: Frac) {
         self.overlay_frac = from_frac(frac);
+        self.update_ocr_region();
         if let Some(s) = self.session.as_mut() {
             if !s.setup && s.saved {
                 s.profile.overlay = self.overlay_frac;

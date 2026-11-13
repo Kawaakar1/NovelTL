@@ -25,6 +25,12 @@ arboard = { version = "3", default-features = false, features = ["wayland-data-c
 tray-icon = "0.19"
 windows = { version = "0.58", features = [
     "Foundation_Numerics",
+    "Foundation",
+    "Foundation_Collections",
+    "Globalization",
+    "Graphics_Imaging",
+    "Media_Ocr",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_Security",

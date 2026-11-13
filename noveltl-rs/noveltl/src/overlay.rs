@@ -251,7 +251,8 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 hover: false,
                 hover_btn: None,
                 user_hidden: false,
-                force_active: false,
+                // при проверках разработчиком окна не активны — плашку показываем и так
+                force_active: crate::winutil::test_area().is_some(),
                 visible: false,
                 in_size_move: false,
                 game: RECT::default(),
@@ -432,6 +433,9 @@ impl State {
                 Cmd::UserHidden(h) => self.user_hidden = h,
                 Cmd::Style(s) => self.style = s,
                 Cmd::ForceActive(on) => self.force_active = on,
+                Cmd::ExcludeFromCapture(on) => unsafe {
+                    let _ = SetWindowDisplayAffinity(self.hwnd, if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE });
+                },
                 Cmd::Quit => return true,
             }
             redraw = true;

@@ -118,6 +118,7 @@ impl GlossaryWindow {
             .with_title(self.title.clone())
             .with_inner_size([760.0, 620.0])
             .with_min_inner_size([560.0, 420.0])
+            .with_active(!crate::winutil::test_area().is_some())
             .with_always_on_top()
             .with_icon(self.icon.clone());
         if let Some(pos) = self.pos {

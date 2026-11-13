@@ -42,6 +42,9 @@ enum Act {
     Start,
     Confirm(HookKey),
     BackFromSearch,
+    /// шаг 2: читать текст с экрана (OCR) — только Windows
+    #[cfg_attr(not(windows), allow(dead_code))]
+    Ocr,
     ToggleOthers,
     Report,
     BackToSearch,
@@ -68,6 +71,8 @@ pub struct Wizard {
     show_others: bool,
     best_key: Option<HookKey>,
     messages: Vec<(String, String)>,
+    /// выбран OCR (подсказка на шаге 3)
+    ocr: bool,
 }
 
 fn elide(text: &str, limit: usize) -> String {
@@ -169,11 +174,12 @@ impl Wizard {
             show_others: false,
             best_key: None,
             messages: Vec::new(),
+            ocr: false,
         };
         match mode {
             WizardMode::New => {}
             WizardMode::Hook => {
-                lock_ctl(&shared.controller).resume_setup();
+                lock_ctl(&shared.controller).resume_hook_search();
                 w.go(shared, 1);
             }
             WizardMode::Position => {
@@ -320,6 +326,7 @@ impl Wizard {
         let mut builder = ViewportBuilder::default()
             .with_title(self.window_title())
             .with_inner_size([580.0, 720.0])
+            .with_active(!crate::winutil::test_area().is_some())
             .with_always_on_top()
             .with_icon(self.icon.clone());
         if let Some(pos) = self.pos {
@@ -356,6 +363,19 @@ impl Wizard {
                 }
             }
             Act::ToggleOthers => self.show_others = !self.show_others,
+            Act::Ocr => {
+                #[cfg(windows)]
+                {
+                    let res = lock_ctl(&shared.controller).choose_ocr();
+                    match res {
+                        Ok(()) => {
+                            self.ocr = true;
+                            self.go(shared, 2);
+                        }
+                        Err(e) => self.messages.push(("OCR".to_string(), e)),
+                    }
+                }
+            }
             Act::Report => {
                 let result = lock_ctl(&shared.controller).save_report();
                 match result {
@@ -487,6 +507,14 @@ impl Wizard {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if button(ui, t("Текст не находится? Сохранить отчёт"), BtnKind::Link, true, None).clicked() {
                         acts.push(Act::Report);
+                    }
+                    // запасной путь, когда перехват не берёт игру: читать текст с экрана
+                    if cfg!(windows)
+                        && button(ui, t("Читать с экрана (OCR)"), BtnKind::Link, true, None)
+                            .on_hover_text(t("Для игр, где текст не находится: программа будет распознавать текст в области плашки."))
+                            .clicked()
+                    {
+                        acts.push(Act::Ocr);
                     }
                 });
             });
@@ -646,6 +674,12 @@ impl Wizard {
                     t("•  Не видно плашку? Разверните окно игры — плашка рисуется только поверх него."),
                 ] {
                     wrap(ui, theme::body(tip));
+                }
+                if self.ocr {
+                    wrap(
+                        ui,
+                        theme::body(t("•  OCR читает текст из-под плашки: накройте ею окно диалога целиком, вместе с именем.")),
+                    );
                 }
             });
             if button(ui, t("Вернуть положение по умолчанию"), BtnKind::Link, true, None).clicked() {

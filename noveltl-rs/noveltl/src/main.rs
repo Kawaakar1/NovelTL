@@ -7,6 +7,7 @@
 //!   noveltl.exe --theme system|dark|light
 #![windows_subsystem = "windows"]
 
+
 #[allow(dead_code)]
 mod clipboard;
 #[allow(dead_code)]
@@ -18,6 +19,9 @@ mod diag;
 mod hotkeys;
 #[allow(dead_code)]
 mod overlay_common;
+// чтение текста с экрана — встроенное распознавание Windows
+#[cfg(windows)]
+mod ocr;
 #[allow(dead_code)]
 mod paths;
 #[allow(dead_code)]
@@ -305,8 +309,9 @@ fn main() {
         .with_min_inner_size([780.0, 520.0])
         .with_icon(Arc::new(icon));
     // проверки разработчиком: окно в заданной области (например, на втором мониторе)
+    // и не забирает фокус: иначе свернётся полноэкранная игра, в которую играют на другом мониторе
     if let Some([x, y, _, _]) = winutil::test_area() {
-        viewport = viewport.with_position([x + 20.0, y + 20.0]);
+        viewport = viewport.with_position([x + 20.0, y + 20.0]).with_active(false);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     let cfg = Config { demo, shots: args.shots.clone() };
