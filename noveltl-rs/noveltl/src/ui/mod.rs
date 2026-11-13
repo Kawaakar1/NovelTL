@@ -108,6 +108,8 @@ pub fn start_engine(shared: Arc<Shared>) -> JoinHandle<()> {
                     c.poll();
                     (c.take_notices(), c.take_menu_requests())
                 };
+                let (dot, tip) = lock_ctl(&shared.controller).tray_state();
+                tray::set_state(dot, &tip);
                 // меню на плашке: те же действия, что у значка в трее (замок контроллера уже отпущен)
                 for id in menu {
                     tray::handle_menu(&shared, id);

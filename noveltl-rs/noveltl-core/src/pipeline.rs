@@ -169,14 +169,14 @@ mod tests {
     fn character_notes_only_for_names_in_line() {
         let mut akari = g("灯里", "Акари");
         akari.note = " девушка, говорит вежливо ".into();
-        let gl = vec![akari, GlossaryEntry { src: "悠斗".into(), dst: String::new(), note: "парень".into() }, g("箒", "метла")];
+        let gl = vec![akari, GlossaryEntry { src: "悠斗".into(), dst: String::new(), note: "парень".into(), color: String::new() }, g("箒", "метла")];
         assert_eq!(character_notes("灯里", "「おはよう」", &gl), "Characters: Акари: девушка, говорит вежливо");
         assert_eq!(character_notes("", "悠斗さん", &gl), "Characters: 悠斗: парень");
         assert_eq!(character_notes("", "箒を持つ", &gl), "", "у термина без заметки подсказки нет");
     }
 
     fn g(src: &str, dst: &str) -> GlossaryEntry {
-        GlossaryEntry { src: src.to_string(), dst: dst.to_string(), note: String::new() }
+        GlossaryEntry { src: src.to_string(), dst: dst.to_string(), note: String::new(), color: String::new() }
     }
 
     #[test]

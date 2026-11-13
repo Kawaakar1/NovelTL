@@ -32,6 +32,16 @@ pub struct Style {
     pub show_original: bool,
     /// панель кнопок приглушена (почти прозрачная, ярче под курсором)
     pub toolbar_dim: bool,
+    /// скругление углов, px
+    pub radius: u32,
+    /// рамка 2 px цветом имени
+    pub border: bool,
+    pub center: bool,
+    pub shadow: bool,
+    /// плавное появление реплики
+    pub fade: bool,
+    /// эффект печати
+    pub typewriter: bool,
 }
 
 impl Default for Style {
@@ -46,6 +56,12 @@ impl Default for Style {
             bg_opacity: 85,
             show_original: false,
             toolbar_dim: false,
+            radius: 12,
+            border: false,
+            center: false,
+            shadow: false,
+            fade: true,
+            typewriter: false,
         }
     }
 }
@@ -58,7 +74,8 @@ pub fn parse_color(s: &str, fallback: u32) -> u32 {
 pub enum Cmd {
     Target(isize, Option<Frac>),
     /// реплика: имя, перевод, второй перевод (мелко под основным; пусто — нет) и исходный текст
-    Line { name: String, text: String, alt: String, orig: String },
+    /// `name_color` — цвет имени персонажа из глоссария (0xRRGGBB)
+    Line { name: String, text: String, alt: String, orig: String, name_color: Option<u32> },
     Note { note: String, keep_text: bool },
     Clear,
     EditMode(bool),

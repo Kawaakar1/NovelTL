@@ -33,6 +33,8 @@ struct SessSnap {
     error: String,
     /// история диалога, самая новая реплика — первая
     history: Vec<LineResult>,
+    /// цвет имени из глоссария для каждой реплики истории
+    name_colors: Vec<Option<Color32>>,
 }
 
 struct Snap {
@@ -44,6 +46,8 @@ struct Snap {
     /// язык перевода со строчной буквы
     target_title: String,
     nickname: String,
+    /// новая версия: (номер, ссылка)
+    update: Option<(String, String)>,
     /// словарь для фуриганы (только при включённом режиме изучения)
     learn: Option<Arc<Mutex<Dictionary>>>,
 }
@@ -58,6 +62,8 @@ enum Action {
     SetLang(String, Lang),
     OpenLog(String),
     Anki(String, String),
+    OpenUrl(String),
+    DismissUpdate,
 }
 
 fn is_japanese(c: char) -> bool {
@@ -217,6 +223,12 @@ impl MainWindow {
                 has_selected: s.selected.is_some(),
                 error: s.error.clone(),
                 history: s.history.iter().rev().cloned().collect(),
+                name_colors: s
+                    .history
+                    .iter()
+                    .rev()
+                    .map(|r| c.name_color(&r.name).map(|h| theme::parse_hex(&h, Color32::WHITE)))
+                    .collect(),
             }),
             user_hidden: c.user_hidden,
             hotkey_toggle: c.settings.hotkey_toggle.clone(),
@@ -224,6 +236,7 @@ impl MainWindow {
             translator: c.translator_status(),
             target_title: c.settings.target_lang.title_in_text(),
             nickname: c.settings.nickname.clone(),
+            update: c.update_available.clone(),
             learn: if c.settings.learn_mode { c.dict.clone() } else { None },
         }
     }
@@ -448,6 +461,37 @@ impl MainWindow {
                 });
         }
 
+        // ---------- баннер обновления ----------
+        if let Some((ver, url)) = &snap.update {
+            egui::TopBottomPanel::top("update_banner")
+                .resizable(false)
+                .show_separator_line(false)
+                .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 14, bottom: 0 }))
+                .show(ctx, |ui| {
+                    let r = theme::card_frame().inner_margin(Margin { left: 20, right: 12, top: 8, bottom: 8 }).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(theme::body(tf("Вышла версия {}", &[ver])));
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if button(ui, t("Скачать"), BtnKind::Primary, true, None).clicked() {
+                                    actions.push(Action::OpenUrl(url.clone()));
+                                }
+                                if button(ui, t("Не сейчас"), BtnKind::Link, true, None).clicked() {
+                                    actions.push(Action::DismissUpdate);
+                                }
+                            });
+                        });
+                    });
+                    let rc = r.response.rect;
+                    let strip = egui::Rect::from_min_max(rc.min, egui::pos2(rc.min.x + 6.0, rc.max.y));
+                    ui.painter().rect_filled(
+                        strip,
+                        CornerRadius { nw: 12, sw: 12, ne: 0, se: 0 },
+                        p.accent,
+                    );
+                });
+        }
+
         // ---------- центральная часть ----------
         egui::CentralPanel::default()
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 8 }))
@@ -592,6 +636,7 @@ impl MainWindow {
             ui.set_min_height(fill_h);
             ui.spacing_mut().item_spacing.y = 6.0;
             let history = s.map_or(&[][..], |s| s.history.as_slice());
+            let s_colors = s.map_or(&[][..], |s| s.name_colors.as_slice());
             let log = crate::controller::log_path(&profile.id);
             ui.horizontal(|ui| {
                 ui.label(theme::step(match history.len() {
@@ -634,7 +679,16 @@ impl MainWindow {
                     } else {
                         ui.add(egui::Label::new(theme::jp(src)).wrap_mode(egui::TextWrapMode::Wrap));
                     }
-                    ui.add(egui::Label::new(theme::tr(dst)).wrap_mode(egui::TextWrapMode::Wrap));
+                    let color = s_colors.get(i).copied().flatten();
+                    if let (Some(c), false) = (color, res.name.is_empty()) {
+                        let f = FontId::proportional(16.0);
+                        let mut job = LayoutJob::default();
+                        job.append(&format!("{}: ", res.name), 0.0, egui::TextFormat::simple(f.clone(), c));
+                        job.append(&res.text, 0.0, egui::TextFormat::simple(f, pal().text));
+                        ui.add(egui::Label::new(job).wrap_mode(egui::TextWrapMode::Wrap));
+                    } else {
+                        ui.add(egui::Label::new(theme::tr(dst)).wrap_mode(egui::TextWrapMode::Wrap));
+                    }
                     if !res.alt.is_empty() {
                         ui.add(egui::Label::new(theme::small(res.alt.as_str())).wrap_mode(egui::TextWrapMode::Wrap));
                     }
@@ -713,6 +767,8 @@ impl MainWindow {
                 Action::OpenLog(path) => winutil::reveal_in_explorer(&path),
                 Action::Anki(front, back) => lock_ctl(&shared.controller).add_to_anki(front, back),
                 Action::Glossary(id) => windows.open_glossary(id),
+                Action::OpenUrl(url) => winutil::open_url(&url),
+                Action::DismissUpdate => lock_ctl(&shared.controller).dismiss_update(),
                 Action::AskDelete(id, name) => self.confirm_delete = Some((id, name)),
                 Action::Report => {
                     let result = lock_ctl(&shared.controller).save_report();

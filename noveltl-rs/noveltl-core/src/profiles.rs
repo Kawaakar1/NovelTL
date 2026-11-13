@@ -33,6 +33,9 @@ pub struct GlossaryEntry {
     /// заметка для ИИ-переводчика: кто это, пол, манера речи (необязательно)
     #[serde(default)]
     pub note: String,
+    /// цвет имени персонажа "#RRGGBB"; пусто — цвет имени по умолчанию
+    #[serde(default)]
+    pub color: String,
 }
 
 /// Сколько прочитано в игре (считается по переведённым репликам).
@@ -331,6 +334,21 @@ pub struct AppSettings {
     pub overlay_toolbar_dim: bool,
     /// Сочетание клавиш «Открыть настройки».
     pub hotkey_settings: String,
+    /// Выбранный готовый стиль плашки: classic / subtitles / game / minimal (только для подсветки).
+    pub overlay_preset: String,
+    /// Скругление плашки, px.
+    pub overlay_radius: u32,
+    /// Рамка 2 px цветом имени.
+    pub overlay_border: bool,
+    pub overlay_center: bool,
+    pub overlay_shadow: bool,
+    /// Плавное появление новой реплики.
+    pub overlay_fade: bool,
+    /// Эффект печати.
+    pub overlay_typewriter: bool,
+    pub check_updates: bool,
+    /// unix-секунды последней проверки обновлений.
+    pub last_update_check: u64,
 }
 
 impl Default for AppSettings {
@@ -372,6 +390,15 @@ impl Default for AppSettings {
             overlay_show_original: false,
             overlay_toolbar_dim: false,
             hotkey_settings: "Ctrl+Alt+S".into(),
+            overlay_preset: "classic".into(),
+            overlay_radius: 12,
+            overlay_border: false,
+            overlay_center: false,
+            overlay_shadow: false,
+            overlay_fade: true,
+            overlay_typewriter: false,
+            check_updates: true,
+            last_update_check: 0,
         }
     }
 }
@@ -469,7 +496,7 @@ mod tests {
         let store = ProfileStore::new(dir.join("profiles"));
         let mut p = store.create("Senren*Banka", &exe, Lang::Ja).unwrap();
         p.set_hook("HKIRI", "KiriKiriZ", 0x7FF600001234, 0x10005);
-        p.glossary.push(GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into(), note: String::new() });
+        p.glossary.push(GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into(), note: String::new(), color: String::new() });
         store.save(&p).unwrap();
 
         let found = store.find_for_exe(&exe).unwrap();
@@ -478,7 +505,7 @@ mod tests {
             found.hook,
             Some(HookRef { code: "HKIRI".into(), name: "KiriKiriZ".into(), ctx_lo: 0x1234, ctx2_lo: 0x0005 })
         );
-        assert_eq!(found.glossary, vec![GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into(), note: String::new() }]);
+        assert_eq!(found.glossary, vec![GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into(), note: String::new(), color: String::new() }]);
         assert!(found.overlay.w > 0.0 && found.overlay.w <= 1.0);
         let _ = fs::remove_dir_all(&dir);
     }
@@ -701,6 +728,10 @@ mod tests {
         assert_eq!(s.accent, "");
         assert!(!s.overlay_show_original);
         assert!(!s.overlay_toolbar_dim);
+        assert_eq!((s.overlay_preset.as_str(), s.overlay_radius), ("classic", 12));
+        assert!(!s.overlay_border && !s.overlay_center && !s.overlay_shadow && !s.overlay_typewriter);
+        assert!(s.overlay_fade && s.check_updates);
+        assert_eq!(s.last_update_check, 0);
     }
 
     #[test]

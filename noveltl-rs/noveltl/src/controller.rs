@@ -402,6 +402,12 @@ fn style_from(s: &AppSettings) -> Style {
         bg_opacity: s.bg_opacity.min(100) as u8,
         show_original: s.overlay_show_original,
         toolbar_dim: s.overlay_toolbar_dim,
+        radius: s.overlay_radius.min(24),
+        border: s.overlay_border,
+        center: s.overlay_center,
+        shadow: s.overlay_shadow,
+        fade: s.overlay_fade,
+        typewriter: s.overlay_typewriter,
     }
 }
 
@@ -471,6 +477,9 @@ pub struct Controller {
     pub dict_busy: bool,
     learn_tx: Sender<LearnMsg>,
     learn_rx: Receiver<LearnMsg>,
+    /// новая версия: (версия, ссылка на релиз); None — нет или скрыта
+    pub update_available: Option<(String, String)>,
+    update_rx: Receiver<Result<Option<(String, String)>, String>>,
 }
 
 /// Сообщения фоновых задач режима изучения: скачивание словаря и Anki.
@@ -550,6 +559,20 @@ impl Controller {
             OcrState { worker: None, region: Arc::new(Mutex::new((0, OverlayFrac::default()))), tx, rx, waker: waker.clone() }
         };
         let (learn_tx, learn_rx) = channel();
+        let (update_tx, update_rx) = channel();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if settings.check_updates
+            && !demo
+            && crate::winutil::test_area().is_none()
+            && now_secs.saturating_sub(settings.last_update_check) > 24 * 3600
+        {
+            let h = http.clone();
+            std::thread::spawn(move || {
+                let _ = update_tx.send(noveltl_core::updates::check(h.as_ref(), env!("CARGO_PKG_VERSION")));
+            });
+        }
         let hotkeys = Hotkeys::start(hk_tx, waker);
         let mut c = Controller {
             settings,
@@ -589,6 +612,8 @@ impl Controller {
             dict_busy: false,
             learn_tx,
             learn_rx,
+            update_available: None,
+            update_rx,
         };
         c.register_hotkeys();
         c
@@ -604,6 +629,14 @@ impl Controller {
         #[cfg(windows)]
         while let Ok(ev) = self.ocr.rx.try_recv() {
             self.on_hook_event(ev);
+        }
+        // ошибки сети молча игнорируем; повторим при следующем запуске
+        while let Ok(Ok(found)) = self.update_rx.try_recv() {
+            self.update_available = found;
+            self.settings.last_update_check = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let _ = self.settings.save_checked(&self.settings_path);
         }
         while let Ok(msg) = self.learn_rx.try_recv() {
             match msg {
@@ -650,6 +683,36 @@ impl Controller {
             self.last_scan = Instant::now();
             self.scan();
         }
+    }
+
+    /// Состояние значка в трее: (0 — игры нет, 1 — текст ищется, 2 — подключено; подсказка).
+    pub fn tray_state(&self) -> (u8, String) {
+        match self.session.as_ref() {
+            None => (0, "NovelTL".to_string()),
+            Some(s) if s.setup || !s.connected => (1, t("NovelTL — ищу текст…").to_string()),
+            Some(s) => (2, tf("NovelTL — {}", &[&s.profile.name])),
+        }
+    }
+
+    /// Скрыть баннер обновления до следующего запуска.
+    pub fn dismiss_update(&mut self) {
+        self.update_available = None;
+    }
+
+    /// Цвет имени из глоссария текущей игры ("#RRGGBB"); совпадение с src или dst без учёта пробелов.
+    pub fn name_color(&self, name: &str) -> Option<String> {
+        let key: String = name.chars().filter(|c| !c.is_whitespace()).collect();
+        if key.is_empty() {
+            return None;
+        }
+        let eq = |a: &str| a.chars().filter(|c| !c.is_whitespace()).eq(key.chars());
+        self.session
+            .as_ref()?
+            .profile
+            .glossary
+            .iter()
+            .find(|e| !e.color.is_empty() && (eq(&e.src) || eq(&e.dst)))
+            .map(|e| e.color.clone())
     }
 
     /// HWND окна демо-«игры»: оно появляется уже после создания контроллера.
@@ -1084,11 +1147,15 @@ impl Controller {
     }
 
     fn on_translated(&mut self, seq: u64, result: LineResult) {
+        let nc = self
+            .name_color(&result.name)
+            .or_else(|| self.name_color(&result.src_name))
+            .map(|c| parse_color(&c, 0));
         let Some(s) = self.session.as_mut() else { return };
         if seq != self.seq {
             return;
         }
-        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone(), alt: result.alt.clone(), orig: result.src_text.clone() });
+        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone(), alt: result.alt.clone(), orig: result.src_text.clone(), name_color: nc });
         let notice = result.notice.clone();
         // новая реплика (не повторный перевод той же) — в статистику и журнал
         let new_line = s.history.back().is_none_or(|b| b.src_text != result.src_text || b.src_name != result.src_name);

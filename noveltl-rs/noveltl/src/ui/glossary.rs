@@ -17,6 +17,8 @@ struct Row {
     src: String,
     dst: String,
     note: String,
+    /// "" или "#RRGGBB"
+    color: String,
 }
 
 enum Act {
@@ -68,6 +70,9 @@ impl GlossaryWindow {
         };
         for e in &profile.glossary {
             w.push_row(&e.src, &e.dst, &e.note);
+            if let Some(r) = w.rows.last_mut() {
+                r.color = e.color.clone();
+            }
         }
         Some(w)
     }
@@ -107,7 +112,7 @@ impl GlossaryWindow {
     fn push_row(&mut self, src: &str, dst: &str, note: &str) -> u64 {
         let uid = self.next_uid;
         self.next_uid += 1;
-        self.rows.push(Row { uid, src: src.to_string(), dst: dst.to_string(), note: note.to_string() });
+        self.rows.push(Row { uid, src: src.to_string(), dst: dst.to_string(), note: note.to_string(), color: String::new() });
         uid
     }
 
@@ -116,8 +121,8 @@ impl GlossaryWindow {
         self.frames += 1;
         let mut builder = ViewportBuilder::default()
             .with_title(self.title.clone())
-            .with_inner_size([760.0, 620.0])
-            .with_min_inner_size([560.0, 420.0])
+            .with_inner_size([840.0, 620.0])
+            .with_min_inner_size([640.0, 420.0])
             .with_active(!crate::winutil::test_area().is_some())
             .with_always_on_top()
             .with_icon(self.icon.clone());
@@ -153,6 +158,7 @@ impl GlossaryWindow {
                                     src: s.to_string(),
                                     dst: d.to_string(),
                                     note: r.note.trim().to_string(),
+                                    color: r.color.clone(),
                                 })
                         })
                         .collect();
@@ -236,7 +242,7 @@ impl GlossaryWindow {
 
     fn draw_table(&mut self, ui: &mut egui::Ui) {
         let p = pal();
-        let free = (ui.available_width() - 40.0 - 3.0 * 8.0 - 16.0).max(240.0);
+        let free = (ui.available_width() - 40.0 - 4.0 * 8.0 - 16.0 - 62.0).max(240.0);
         let col_w = free * 0.28;
         let note_w = free - 2.0 * col_w;
         let sel_index = self.selected.and_then(|s| self.rows.iter().position(|r| r.uid == s));
@@ -245,7 +251,7 @@ impl GlossaryWindow {
         let mut clicked: Option<u64> = None;
         egui::ScrollArea::vertical().id_salt("gl_scroll").auto_shrink([false, false]).show(ui, |ui| {
             egui::Grid::new("gl_grid")
-                .num_columns(4)
+                .num_columns(5)
                 .spacing([8.0, 6.0])
                 .with_row_color(move |row, _| (sel_index.is_some_and(|i| i + 1 == row)).then_some(selected_fill))
                 .show(ui, |ui| {
@@ -254,6 +260,7 @@ impl GlossaryWindow {
                     ui.label(head(t("В игре")));
                     ui.label(head(t("В переводе")));
                     ui.label(head(t("Заметка для ИИ")));
+                    ui.label(head(t("Цвет")));
                     ui.end_row();
                     for (i, r) in self.rows.iter_mut().enumerate() {
                         let num = ui.add_sized(
@@ -291,6 +298,28 @@ impl GlossaryWindow {
                         if resp.clicked() || resp.gained_focus() {
                             clicked = Some(r.uid);
                         }
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui.spacing_mut().interact_size.y = 30.0;
+                            let mut rgb = if r.color.is_empty() {
+                                [0x80, 0x80, 0x80]
+                            } else {
+                                let c = theme::parse_hex(&r.color, Color32::GRAY);
+                                [c.r(), c.g(), c.b()]
+                            };
+                            let has = !r.color.is_empty();
+                            let resp = ui
+                                .color_edit_button_srgb(&mut rgb)
+                                .on_hover_text(t("Цвет имени в истории и на плашке. Пусто — цвет по умолчанию."));
+                            if resp.changed() {
+                                r.color = theme::to_hex(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                                clicked = Some(r.uid);
+                            }
+                            if has && ui.small_button("×").clicked() {
+                                r.color.clear();
+                                clicked = Some(r.uid);
+                            }
+                        });
                         ui.end_row();
                     }
                 });

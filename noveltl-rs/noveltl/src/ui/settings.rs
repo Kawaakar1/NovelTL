@@ -153,6 +153,13 @@ struct PreviewKey {
     outline_color: String,
     bg_color: String,
     bg_opacity: u32,
+    overlay_preset: String,
+    overlay_radius: u32,
+    overlay_border: bool,
+    overlay_center: bool,
+    overlay_shadow: bool,
+    overlay_fade: bool,
+    overlay_typewriter: bool,
     custom_bg: String,
     custom_card: String,
     custom_text: String,
@@ -176,6 +183,13 @@ impl PreviewKey {
             outline_color: s.outline_color.clone(),
             bg_color: s.bg_color.clone(),
             bg_opacity: s.bg_opacity,
+            overlay_preset: s.overlay_preset.clone(),
+            overlay_radius: s.overlay_radius,
+            overlay_border: s.overlay_border,
+            overlay_center: s.overlay_center,
+            overlay_shadow: s.overlay_shadow,
+            overlay_fade: s.overlay_fade,
+            overlay_typewriter: s.overlay_typewriter,
         }
     }
 
@@ -193,6 +207,13 @@ impl PreviewKey {
         s.outline_color = self.outline_color.clone();
         s.bg_color = self.bg_color.clone();
         s.bg_opacity = self.bg_opacity;
+        s.overlay_preset = self.overlay_preset.clone();
+        s.overlay_radius = self.overlay_radius;
+        s.overlay_border = self.overlay_border;
+        s.overlay_center = self.overlay_center;
+        s.overlay_shadow = self.overlay_shadow;
+        s.overlay_fade = self.overlay_fade;
+        s.overlay_typewriter = self.overlay_typewriter;
     }
 }
 
@@ -223,6 +244,7 @@ fn draft_to_settings(d: &AppSettings, hk: &[String; 3], base: &AppSettings) -> A
     new.ui_lang = d.ui_lang;
     new.overlay_show_original = d.overlay_show_original;
     new.overlay_toolbar_dim = d.overlay_toolbar_dim;
+    new.check_updates = d.check_updates;
     new
 }
 
@@ -318,7 +340,11 @@ impl SettingsWindow {
             fonts.insert(0, orig.font_family.clone());
         }
         let ppp = shared.ctx.pixels_per_point().max(0.5);
-        let limit = (work_area_height_px() / ppp - 60.0).max(420.0);
+        let mut limit = (work_area_height_px() / ppp - 60.0).max(420.0);
+        // при проверках окно должно целиком помещаться в тестовую область (иначе снимок обрезан)
+        if let Some([_, _, _, h]) = crate::winutil::test_area() {
+            limit = limit.min(h - 80.0).max(420.0);
+        }
         SettingsWindow {
             dict_info: (false, false, String::new()),
             id: ViewportId::from_hash_of("noveltl_settings"),
@@ -389,6 +415,14 @@ impl SettingsWindow {
         self.proxy_addr = addr.to_string();
         self.proxy_user = user.to_string();
         self.proxy_pass = pass.to_string();
+    }
+
+    /// Для `--shots`: поставить стиль плашки «Как в игре» (только в окне).
+    pub fn apply_game_preset_for_shots(&mut self) {
+        let d = &mut self.d;
+        d.overlay_preset = "game".into();
+        (d.bg_opacity, d.overlay_radius) = (90, 16);
+        (d.overlay_border, d.overlay_center, d.overlay_shadow) = (true, false, false);
     }
 
     /// Для `--shots`: выбрать раздел по номеру.
@@ -1283,6 +1317,9 @@ impl SettingsWindow {
     }
 
     fn draw_plate(&mut self, ui: &mut Ui) {
+        theme::section_label(ui, t("Готовые стили"));
+        self.draw_presets(ui);
+        ui.add_space(8.0);
         self.draw_preview(ui);
         theme::section_label(ui, t("Вид плашки"));
         theme::card(ui, |ui| {
@@ -1311,6 +1348,23 @@ impl SettingsWindow {
                 ui.add(egui::Slider::new(&mut self.d.bg_opacity, 0..=100).show_value(false));
                 ui.label(theme::dim(format!("{}%", self.d.bg_opacity)));
             });
+            theme::row_w(ui, t("Скругление углов"), None, 260.0, |ui| {
+                ui.spacing_mut().slider_width = (ui.available_width() - 64.0).max(80.0);
+                ui.visuals_mut().widgets.inactive.bg_fill = pal().border;
+                ui.add(egui::Slider::new(&mut self.d.overlay_radius, 0..=24).show_value(false));
+                ui.label(theme::dim(format!("{} px", self.d.overlay_radius)));
+            });
+            for (title, v) in [
+                (t("Рамка цветом имени"), &mut self.d.overlay_border),
+                (t("Текст по центру"), &mut self.d.overlay_center),
+                (t("Тень под текстом"), &mut self.d.overlay_shadow),
+                (t("Плавное появление реплики"), &mut self.d.overlay_fade),
+                (t("Эффект печати"), &mut self.d.overlay_typewriter),
+            ] {
+                theme::row_w(ui, title, None, 36.0, |ui| {
+                    theme::toggle(ui, v);
+                });
+            }
             theme::row_w(ui, t("Показывать оригинал под переводом"), Some(t("Мелким шрифтом под текстом перевода")), 36.0, |ui| {
                 theme::toggle(ui, &mut self.d.overlay_show_original);
             });
@@ -1386,6 +1440,18 @@ impl SettingsWindow {
                 }
             });
         });
+        theme::section_label(ui, t("Обновления"));
+        theme::card(ui, |ui| {
+            theme::row_w(
+                ui,
+                t("Проверять обновления"),
+                Some(t("Раз в день спрашивает GitHub, есть ли новая версия. Ничего, кроме запроса, не отправляется.")),
+                36.0,
+                |ui| {
+                    theme::toggle(ui, &mut self.d.check_updates);
+                },
+            );
+        });
         theme::section_label(ui, t("О программе"));
         theme::card(ui, |ui| {
             let title = format!("NovelTL {}", env!("CARGO_PKG_VERSION"));
@@ -1403,6 +1469,69 @@ impl SettingsWindow {
         });
     }
 
+    /// Ряд карточек готовых стилей (4 в ряд, при узком окне 2x2).
+    fn draw_presets(&mut self, ui: &mut Ui) {
+        if self.bg_tex.is_none() {
+            self.bg_tex =
+                Some(ui.ctx().load_texture("settings_plate_bg", gradient_image(1024, 240, 20.0), TextureOptions::LINEAR));
+        }
+        // (id, подпись, непрозрачность, скругление, рамка, центр, тень)
+        let presets: [(&str, &str, u32, u32, bool, bool, bool); 4] = [
+            ("classic", t("Классика"), 85, 12, false, false, false),
+            ("subtitles", t("Субтитры"), 0, 0, false, true, true),
+            ("game", t("Как в игре"), 90, 16, true, false, false),
+            ("minimal", t("Минимал"), 55, 6, false, false, false),
+        ];
+        let p = pal();
+        let gap = 8.0;
+        let per_row = if ui.available_width() >= 4.0 * 120.0 + 3.0 * gap { 4 } else { 2 };
+        let w = ((ui.available_width() - (per_row as f32 - 1.0) * gap) / per_row as f32).min(180.0);
+        let bg = self.color_value(3);
+        let (name_c, text_c) = (self.color_value(1), self.color_value(0));
+        let tex = self.bg_tex.as_ref().map(|t| t.id());
+        for chunk in presets.chunks(per_row) {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for &(id, title, op, rad, border, center, shadow) in chunk {
+                    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 88.0), Sense::click());
+                    let sel = self.d.overlay_preset == id;
+                    let pt = ui.painter_at(rect);
+                    pt.rect_filled(rect, CornerRadius::same(10), p.card);
+                    let img = Rect::from_min_size(rect.min + Vec2::splat(4.0), Vec2::new(w - 8.0, 56.0));
+                    if let Some(tex) = tex {
+                        pt.image(tex, img, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                    }
+                    let plate = img.shrink2(Vec2::new(8.0, 10.0));
+                    let rr = CornerRadius::same((rad as f32 * 0.5) as u8);
+                    pt.rect_filled(plate, rr, Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), (op as f32 * 2.55) as u8));
+                    if border {
+                        pt.rect_stroke(plate.shrink(0.5), rr, Stroke::new(1.5_f32, name_c), StrokeKind::Inside);
+                    }
+                    let clip = pt.with_clip_rect(plate);
+                    let ax = if center { Align2::CENTER_TOP } else { Align2::LEFT_TOP };
+                    let x = if center { plate.center().x } else { plate.left() + 6.0 };
+                    let mini = |y: f32, s: &str, f: FontId, c: Color32| {
+                        if shadow {
+                            clip.text(Pos2::new(x + 1.0, y + 1.0), ax, s, f.clone(), Color32::from_black_alpha(160));
+                        }
+                        clip.text(Pos2::new(x, y), ax, s, f, c);
+                    };
+                    mini(plate.top() + 3.0, t("Акари"), FontId::new(9.0, theme::bold_family()), name_c);
+                    mini(plate.top() + 15.0, t("Доброе утро."), FontId::proportional(11.0), text_c);
+                    pt.text(Pos2::new(rect.center().x, rect.bottom() - 14.0), Align2::CENTER_CENTER, title, FontId::proportional(13.0), p.text);
+                    let stroke = if sel { Stroke::new(2.0_f32, p.accent) } else { Stroke::new(1.0_f32, p.border) };
+                    pt.rect_stroke(rect, CornerRadius::same(10), stroke, StrokeKind::Inside);
+                    if resp.on_hover_cursor(CursorIcon::PointingHand).clicked() {
+                        let d = &mut self.d;
+                        d.overlay_preset = id.to_string();
+                        (d.bg_opacity, d.overlay_radius) = (op, rad);
+                        (d.overlay_border, d.overlay_center, d.overlay_shadow) = (border, center, shadow);
+                    }
+                }
+            });
+        }
+    }
+
     /// Предпросмотр плашки: картинка-градиент и плашка поверх (как `PlatePreview`).
     fn draw_preview(&mut self, ui: &mut Ui) {
         if self.bg_tex.is_none() {
@@ -1417,7 +1546,11 @@ impl SettingsWindow {
         let plate = Rect::from_min_max(rect.min + Vec2::new(16.0, 14.0), rect.max - Vec2::new(16.0, 14.0));
         let bg = self.color_value(3);
         let alpha = (self.d.bg_opacity.min(100) as f32 * 2.55).round() as u8;
-        painter.rect_filled(plate, CornerRadius::same(10), Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), alpha));
+        let radius = CornerRadius::same(self.d.overlay_radius.min(24) as u8);
+        painter.rect_filled(plate, radius, Color32::from_rgba_unmultiplied(bg.r(), bg.g(), bg.b(), alpha));
+        if self.d.overlay_border {
+            painter.rect_stroke(plate.shrink(1.0), radius, Stroke::new(2.0_f32, self.color_value(1)), StrokeKind::Inside);
+        }
 
         let painter = painter.with_clip_rect(plate);
         let (text_c, name_c, outline_c) = (self.color_value(0), self.color_value(1), self.color_value(2));
@@ -1441,9 +1574,11 @@ impl SettingsWindow {
             scale *= 0.92;
         };
         let mut y = plate.top() + pad.y;
-        let name_h = paint_outlined(&painter, Pos2::new(plate.left() + pad.x, y), name, name_font, name_c, outline_c, wrap_w);
+        let (c, sh) = (self.d.overlay_center, self.d.overlay_shadow);
+        let x = plate.left() + pad.x;
+        let name_h = paint_outlined(&painter, Pos2::new(x, y), name, name_font, name_c, outline_c, wrap_w, c, sh);
         y += name_h + 2.0;
-        paint_outlined(&painter, Pos2::new(plate.left() + pad.x, y), line, text_font, text_c, outline_c, wrap_w);
+        paint_outlined(&painter, Pos2::new(x, y), line, text_font, text_c, outline_c, wrap_w, c, sh);
     }
 }
 
@@ -1570,9 +1705,15 @@ fn paint_outlined(
     color: Color32,
     outline: Color32,
     wrap_w: f32,
+    center: bool,
+    shadow: bool,
 ) -> f32 {
     let main = painter.layout(text.to_string(), font.clone(), color, wrap_w);
     let out = painter.layout(text.to_string(), font.clone(), outline, wrap_w);
+    let pos = if center { Pos2::new(pos.x + (wrap_w - main.size().x) / 2.0, pos.y) } else { pos };
+    if shadow {
+        painter.galley(pos + Vec2::new(2.0, 2.0), out.clone(), Color32::from_black_alpha(153));
+    }
     let r = (font.size / 18.0).clamp(1.0, 3.0);
     let d = r * 0.7;
     for (dx, dy) in [(r, 0.0), (-r, 0.0), (0.0, r), (0.0, -r), (d, d), (-d, d), (d, -d), (-d, -d)] {

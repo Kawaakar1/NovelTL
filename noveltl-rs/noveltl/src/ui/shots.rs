@@ -183,6 +183,8 @@ enum Stage {
     SettingsSection(usize),
     /// снимок «Персонализации» со своей темой
     SettingsCustom,
+    /// раздел «Плашка» со стилем «Как в игре»
+    SettingsPlateGame,
     SettingsLocalAi,
     SettingsClose,
     GlossaryOpen,
@@ -524,7 +526,23 @@ impl Shots {
                 // тема применяется через предпросмотр — даём время на перерисовку
                 if waited > Duration::from_millis(1200) {
                     if let Some(w) = settings.as_ref() {
-                        self.shot_window(w.window_title(), "17_settings_theme_custom.png", Stage::SettingsClose);
+                        self.shot_window(w.window_title(), "17_settings_theme_custom.png", Stage::SettingsPlateGame);
+                    } else {
+                        self.go(Stage::SettingsClose);
+                    }
+                }
+            }
+            Stage::SettingsPlateGame => {
+                if !self.fronted {
+                    if let Some(w) = settings.as_mut() {
+                        w.select_section_for_shots(2);
+                        w.apply_game_preset_for_shots();
+                    }
+                    self.fronted = true;
+                }
+                if waited > Duration::from_millis(1200) {
+                    if let Some(w) = settings.as_ref() {
+                        self.shot_window(w.window_title(), "12b_settings_plate_game.png", Stage::SettingsClose);
                     } else {
                         self.go(Stage::SettingsClose);
                     }

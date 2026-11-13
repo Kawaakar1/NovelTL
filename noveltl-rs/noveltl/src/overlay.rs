@@ -31,7 +31,7 @@ use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextLayout, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_METRICS, DWRITE_WORD_WRAPPING_WRAP,
+    DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -113,7 +113,11 @@ struct State {
     frac: Frac,
     style: Style,
     name: String,
+    /// цвет имени персонажа из глоссария (рамка и имя)
+    name_color: Option<u32>,
     text: String,
+    /// начало анимации появления реплики (None — не идёт)
+    anim: Option<std::time::Instant>,
     /// второй перевод (мелко под основным)
     alt: String,
     /// исходная реплика (рисуется мелко, если включено в стиле)
@@ -245,7 +249,9 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 frac: Frac::default(),
                 style: Style::default(),
                 name: String::new(),
+                name_color: None,
                 text: String::new(),
+                anim: None,
                 alt: String::new(),
                 orig: String::new(),
                 icon_font,
@@ -283,6 +289,10 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if with_state(|st| st.drain()) == Some(true) {
                 let _ = DestroyWindow(hwnd);
             }
+            LRESULT(0)
+        }
+        WM_TIMER if wp.0 == 2 => {
+            with_state(|st| st.anim_tick());
             LRESULT(0)
         }
         WM_TIMER => {
@@ -420,8 +430,10 @@ impl State {
                         self.frac = f;
                     }
                 }
-                Cmd::Line { name, text, alt, orig } => {
+                Cmd::Line { name, text, alt, orig, name_color } => {
+                    self.start_anim(&text);
                     self.name = name;
+                    self.name_color = name_color;
                     self.text = text;
                     self.alt = alt;
                     self.orig = orig;
@@ -448,7 +460,12 @@ impl State {
                     self.update_click_through();
                 }
                 Cmd::UserHidden(h) => self.user_hidden = h,
-                Cmd::Style(s) => self.style = s,
+                Cmd::Style(s) => {
+                    self.style = s;
+                    if !self.style.fade && !self.style.typewriter {
+                        self.anim = None;
+                    }
+                }
                 Cmd::ForceActive(on) => self.force_active = on,
                 Cmd::ExcludeFromCapture(on) => unsafe {
                     let _ = SetWindowDisplayAffinity(self.hwnd, if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE });
@@ -462,6 +479,42 @@ impl State {
             self.sync();
         }
         false
+    }
+
+    /// Новая реплика: запускает появление (в настройке и на снимках анимаций нет).
+    fn start_anim(&mut self, new_text: &str) {
+        let on = (self.style.fade || self.style.typewriter) && !self.edit && crate::winutil::test_area().is_none();
+        if on && !new_text.is_empty() && new_text != self.text {
+            self.anim = Some(std::time::Instant::now());
+            unsafe {
+                SetTimer(self.hwnd, 2, 16, None);
+            }
+        } else {
+            self.anim = None;
+        }
+    }
+
+    /// Секунд с начала анимации, пока она идёт.
+    fn anim_secs(&self) -> Option<f32> {
+        let el = self.anim?.elapsed().as_secs_f32();
+        let mut total = if self.style.fade { 0.18 } else { 0.0 };
+        if self.style.typewriter {
+            total = f32::max(total, self.text.chars().count() as f32 / 60.0);
+        }
+        (el < total).then_some(el)
+    }
+
+    /// Кадр анимации; по окончании таймер снимается и плашка рисуется целиком.
+    fn anim_tick(&mut self) {
+        if self.anim_secs().is_none() {
+            self.anim = None;
+            unsafe {
+                let _ = KillTimer(self.hwnd, 2);
+            }
+        }
+        if self.visible {
+            self.render(false);
+        }
     }
 
     /// Можно двигать и растягивать мышью.
@@ -626,6 +679,8 @@ impl State {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&self.name, &self.text, &self.alt, &self.orig, &self.note, self.edit, &self.style.font_family).hash(&mut h);
+        (self.name_color, self.style.radius, self.style.border, self.style.center, self.style.shadow).hash(&mut h);
+        self.anim_secs().map(|e| (e * 100.0) as u32).hash(&mut h);
         (self.style.show_original, self.style.toolbar_dim).hash(&mut h);
         (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
         dpi_scale(self.hwnd).to_bits().hash(&mut h);
@@ -706,7 +761,20 @@ impl State {
             let s = &self.style;
             let full = D2D_RECT_F { left: 1.0, top: 1.0, right: w as f32 - 1.0, bottom: h as f32 - 1.0 };
             let bg = rt.CreateSolidColorBrush(&color(s.bg_color, s.bg_opacity.min(100) as f32 / 100.0), None)?;
-            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: 12.0, radiusY: 12.0 }, &bg);
+            let rad = s.radius as f32;
+            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: rad, radiusY: rad }, &bg);
+            let name_rgb = self.name_color.unwrap_or(s.name_color);
+            if s.border {
+                let edge = rt.CreateSolidColorBrush(&color(name_rgb, 1.0), None)?;
+                rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: rad, radiusY: rad }, &edge, 2.0, &self.round);
+            }
+            // появление реплики: общая прозрачность и (для эффекта печати) число видимых символов
+            let el = self.anim_secs();
+            let alpha = match el {
+                Some(e) if s.fade => (e / 0.18).min(1.0),
+                _ => 1.0,
+            };
+            let typed = el.filter(|_| s.typewriter).map(|e| (e * 60.0) as usize);
 
             let (name, text) = if self.edit && self.text.is_empty() {
                 (t("Акари"), t("«Так будет выглядеть перевод. Перетащите плашку на окно диалога игры и растяните по размеру»."))
@@ -724,6 +792,11 @@ impl State {
                     let name_size = (size * 0.8).max(MIN_FONT);
                     let name_layout = if name.is_empty() { None } else { Some(self.layout(name, name_size, true, inner_w, inner_h)?) };
                     let body = self.layout(text, size, false, inner_w, inner_h)?;
+                    // эффект печати: (видимых, всего) UTF-16-символов
+                    let vis = typed.map(|n| {
+                        let v: usize = text.chars().take(n).map(char::len_utf16).sum();
+                        (v as u32, text.encode_utf16().count() as u32)
+                    });
                     // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
                     let alt_size = (size * 0.7).max(MIN_FONT);
                     let alt = if self.alt.is_empty() || self.edit { None } else { Some(self.layout(&self.alt, alt_size, false, inner_w, inner_h)?) };
@@ -735,17 +808,22 @@ impl State {
                     let alt_h = match &alt { Some(l) => metrics(l)?.height + 4.0, None => 0.0 };
                     let orig_h = match &orig { Some(l) => metrics(l)?.height + 4.0, None => 0.0 };
                     if name_h + body_h + alt_h + orig_h <= inner_h || size <= MIN_FONT {
+                        if s.center {
+                            for l in name_layout.iter().chain(Some(&body)).chain(alt.iter()).chain(orig.iter()) {
+                                l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+                            }
+                        }
                         let mut y = top;
                         if let Some(l) = &name_layout {
-                            self.outlined(rt, l, left, y, s.name_color, name_size)?;
+                            self.outlined(rt, l, left, y, name_rgb, name_size, alpha, None)?;
                             y += name_h;
                         }
-                        self.outlined(rt, &body, left, y, s.text_color, size)?;
+                        self.outlined(rt, &body, left, y, s.text_color, size, alpha, vis)?;
                         if let Some(l) = &alt {
-                            self.outlined(rt, l, left, y + body_h + 4.0, 0xC9CBE0, alt_size)?;
+                            self.outlined(rt, l, left, y + body_h + 4.0, 0xC9CBE0, alt_size, alpha, None)?;
                         }
                         if let Some(l) = &orig {
-                            self.outlined(rt, l, left, y + body_h + alt_h + 4.0, 0xA2A4B8, orig_size)?;
+                            self.outlined(rt, l, left, y + body_h + alt_h + 4.0, 0xA2A4B8, orig_size, alpha, None)?;
                         }
                         break;
                     }
@@ -761,7 +839,7 @@ impl State {
                 } else {
                     (left + inner_w - m.width, h as f32 - m.height - 6.0)
                 };
-                self.outlined(rt, &l, x, y, 0xC9CBE0, small)?;
+                self.outlined(rt, &l, x, y, 0xC9CBE0, small, 1.0, None)?;
             }
             if self.toolbar_shown() {
                 self.draw_toolbar(rt, w)?;
@@ -769,7 +847,7 @@ impl State {
             if self.movable() {
                 // рамка режима перемещения — белая, в тон чёрно-белому интерфейсу
                 let accent = rt.CreateSolidColorBrush(&color(0xFFFFFF, 0.9), None)?;
-                rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: 12.0, radiusY: 12.0 }, &accent, 2.0, &self.dashes);
+                rt.DrawRoundedRectangle(&D2D1_ROUNDED_RECT { rect: full, radiusX: rad, radiusY: rad }, &accent, 2.0, &self.dashes);
                 let (l, t, r, b) = (full.left + 3.0, full.top + 3.0, full.right - 3.0, full.bottom - 3.0);
                 let (cx, cy) = ((l + r) / 2.0, (t + b) / 2.0);
                 for (x, y) in [(l, t), (cx, t), (r, t), (l, cy), (r, cy), (l, b), (cx, b), (r, b)] {
@@ -919,10 +997,21 @@ impl State {
     }
 
     /// Текст с контуром: контур — тот же текст, нарисованный со сдвигами по кругу.
-    fn outlined(&self, rt: &ID2D1RenderTarget, layout: &IDWriteTextLayout, x: f32, y: f32, rgb: u32, size: f32) -> windows::core::Result<()> {
+    /// `alpha` — прозрачность текста; `vis` — (видимых, всего) UTF-16-символов для эффекта печати.
+    #[allow(clippy::too_many_arguments)]
+    fn outlined(&self, rt: &ID2D1RenderTarget, layout: &IDWriteTextLayout, x: f32, y: f32, rgb: u32, size: f32, alpha: f32, vis: Option<(u32, u32)>) -> windows::core::Result<()> {
         unsafe {
-            let outline = rt.CreateSolidColorBrush(&color(self.style.outline_color, 1.0), None)?;
-            let fill = rt.CreateSolidColorBrush(&color(rgb, 1.0), None)?;
+            let outline = rt.CreateSolidColorBrush(&color(self.style.outline_color, alpha), None)?;
+            let fill = rt.CreateSolidColorBrush(&color(rgb, alpha), None)?;
+            if let Some((v, total)) = vis {
+                // непечатанная часть — прозрачной кистью (она заменяет кисть при отрисовке)
+                let hide = rt.CreateSolidColorBrush(&color(0, 0.0), None)?;
+                layout.SetDrawingEffect(&hide, DWRITE_TEXT_RANGE { startPosition: v, length: total - v })?;
+            }
+            if self.style.shadow {
+                let sh = rt.CreateSolidColorBrush(&color(0, 0.6 * alpha), None)?;
+                rt.DrawTextLayout(D2D_POINT_2F { x: x + 2.0, y: y + 2.0 }, layout, &sh, D2D1_DRAW_TEXT_OPTIONS_NONE);
+            }
             let r = (size / 13.0).max(1.2);
             for ring in [r, r * 0.55] {
                 for i in 0..16 {

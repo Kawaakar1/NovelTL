@@ -29,6 +29,7 @@ fn proxy_error() -> &'static str {
 fn auth_error() -> &'static str {
     t("Прокси не принял логин или пароль")
 }
+const USER_AGENT: &str = concat!("NovelTL/", env!("CARGO_PKG_VERSION"));
 const TIMEOUT: Duration = Duration::from_secs(12);
 
 fn scheme_map(s: &str) -> Option<&'static str> {
@@ -285,7 +286,7 @@ pub fn make_http(
     proxy_user: &str,
     proxy_pass: &str,
 ) -> Result<ReqwestHttp, String> {
-    let mut b = reqwest::blocking::Client::builder().timeout(TIMEOUT);
+    let mut b = reqwest::blocking::Client::builder().timeout(TIMEOUT).user_agent(USER_AGENT);
     let mut uses_proxy = false;
     if mode == NET_DIRECT {
         b = b.no_proxy();
@@ -312,6 +313,7 @@ pub fn make_http(
 /// Клиент для локального ИИ (Ollama / LM Studio): без прокси, без привязки к интерфейсу, таймаут 120 с.
 pub fn make_local_http() -> Arc<dyn Http> {
     let client = reqwest::blocking::Client::builder()
+        .user_agent(USER_AGENT)
         .no_proxy()
         .timeout(Duration::from_secs(120))
         .build()

@@ -11,10 +11,10 @@ use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_INFO, NIIF_INFO, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
+    Shell_NotifyIconW, NIF_ICON, NIF_INFO, NIF_TIP, NIIF_INFO, NIM_DELETE, NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+    CreateIcon, DestroyIcon, EnumWindows, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
 };
 
 use crate::ui::{lock_ctl, Request, Shared};
@@ -147,6 +147,82 @@ pub fn balloon(title: &str, text: &str) {
             return;
         }
     }
+}
+
+/// Значок трея по состоянию: 1 — жёлтая точка, 2 — зелёная, 0 — без точки. Меняется только при смене состояния.
+pub fn set_state(dot: u8, tip: &str) {
+    static LAST: std::sync::Mutex<Option<(u8, String)>> = std::sync::Mutex::new(None);
+    static ICON: AtomicIsize = AtomicIsize::new(0);
+    let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_ref().is_some_and(|(d, t)| *d == dot && t == tip) {
+        return;
+    }
+    let (hwnd, uid) = (TRAY_HWND.load(Ordering::SeqCst), TRAY_UID.load(Ordering::SeqCst));
+    if hwnd == 0 || uid == 0 {
+        // значок ещё не найден (его номер узнаётся при первом всплывающем сообщении) — пробуем найти
+        let h = if hwnd == 0 { find_tray_window() } else { hwnd };
+        TRAY_HWND.store(h, Ordering::SeqCst);
+        if h == 0 || !(1..=8u32).any(|u| {
+            let ok = apply_icon(h, u, dot, tip, &ICON);
+            if ok {
+                TRAY_UID.store(u, Ordering::SeqCst);
+            }
+            ok
+        }) {
+            return;
+        }
+    } else if !apply_icon(hwnd, uid, dot, tip, &ICON) {
+        return;
+    }
+    *last = Some((dot, tip.to_string()));
+}
+
+fn apply_icon(hwnd: isize, uid: u32, dot: u8, tip: &str, prev: &AtomicIsize) -> bool {
+    static BASE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let mut rgba = BASE.get_or_init(|| crate::ui::theme::icon_rgba(32)).clone();
+    if dot > 0 {
+        let col: [u8; 3] = if dot == 2 { [0x3C, 0xC8, 0x6E] } else { [0xF5, 0xB7, 0x2D] };
+        for y in 0..32i32 {
+            for x in 0..32i32 {
+                let d2 = (x - 25) * (x - 25) + (y - 25) * (y - 25);
+                if d2 <= 36 {
+                    let i = ((y * 32 + x) * 4) as usize;
+                    let c = if d2 > 22 { [0xFF, 0xFF, 0xFF] } else { col };
+                    rgba[i..i + 4].copy_from_slice(&[c[0], c[1], c[2], 0xFF]);
+                }
+            }
+        }
+    }
+    // CreateIcon ждёт BGRA
+    let mut bgra = rgba;
+    for p in bgra.chunks_exact_mut(4) {
+        p.swap(0, 2);
+    }
+    let mask = [0u8; 32 * 4];
+    let Ok(icon) = (unsafe { CreateIcon(None, 32, 32, 1, 32, mask.as_ptr(), bgra.as_ptr()) }) else { return false };
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: std::mem::size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: HWND(hwnd as _),
+        uID: uid,
+        uFlags: NIF_ICON | NIF_TIP,
+        hIcon: icon,
+        ..Default::default()
+    };
+    fill_wide(&mut nid.szTip, tip);
+    let ok = unsafe { Shell_NotifyIconW(NIM_MODIFY, &nid).as_bool() };
+    if ok {
+        let old = prev.swap(icon.0 as isize, Ordering::SeqCst);
+        if old != 0 {
+            unsafe {
+                let _ = DestroyIcon(windows::Win32::UI::WindowsAndMessaging::HICON(old as _));
+            }
+        }
+    } else {
+        unsafe {
+            let _ = DestroyIcon(icon);
+        }
+    }
+    ok
 }
 
 /// Убрать значок из трея (при аварийном выходе мимо обычного закрытия окна).

@@ -37,6 +37,8 @@ struct State {
     frac: Frac,
     style: Style,
     name: String,
+    /// цвет имени персонажа из глоссария
+    name_color: Option<u32>,
     text: String,
     /// второй перевод (мелко под основным)
     alt: String,
@@ -71,8 +73,9 @@ impl State {
                     self.frac = f;
                 }
             }
-            Cmd::Line { name, text, alt, orig } => {
+            Cmd::Line { name, text, alt, orig, name_color } => {
                 self.name = name;
+                self.name_color = name_color;
                 self.text = text;
                 self.alt = alt;
                 self.orig = orig;
@@ -131,6 +134,7 @@ impl Overlay {
             frac: Frac::default(),
             style: Style::default(),
             name: String::new(),
+            name_color: None,
             text: String::new(),
             alt: String::new(),
             orig: String::new(),
@@ -369,7 +373,12 @@ fn edge_cursor(d: ResizeDirection) -> CursorIcon {
 fn draw_plate(p: &Painter, rect: Rect, s: &State) {
     let st = &s.style;
     let full = rect.shrink(1.0);
-    p.rect_filled(full, CornerRadius::same(12), rgba(st.bg_color, st.bg_opacity.min(100) as f32 / 100.0));
+    let rad = CornerRadius::same(st.radius.min(24) as u8);
+    p.rect_filled(full, rad, rgba(st.bg_color, st.bg_opacity.min(100) as f32 / 100.0));
+    let name_rgb = s.name_color.unwrap_or(st.name_color);
+    if st.border {
+        p.rect_stroke(full.shrink(1.0), rad, Stroke::new(2.0_f32, rgba(name_rgb, 1.0)), StrokeKind::Inside);
+    }
 
     let (name, text) = if s.edit && s.text.is_empty() {
         (t("Акари"), t("«Так будет выглядеть перевод. Перетащите плашку на окно диалога игры и растяните по размеру»."))
@@ -386,7 +395,7 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
         loop {
             let name_size = (size * 0.8).max(MIN_FONT);
             let font = |sz: f32| FontId::new(sz, FontFamily::Proportional);
-            let name_g = (!name.is_empty()).then(|| p.layout(name.to_string(), font(name_size), rgba(st.name_color, 1.0), inner_w));
+            let name_g = (!name.is_empty()).then(|| p.layout(name.to_string(), font(name_size), rgba(name_rgb, 1.0), inner_w));
             let body_g = p.layout(text.to_string(), font(size), rgba(st.text_color, 1.0), inner_w);
             // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
             let alt_size = (size * 0.7).max(MIN_FONT);
@@ -400,17 +409,19 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
             let orig_h = orig_g.as_ref().map_or(0.0, |g| g.size().y + 4.0);
             if name_h + body_g.size().y + alt_h + orig_h <= inner_h || size <= MIN_FONT {
                 let mut y = top;
+                // по центру: сдвиг по ширине самой строки
+                let x = |g: &Arc<egui::Galley>| if st.center { left + (inner_w - g.size().x) / 2.0 } else { left };
                 if let Some(g) = name_g {
-                    outlined(p, pos2(left, y), g, st.outline_color, name_size);
+                    outlined(p, pos2(x(&g), y), g, st, name_size);
                     y += name_h;
                 }
                 let body_h = body_g.size().y;
-                outlined(p, pos2(left, y), body_g, st.outline_color, size);
+                outlined(p, pos2(x(&body_g), y), body_g, st, size);
                 if let Some(g) = alt_g {
-                    outlined(p, pos2(left, y + body_h + 4.0), g, st.outline_color, alt_size);
+                    outlined(p, pos2(x(&g), y + body_h + 4.0), g, st, alt_size);
                 }
                 if let Some(g) = orig_g {
-                    outlined(p, pos2(left, y + body_h + alt_h + 4.0), g, st.outline_color, orig_size);
+                    outlined(p, pos2(x(&g), y + body_h + alt_h + 4.0), g, st, orig_size);
                 }
                 break;
             }
@@ -425,7 +436,7 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
         } else {
             pos2(left + inner_w - g.size().x, rect.max.y - g.size().y - 6.0)
         };
-        outlined(p, pos, g, st.outline_color, small);
+        outlined(p, pos, g, st, small);
     }
     if s.movable() {
         // рамка режима перемещения — белая пунктирная, с ручками по углам и сторонам
@@ -451,9 +462,12 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
 }
 
 /// Текст с контуром: контур — тот же текст, нарисованный со сдвигами по кругу.
-fn outlined(p: &Painter, pos: Pos2, galley: Arc<egui::Galley>, outline: u32, size: f32) {
+fn outlined(p: &Painter, pos: Pos2, galley: Arc<egui::Galley>, st: &Style, size: f32) {
     let r = (size / 13.0).max(1.2);
-    let oc = rgba(outline, 1.0);
+    let oc = rgba(st.outline_color, 1.0);
+    if st.shadow {
+        p.galley_with_override_text_color(pos + vec2(2.0, 2.0), galley.clone(), rgba(0, 0.6));
+    }
     for ring in [r, r * 0.55] {
         for i in 0..12 {
             let a = i as f32 / 12.0 * std::f32::consts::TAU;

@@ -28,6 +28,8 @@ pub fn find_own_window(title: &str) -> isize {
     }
 }
 
+pub fn set_state(_dot: u8, _tip: &str) {}
+
 pub fn balloon(_title: &str, _text: &str) {}
 
 pub fn remove_icon() {}
