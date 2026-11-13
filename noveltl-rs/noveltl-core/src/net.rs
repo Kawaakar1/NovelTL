@@ -262,6 +262,20 @@ impl Http for ReqwestHttp {
     fn get(&self, url: &str, query: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
         self.finish(self.client.get(url).query(query).send())
     }
+
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        let resp = self
+            .client
+            .get(url)
+            .timeout(Duration::from_secs(600))
+            .send()
+            .map_err(|e| map_error(&e, self.uses_proxy))?;
+        let status = resp.status();
+        if status.as_u16() != 200 {
+            return Err(HttpError::Other(format!("HTTP {status}")));
+        }
+        resp.bytes().map(|b| b.to_vec()).map_err(|e| map_error(&e, self.uses_proxy))
+    }
 }
 
 pub fn make_http(
@@ -342,6 +356,15 @@ pub fn check_google(http: &dyn Http) -> (bool, String) {
 
 #[cfg(test)]
 mod tests {
+    /// Настоящее скачивание словаря (сеть, ~22 МБ): cargo test -p noveltl-core real_download -- --ignored
+    #[test]
+    #[ignore]
+    fn real_download() {
+        let http = make_http(NET_DIRECT, "", "", "", "").unwrap();
+        let bytes = http.get_bytes(crate::dict::JMDICT_URL).unwrap();
+        assert!(bytes.len() > 10_000_000 && bytes.starts_with(&[0x1f, 0x8b]), "не gzip: {} байт", bytes.len());
+    }
+
     use super::*;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};

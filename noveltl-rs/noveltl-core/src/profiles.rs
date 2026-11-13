@@ -319,6 +319,8 @@ pub struct AppSettings {
     pub local_ai_model: String,
     /// Второй перевод мелко под основным: "" (нет), google, deepl, microsoft, local_ai.
     pub second_engine: String,
+    /// Режим для изучающих японский: фуригана и словарь в истории диалога.
+    pub learn_mode: bool,
     /// Язык интерфейса; None — по языку Windows.
     pub ui_lang: Option<crate::i18n::UiLang>,
 }
@@ -356,6 +358,7 @@ impl Default for AppSettings {
             local_ai_url: "http://localhost:11434".into(),
             local_ai_model: String::new(),
             second_engine: String::new(),
+            learn_mode: false,
             ui_lang: None,
         }
     }

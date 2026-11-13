@@ -175,9 +175,12 @@ enum Act {
     Save,
     Cancel,
     Check,
+    DownloadDict,
 }
 
 pub struct SettingsWindow {
+    /// состояние словаря: (есть, идёт скачивание, текст) — обновляется перед отрисовкой
+    dict_info: (bool, bool, String),
     id: ViewportId,
     icon: Arc<egui::IconData>,
     pos: Option<[f32; 2]>,
@@ -261,6 +264,7 @@ impl SettingsWindow {
         let ppp = shared.ctx.pixels_per_point().max(0.5);
         let limit = (work_area_height_px() / ppp - 60.0).max(420.0);
         SettingsWindow {
+            dict_info: (false, false, String::new()),
             id: ViewportId::from_hash_of("noveltl_settings"),
             icon: Arc::new(theme::icon_data(64)),
             pos,
@@ -400,6 +404,10 @@ impl SettingsWindow {
         if self.sent_h == 0.0 {
             self.sent_h = h0;
         }
+        {
+            let c = lock_ctl(&shared.controller);
+            self.dict_info = (c.dict.is_some(), c.dict_busy, c.dict_status.clone());
+        }
         let mut acts: Vec<Act> = Vec::new();
         let id = self.id;
         ctx.show_viewport_immediate(id, builder, |ctx, _class| {
@@ -410,6 +418,7 @@ impl SettingsWindow {
                 Act::Save => self.save(shared),
                 Act::Cancel => self.closed = true,
                 Act::Check => self.start_check(ctx),
+                Act::DownloadDict => lock_ctl(&shared.controller).download_dictionary(),
             }
         }
         self.push_preview(ctx, shared);
@@ -562,6 +571,7 @@ impl SettingsWindow {
         new.hotkey_retranslate = retr;
         new.engine_mode = self.d.engine_mode.clone();
         new.second_engine = self.d.second_engine.clone();
+        new.learn_mode = self.d.learn_mode;
         new.target_lang = self.d.target_lang;
         new.default_source_lang = self.d.default_source_lang;
         self.saved = true;
@@ -797,7 +807,7 @@ impl SettingsWindow {
             1 => self.draw_translate(ui, label_w, gap, ctl_w),
             2 => self.draw_network(ui, acts, label_w, gap, ctl_w),
             3 => self.draw_hotkeys(ui, label_w, gap, ctl_w),
-            _ => self.draw_general(ui),
+            _ => self.draw_general(ui, acts),
         }
     }
 
@@ -1319,7 +1329,7 @@ impl SettingsWindow {
         wrap(ui, theme::small(t("Щёлкните по полю и нажмите новое сочетание. Работают в любой программе.")));
     }
 
-    fn draw_general(&mut self, ui: &mut Ui) {
+    fn draw_general(&mut self, ui: &mut Ui, acts: &mut Vec<Act>) {
         ui.horizontal(|ui| {
             // подпись на двух языках — найти её можно, даже если интерфейс на незнакомом языке
             let label = if t("Язык интерфейса") == "Interface language" {
@@ -1341,6 +1351,29 @@ impl SettingsWindow {
                 });
         });
         wrap(ui, theme::small(t("Язык меняется после нажатия «Сохранить».")));
+        hline(ui);
+        ui.label(theme::h2(t("Изучение японского")));
+        ui.checkbox(&mut self.d.learn_mode, theme::body(t("Фуригана и словарь в истории диалога")));
+        wrap(
+            ui,
+            theme::small(t(
+                "Над иероглифами в истории — чтение каной, при наведении на слово — его значения, правая кнопка мыши — «Добавить в Anki».",
+            )),
+        );
+        let (has, busy, status) = self.dict_info.clone();
+        if !has && !busy && button(ui, t("Скачать словарь JMdict (~25 МБ)"), BtnKind::Normal, true, None).clicked() {
+            acts.push(Act::DownloadDict);
+        }
+        let line = if !status.is_empty() {
+            status
+        } else if has {
+            t("Словарь установлен.").to_string()
+        } else {
+            t("Словарь не скачан.").to_string()
+        };
+        wrap(ui, theme::small(line));
+        wrap(ui, theme::small(noveltl_core::dict::ATTRIBUTION));
+        wrap(ui, theme::small(t("Для кнопки «Добавить в Anki» нужна программа Anki с дополнением AnkiConnect.")));
         hline(ui);
         ui.checkbox(&mut self.autostart, theme::body(t("Запускать вместе с Windows")));
         hline(ui);

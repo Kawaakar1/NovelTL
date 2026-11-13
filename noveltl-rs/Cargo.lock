@@ -2147,6 +2147,7 @@ name = "noveltl-core"
 version = "0.4.4"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "regex",
  "reqwest",
  "rusqlite",

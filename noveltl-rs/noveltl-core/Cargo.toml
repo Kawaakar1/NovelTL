@@ -11,6 +11,8 @@ serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 url = "2"
 base64 = "0.22"
+# распаковка скачанного словаря JMdict (.gz)
+flate2 = "1"
 
 # Windows: системный TLS (SChannel). Linux: rustls — не нужна системная OpenSSL, бинарник переносимее.
 [target.'cfg(windows)'.dependencies]

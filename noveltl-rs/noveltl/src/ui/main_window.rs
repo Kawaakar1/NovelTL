@@ -1,11 +1,14 @@
 //! Главное окно (перенос `noveltl/ui/main_window.py`): список игр слева, страница игры справа.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
     self, text::LayoutJob, Align, Color32, ColorImage, CornerRadius, FontId, Frame, Layout, Margin, RichText,
     Sense, TextureHandle, TextureOptions, Vec2,
 };
+use noveltl_core::dict::{Dictionary, Segment};
 use noveltl_core::i18n::{t, tf};
 use noveltl_core::langdetect::Lang;
 use noveltl_core::pipeline::LineResult;
@@ -41,6 +44,8 @@ struct Snap {
     /// язык перевода со строчной буквы
     target_title: String,
     nickname: String,
+    /// словарь для фуриганы (только при включённом режиме изучения)
+    learn: Option<Arc<Mutex<Dictionary>>>,
 }
 
 enum Action {
@@ -52,6 +57,86 @@ enum Action {
     Settings,
     SetLang(String, Lang),
     OpenLog(String),
+    Anki(String, String),
+}
+
+fn is_japanese(c: char) -> bool {
+    matches!(c, '\u{3041}'..='\u{30FF}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{FF66}'..='\u{FF9F}')
+}
+
+/// Оригинал реплики с фуриганой; наведение — значения из словаря, правая кнопка — в Anki.
+fn furigana(
+    ui: &mut egui::Ui,
+    dict: &Arc<Mutex<Dictionary>>,
+    cache: &mut HashMap<String, Vec<Segment>>,
+    res: &LineResult,
+    actions: &mut Vec<Action>,
+) {
+    let p = pal();
+    let prefer_ru = noveltl_core::i18n::lang() == noveltl_core::i18n::UiLang::Ru;
+    let text = res.src_text.as_str();
+    if cache.len() > 200 {
+        cache.clear();
+    }
+    let segs = cache
+        .entry(text.to_string())
+        .or_insert_with(|| dict.lock().unwrap_or_else(|e| e.into_inner()).segments(text))
+        .clone();
+    let lookup = |pos: usize| dict.lock().unwrap_or_else(|e| e.into_inner()).lookup_at(text, pos, prefer_ru);
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(0.0, 0.0);
+        for seg in &segs {
+            let resp = ui
+                .vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let rt = match &seg.reading {
+                        Some(r) => RichText::new(r.as_str()).size(10.5).color(p.dim),
+                        None => RichText::new(" ").size(10.5),
+                    };
+                    ui.add(egui::Label::new(rt).selectable(false));
+                    ui.add(egui::Label::new(theme::jp(seg.text.as_str())).selectable(false).sense(Sense::click()))
+                })
+                .inner;
+            if !seg.text.chars().any(is_japanese) {
+                continue;
+            }
+            resp.on_hover_ui(|ui| match lookup(seg.start) {
+                Some(m) => {
+                    ui.label(theme::h2(m.form.as_str()));
+                    if let Some(r) = m.entry.readings.first().filter(|r| **r != m.form) {
+                        ui.label(theme::body(r.as_str()));
+                    }
+                    for g in m.entry.glosses.iter().take(5) {
+                        ui.label(theme::body(format!("• {g}")));
+                    }
+                    ui.label(theme::small(t("Правая кнопка мыши — добавить в Anki")));
+                }
+                None => {
+                    ui.label(theme::body(t("Нет в словаре")));
+                }
+            })
+            .context_menu(|ui| {
+                if let Some(m) = lookup(seg.start) {
+                    if ui.button(t("Добавить в Anki")).clicked() {
+                        let mut front = m.form.clone();
+                        if let Some(r) = m.entry.readings.first().filter(|r| **r != m.form) {
+                            front.push_str(&format!("【{r}】"));
+                        }
+                        let back = format!(
+                            "{}<br><br>{}<br>{}",
+                            m.entry.glosses.iter().take(5).cloned().collect::<Vec<_>>().join("<br>"),
+                            text,
+                            res.text
+                        );
+                        actions.push(Action::Anki(front, back));
+                        ui.close_menu();
+                    }
+                } else {
+                    ui.label(theme::body(t("Нет в словаре")));
+                }
+            });
+        }
+    });
 }
 
 /// 12345 → "12 345".
@@ -79,6 +164,8 @@ pub struct MainWindow {
     messages: Vec<(String, String)>,
     logo: Option<TextureHandle>,
     logo_big: Option<TextureHandle>,
+    /// сегменты фуриганы по тексту реплики
+    seg_cache: HashMap<String, Vec<Segment>>,
 }
 
 fn engine_title(engine: &str) -> String {
@@ -103,6 +190,7 @@ impl MainWindow {
             messages: Vec::new(),
             logo: None,
             logo_big: None,
+            seg_cache: HashMap::new(),
         }
     }
 
@@ -136,6 +224,7 @@ impl MainWindow {
             translator: c.translator_status(),
             target_title: c.settings.target_lang.title_in_text(),
             nickname: c.settings.nickname.clone(),
+            learn: if c.settings.learn_mode { c.dict.clone() } else { None },
         }
     }
 
@@ -366,7 +455,7 @@ impl MainWindow {
                 None => self.empty_page(ui, &mut actions),
                 Some(profile) => {
                     let s = snap.session.as_ref().filter(|s| s.profile.id == profile.id);
-                    Self::game_page(ui, profile, s, &snap, &mut actions);
+                    Self::game_page(ui, profile, s, &snap, &mut self.seg_cache, &mut actions);
                 }
             });
 
@@ -410,7 +499,14 @@ impl MainWindow {
         });
     }
 
-    fn game_page(ui: &mut egui::Ui, profile: &Profile, s: Option<&SessSnap>, snap: &Snap, actions: &mut Vec<Action>) {
+    fn game_page(
+        ui: &mut egui::Ui,
+        profile: &Profile,
+        s: Option<&SessSnap>,
+        snap: &Snap,
+        cache: &mut HashMap<String, Vec<Segment>>,
+        actions: &mut Vec<Action>,
+    ) {
         let p = pal();
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 12.0);
         ui.label(theme::h1(profile.name.as_str()));
@@ -530,7 +626,14 @@ impl MainWindow {
                         format!("{}\u{3000}{}", res.src_name, res.src_text)
                     };
                     let dst = if res.name.is_empty() { res.text.clone() } else { format!("{}: {}", res.name, res.text) };
-                    ui.add(egui::Label::new(theme::jp(src)).wrap_mode(egui::TextWrapMode::Wrap));
+                    if let Some(dict) = &snap.learn {
+                        if !res.src_name.is_empty() {
+                            ui.add(egui::Label::new(theme::jp(res.src_name.as_str())).wrap_mode(egui::TextWrapMode::Wrap));
+                        }
+                        furigana(ui, dict, cache, res, actions);
+                    } else {
+                        ui.add(egui::Label::new(theme::jp(src)).wrap_mode(egui::TextWrapMode::Wrap));
+                    }
                     ui.add(egui::Label::new(theme::tr(dst)).wrap_mode(egui::TextWrapMode::Wrap));
                     if !res.alt.is_empty() {
                         ui.add(egui::Label::new(theme::small(res.alt.as_str())).wrap_mode(egui::TextWrapMode::Wrap));
@@ -608,6 +711,7 @@ impl MainWindow {
                     self.profiles_at = None;
                 }
                 Action::OpenLog(path) => winutil::reveal_in_explorer(&path),
+                Action::Anki(front, back) => lock_ctl(&shared.controller).add_to_anki(front, back),
                 Action::Glossary(id) => windows.open_glossary(id),
                 Action::AskDelete(id, name) => self.confirm_delete = Some((id, name)),
                 Action::Report => {

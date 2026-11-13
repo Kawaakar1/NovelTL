@@ -453,6 +453,24 @@ pub struct Controller {
     menu_requests: Vec<&'static str>,
     #[cfg(windows)]
     ocr: OcrState,
+    /// словарь JMdict для режима изучения японского (None — не скачан)
+    pub dict: Option<Arc<Mutex<noveltl_core::dict::Dictionary>>>,
+    /// состояние словаря для настроек: «скачиваю…», «готов: N статей», ошибка
+    pub dict_status: String,
+    pub dict_busy: bool,
+    learn_tx: Sender<LearnMsg>,
+    learn_rx: Receiver<LearnMsg>,
+}
+
+/// Сообщения фоновых задач режима изучения: скачивание словаря и Anki.
+enum LearnMsg {
+    DictStatus(String),
+    DictDone(Result<(noveltl_core::dict::Dictionary, usize), String>),
+    Anki(Result<(), String>),
+}
+
+fn dict_path() -> PathBuf {
+    sub_data_dir("dict").join("jmdict.sqlite")
 }
 
 /// Чтение текста с экрана (только Windows): поток OCR и где читать — окно игры и место плашки.
@@ -520,6 +538,7 @@ impl Controller {
             let (tx, rx) = channel();
             OcrState { worker: None, region: Arc::new(Mutex::new((0, OverlayFrac::default()))), tx, rx, waker: waker.clone() }
         };
+        let (learn_tx, learn_rx) = channel();
         let hotkeys = Hotkeys::start(hk_tx, waker);
         let mut c = Controller {
             settings,
@@ -553,6 +572,11 @@ impl Controller {
             menu_requests: Vec::new(),
             #[cfg(windows)]
             ocr,
+            dict: noveltl_core::dict::Dictionary::open(&dict_path()).ok().map(|d| Arc::new(Mutex::new(d))),
+            dict_status: String::new(),
+            dict_busy: false,
+            learn_tx,
+            learn_rx,
         };
         c.register_hotkeys();
         c
@@ -568,6 +592,23 @@ impl Controller {
         #[cfg(windows)]
         while let Ok(ev) = self.ocr.rx.try_recv() {
             self.on_hook_event(ev);
+        }
+        while let Ok(msg) = self.learn_rx.try_recv() {
+            match msg {
+                LearnMsg::DictStatus(s) => self.dict_status = s,
+                LearnMsg::DictDone(Ok((d, n))) => {
+                    self.dict = Some(Arc::new(Mutex::new(d)));
+                    self.dict_busy = false;
+                    self.dict_status = tf("Словарь готов: {} статей", &[&n]);
+                }
+                LearnMsg::DictDone(Err(e)) => {
+                    self.dict_busy = false;
+                    self.dict_status = tf("Не удалось скачать словарь: {}", &[&e]);
+                    self.notice(self.dict_status.clone());
+                }
+                LearnMsg::Anki(Ok(())) => self.notice(t("Карточка добавлена в Anki.")),
+                LearnMsg::Anki(Err(e)) => self.notice(e),
+            }
         }
         while let Ok(msg) = self.worker.rx.try_recv() {
             match msg {
@@ -603,6 +644,38 @@ impl Controller {
 
     pub fn take_notices(&mut self) -> Vec<String> {
         std::mem::take(&mut self.notices)
+    }
+
+    /// Скачать JMdict с сайта EDRDG и разобрать в базу (в фоне, через сеть из настроек).
+    pub fn download_dictionary(&mut self) {
+        if self.dict_busy {
+            return;
+        }
+        self.dict_busy = true;
+        self.dict_status = t("Скачиваю словарь…").to_string();
+        let (http, tx) = (self.http.clone(), self.learn_tx.clone());
+        let _ = std::thread::Builder::new().name("dict".into()).spawn(move || {
+            let res = (|| {
+                let bytes =
+                    http.get_bytes(noveltl_core::dict::JMDICT_URL).map_err(|e| format!("{e:?}"))?;
+                let gz = sub_data_dir("dict").join("JMdict.gz");
+                std::fs::write(&gz, bytes).map_err(|e| e.to_string())?;
+                let _ = tx.send(LearnMsg::DictStatus(t("Обрабатываю словарь…").to_string()));
+                let n = noveltl_core::dict::Dictionary::import_gz(&gz, &dict_path());
+                let _ = std::fs::remove_file(&gz);
+                let n = n?;
+                Ok((noveltl_core::dict::Dictionary::open(&dict_path())?, n))
+            })();
+            let _ = tx.send(LearnMsg::DictDone(res));
+        });
+    }
+
+    /// Карточка в Anki через AnkiConnect (в фоне; ответ — уведомлением).
+    pub fn add_to_anki(&mut self, front: String, back: String) {
+        let (http, tx) = (self.local_http.clone(), self.learn_tx.clone());
+        let _ = std::thread::Builder::new().name("anki".into()).spawn(move || {
+            let _ = tx.send(LearnMsg::Anki(noveltl_core::anki::add_note(http.as_ref(), &front, &back)));
+        });
     }
 
     pub fn take_menu_requests(&mut self) -> Vec<&'static str> {

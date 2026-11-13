@@ -30,6 +30,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🔒 **Lock and menu right on the overlay.** Open the lock — move and resize the box during play; close it — the box is fixed again. The ☰ button opens the same menu as the tray icon.
 - 🔍 **Reading from the screen (OCR).** If text capture finds nothing, NovelTL recognizes the text right on screen with the built-in Windows OCR — under the overlay placed on the dialogue box (needs the Windows language pack with optical character recognition).
 - 📋 **Clipboard mode.** NovelTL translates everything you copy — for games the text hooker cannot handle, and for Linux.
+- 🎓 **Mode for Japanese learners.** Furigana over kanji in the dialogue history, word meanings on hover (verbs are reduced to the dictionary form), right click — “Add to Anki” (via AnkiConnect). The [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) dictionary (© EDRDG, CC BY-SA 4.0) is downloaded with one button in Settings.
 - 📜 **Dialogue history.** The main window keeps the last 50 lines with original and translation — handy if you skipped a line.
 - 🗺️ **5 languages, any direction.** Japanese, English, Chinese (Simplified), Korean and Russian. The target language is chosen in Settings, the source language per game (or “Auto”).
 - 🌐 **DeepL and Google.** “Auto” mode: Google without a key, DeepL with a key (the free plan works too) — DeepL uses the previous lines as context, and if DeepL refuses, the program switches to Google by itself. You can also choose “DeepL only” or “Google only”.

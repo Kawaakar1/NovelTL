@@ -92,6 +92,11 @@ pub trait Http: Send + Sync {
         self.post_json(url, headers, body)
     }
     fn get(&self, url: &str, query: &[(&str, &str)]) -> Result<HttpResponse, HttpError>;
+    /// GET и тело ответа байтами (для скачивания файлов); долгий таймаут.
+    fn get_bytes(&self, url: &str) -> Result<Vec<u8>, HttpError> {
+        let _ = url;
+        Err(HttpError::Other("get_bytes".to_string()))
+    }
 }
 
 // ---------- ошибки и результат ----------
