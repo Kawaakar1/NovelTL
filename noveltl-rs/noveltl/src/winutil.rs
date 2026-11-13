@@ -433,6 +433,111 @@ pub fn reveal_in_explorer(path: &str) {
         .spawn();
 }
 
+/// «Открыть» как двойной щелчок: Windows сама спросит права администратора, если игре они нужны.
+pub fn shell_open(file: &str, params: &str, dir: &str) -> Result<(), String> {
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let (f, p, d) = (to_wide(file), to_wide(params), to_wide(dir));
+    let ptr = |v: &Vec<u16>, empty: bool| if empty { PCWSTR::null() } else { PCWSTR(v.as_ptr()) };
+    let r = unsafe {
+        ShellExecuteW(None, w!("open"), PCWSTR(f.as_ptr()), ptr(&p, params.is_empty()), ptr(&d, dir.is_empty()), SW_SHOWNORMAL)
+    };
+    if r.0 as isize > 32 {
+        Ok(())
+    } else {
+        Err(tf("Не удалось запустить игру: {}", &[&format!("{file} (код {})", r.0 as isize)]))
+    }
+}
+
+/// Значок exe 48x48 как (ширина, высота, RGBA) — для библиотеки игр.
+pub fn exe_icon(path: &str) -> Option<(usize, usize, Vec<u8>)> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, BITMAPINFO, BITMAPINFOHEADER,
+        BI_RGB, DIB_RGB_COLORS, HBITMAP,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, PrivateExtractIconsW, HICON, ICONINFO};
+    const N: i32 = 48;
+    let mut name = [0u16; 260];
+    for (d, s) in name.iter_mut().zip(path.encode_utf16().take(259)) {
+        *d = s;
+    }
+    unsafe {
+        let mut icons = [HICON::default()];
+        if PrivateExtractIconsW(&name, 0, N, N, Some(&mut icons), None, 0) == 0 || icons[0].is_invalid() {
+            return None;
+        }
+        let mut info = ICONINFO::default();
+        let got = GetIconInfo(icons[0], &mut info).is_ok();
+        let mut out = None;
+        if got {
+            let dc = GetDC(None);
+            let mem = CreateCompatibleDC(dc);
+            let read = |bmp: HBITMAP| -> Vec<u8> {
+                let mut bi = BITMAPINFO::default();
+                bi.bmiHeader = BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: N,
+                    biHeight: -N, // сверху вниз
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                };
+                let mut buf = vec![0u8; (N * N * 4) as usize];
+                let n = GetDIBits(mem, bmp, 0, N as u32, Some(buf.as_mut_ptr() as *mut _), &mut bi, DIB_RGB_COLORS);
+                if n == 0 {
+                    buf.clear();
+                }
+                buf
+            };
+            let mut px = read(info.hbmColor);
+            if px.len() == (N * N * 4) as usize {
+                if px.chunks(4).all(|c| c[3] == 0) {
+                    // старый значок без альфа-канала: прозрачность — по маске (белое = прозрачно)
+                    let mask = read(info.hbmMask);
+                    for (i, c) in px.chunks_mut(4).enumerate() {
+                        c[3] = if mask.get(i * 4).is_some_and(|m| *m != 0) { 0 } else { 255 };
+                    }
+                }
+                for c in px.chunks_mut(4) {
+                    c.swap(0, 2); // BGRA -> RGBA
+                }
+                out = Some((N as usize, N as usize, px));
+            }
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, dc);
+            let _ = DeleteObject(info.hbmColor);
+            let _ = DeleteObject(info.hbmMask);
+        }
+        let _ = DestroyIcon(icons[0]);
+        out
+    }
+}
+
+/// Стандартный диалог «Открыть» для выбора exe. None — отмена или ошибка.
+pub fn pick_exe() -> Option<std::path::PathBuf> {
+    use windows::core::HSTRING;
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
+    use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
+        let filter = HSTRING::from(t("Программы (*.exe)"));
+        let spec = [COMDLG_FILTERSPEC { pszName: PCWSTR(filter.as_ptr()), pszSpec: w!("*.exe") }];
+        dlg.SetFileTypes(&spec).ok()?;
+        dlg.SetTitle(&HSTRING::from(t("Выберите файл игры"))).ok()?;
+        dlg.Show(None).ok()?;
+        let item = dlg.GetResult().ok()?;
+        let name = item.GetDisplayName(SIGDN_FILESYSPATH).ok()?;
+        let path = name.to_string().ok();
+        CoTaskMemFree(Some(name.0 as *const _));
+        path.map(std::path::PathBuf::from)
+    }
+}
+
 /// Открывает папку или ссылку программой по умолчанию.
 pub fn open_url(target: &str) {
     let _ = Command::new("explorer.exe").arg(target).spawn();

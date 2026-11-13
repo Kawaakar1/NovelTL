@@ -191,6 +191,11 @@ enum Stage {
     GlossaryWait,
     GlossaryShot,
     GlossaryClose,
+    /// игра закрыта: снимок библиотеки
+    LibraryEnd,
+    /// окно «Настройки запуска»
+    LaunchOpen,
+    LaunchShot,
     Finish,
     Done,
 }
@@ -205,6 +210,8 @@ pub struct Shots {
     awaiting: Option<String>,
     fronted: bool,
     log: Vec<String>,
+    /// id игры для снимков библиотеки
+    lib_id: Option<String>,
 }
 
 impl Shots {
@@ -221,6 +228,7 @@ impl Shots {
             awaiting: None,
             fronted: false,
             log: Vec::new(),
+            lib_id: None,
         }
     }
 
@@ -498,6 +506,9 @@ impl Shots {
                         if i == 0 {
                             w.fill_profile_for_shots("Reader");
                         }
+                        if i == 1 {
+                            w.fill_deepl_usage_for_shots(123_456, 500_000);
+                        }
                         if i == 3 {
                             w.fill_net_for_shots(NET_PROXY, "socks5h://127.0.0.1:1080", "user", "secret");
                         }
@@ -612,8 +623,34 @@ impl Shots {
                         self.finish(shared, "окно глоссария не закрылось");
                     }
                 }
-                None => self.go(Stage::Finish),
+                None => self.go(Stage::LibraryEnd),
             },
+            Stage::LibraryEnd => {
+                if !self.fronted {
+                    let mut c = lock_ctl(&shared.controller);
+                    self.lib_id = c.session.as_ref().map(|s| s.profile.id.clone());
+                    if let Some(s) = c.session.as_mut() {
+                        s.profile.last_played = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map_or(0, |d| d.as_secs());
+                    }
+                    c.end_session_for_shots();
+                    self.fronted = true;
+                }
+                // главное окно перечитывает профили раз в секунду
+                if waited > Duration::from_millis(1500) {
+                    self.request(ctx, "01_main_library.png", Stage::LaunchOpen);
+                }
+            }
+            Stage::LaunchOpen => {
+                windows.launch = self.lib_id.clone();
+                self.go(Stage::LaunchShot);
+            }
+            Stage::LaunchShot => {
+                if waited > Duration::from_millis(700) {
+                    self.request(ctx, "01b_launch_settings.png", Stage::Finish);
+                }
+            }
             Stage::Finish => self.finish(shared, "готово"),
             Stage::Done => {}
         }

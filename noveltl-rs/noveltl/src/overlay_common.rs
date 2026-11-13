@@ -71,11 +71,29 @@ pub fn parse_color(s: &str, fallback: u32) -> u32 {
     u32::from_str_radix(s.trim().trim_start_matches('#'), 16).unwrap_or(fallback)
 }
 
+/// Кусок оригинала для плашки: чтение над иероглифами (фуригана) и подсказка из словаря.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OrigSeg {
+    pub text: String,
+    pub reading: Option<String>,
+    /// готовый текст подсказки («слово【чтение】», затем значения построчно); пусто — слова нет в словаре
+    pub tip: String,
+}
+
 pub enum Cmd {
     Target(isize, Option<Frac>),
     /// реплика: имя, перевод, второй перевод (мелко под основным; пусто — нет) и исходный текст
-    /// `name_color` — цвет имени персонажа из глоссария (0xRRGGBB)
-    Line { name: String, text: String, alt: String, orig: String, name_color: Option<u32> },
+    /// `name_color` — цвет имени персонажа из глоссария (0xRRGGBB); `segs` — оригинал по словам
+    /// (пусто — без фуриганы); `back` — на сколько реплик назад от последней (0 — последняя)
+    Line {
+        name: String,
+        text: String,
+        alt: String,
+        orig: String,
+        name_color: Option<u32>,
+        segs: Vec<OrigSeg>,
+        back: usize,
+    },
     Note { note: String, keep_text: bool },
     Clear,
     EditMode(bool),
@@ -95,6 +113,9 @@ pub enum Event {
     Failed(String),
     /// Выбран пункт меню плашки (id пункта меню трея).
     Menu(&'static str),
+    /// Колёсико над плашкой: +1 — к более старой реплике, -1 — к более новой.
+    #[allow(dead_code)]
+    Browse(i32),
 }
 
 /// Подпись пункта меню на текущем языке (общая с меню трея).

@@ -188,6 +188,30 @@ impl DeepLTranslator {
     }
 }
 
+/// Адрес запроса расхода символов: ключ «…:fx» — бесплатный тариф.
+pub fn deepl_usage_url(key: &str) -> String {
+    let host = if key.trim().ends_with(":fx") { "api-free.deepl.com" } else { "api.deepl.com" };
+    format!("https://{host}/v2/usage")
+}
+
+/// Ответ /v2/usage -> (использовано, лимит).
+pub fn parse_deepl_usage(body: &str) -> Option<(u64, u64)> {
+    let v: Value = serde_json::from_str(body).ok()?;
+    Some((v.get("character_count")?.as_u64()?, v.get("character_limit")?.as_u64()?))
+}
+
+/// Сколько символов использовано в этом месяце и какой лимит (для ключа DeepL).
+pub fn deepl_usage(http: &dyn Http, key: &str) -> Result<(u64, u64), String> {
+    let auth = format!("DeepL-Auth-Key {}", key.trim());
+    let resp = http
+        .post_json(&deepl_usage_url(key), &[("Authorization", auth.as_str())], &serde_json::json!({}))
+        .map_err(|e| tf("нет связи с DeepL ({})", &[&e.name()]))?;
+    if resp.status != 200 {
+        return Err(tf("DeepL ответил кодом {}", &[&resp.status]));
+    }
+    parse_deepl_usage(&resp.body).ok_or_else(|| t("непонятный ответ DeepL").to_string())
+}
+
 // ---------- Google ----------
 
 /// Максимум байт параметра `q` в одном GET-запросе Google после URL-кодирования
@@ -1003,6 +1027,18 @@ mod tests {
 
     fn http(h: &Arc<FakeHttp>) -> Arc<dyn Http> {
         h.clone()
+    }
+
+    #[test]
+    fn deepl_usage_url_and_parse() {
+        assert_eq!(deepl_usage_url("abc:fx"), "https://api-free.deepl.com/v2/usage");
+        assert_eq!(deepl_usage_url("abc"), "https://api.deepl.com/v2/usage");
+        assert_eq!(parse_deepl_usage(r#"{"character_count":1200,"character_limit":500000}"#), Some((1200, 500000)));
+        assert_eq!(parse_deepl_usage("{}"), None);
+        assert_eq!(parse_deepl_usage("мусор"), None);
+        let s = FakeHttp::new(403);
+        assert!(deepl_usage(&*s, "k:fx").is_err());
+        assert!(s.posts()[0].headers.contains(&("Authorization".to_string(), "DeepL-Auth-Key k:fx".to_string())));
     }
 
     #[test]

@@ -64,6 +64,10 @@ pub struct Profile {
     /// что убирать из текста реплик этой игры (точные фрагменты)
     pub filters: Vec<String>,
     pub stats: ReadStats,
+    /// когда игру запускали в последний раз (unix-секунды); 0 — ещё не запускали
+    pub last_played: u64,
+    /// своя команда запуска (DMM, Locale Emulator…); пусто — запуск как обычно
+    pub launch: String,
 }
 
 impl Default for Profile {
@@ -81,6 +85,8 @@ impl Default for Profile {
             glossary: Vec::new(),
             filters: Vec::new(),
             stats: ReadStats::default(),
+            last_played: 0,
+            launch: String::new(),
         }
     }
 }
@@ -334,6 +340,9 @@ pub struct AppSettings {
     pub overlay_toolbar_dim: bool,
     /// Сочетание клавиш «Открыть настройки».
     pub hotkey_settings: String,
+    /// Листание реплик на плашке: назад и вперёд.
+    pub hotkey_prev: String,
+    pub hotkey_next: String,
     /// Выбранный готовый стиль плашки: classic / subtitles / game / minimal (только для подсветки).
     pub overlay_preset: String,
     /// Скругление плашки, px.
@@ -390,6 +399,8 @@ impl Default for AppSettings {
             overlay_show_original: false,
             overlay_toolbar_dim: false,
             hotkey_settings: "Ctrl+Alt+S".into(),
+            hotkey_prev: "Ctrl+Alt+Left".into(),
+            hotkey_next: "Ctrl+Alt+Right".into(),
             overlay_preset: "classic".into(),
             overlay_radius: 12,
             overlay_border: false,
@@ -725,6 +736,8 @@ mod tests {
     fn defaults_new_fields() {
         let s = AppSettings::default();
         assert_eq!(s.hotkey_settings, "Ctrl+Alt+S");
+        assert_eq!(s.hotkey_prev, "Ctrl+Alt+Left");
+        assert_eq!(s.hotkey_next, "Ctrl+Alt+Right");
         assert_eq!(s.accent, "");
         assert!(!s.overlay_show_original);
         assert!(!s.overlay_toolbar_dim);

@@ -104,8 +104,13 @@ impl GlossaryWindow {
     pub fn fill_for_shots(&mut self, entries: &[(&str, &str)]) {
         self.rows.clear();
         self.selected = None;
-        for (s, d) in entries {
+        // у персонажей демо — свои цвета имён, чтобы на снимке было видно эту возможность
+        const COLORS: [&str; 3] = ["#FF8FB8", "#7FB2FF", "#8EE0A1"];
+        for (i, (s, d)) in entries.iter().enumerate() {
             self.push_row(s, d, "");
+            if let (Some(r), Some(c)) = (self.rows.last_mut(), COLORS.get(i)) {
+                r.color = c.to_string();
+            }
         }
     }
 
@@ -301,19 +306,22 @@ impl GlossaryWindow {
                         ui.horizontal(|ui| {
                             ui.spacing_mut().item_spacing.x = 4.0;
                             ui.spacing_mut().interact_size.y = 30.0;
-                            let mut rgb = if r.color.is_empty() {
-                                [0x80, 0x80, 0x80]
+                            let has = !r.color.is_empty();
+                            let hint = t("Цвет имени в истории и на плашке. Пусто — цвет по умолчанию.");
+                            if !has {
+                                // пустой цвет — не серый образец (его легко принять за выбранный), а кнопка «+»
+                                if ui.add_sized([40.0, 26.0], egui::Button::new("+")).on_hover_text(hint).clicked() {
+                                    r.color = "#FFD27F".to_string();
+                                    clicked = Some(r.uid);
+                                }
                             } else {
                                 let c = theme::parse_hex(&r.color, Color32::GRAY);
-                                [c.r(), c.g(), c.b()]
-                            };
-                            let has = !r.color.is_empty();
-                            let resp = ui
-                                .color_edit_button_srgb(&mut rgb)
-                                .on_hover_text(t("Цвет имени в истории и на плашке. Пусто — цвет по умолчанию."));
-                            if resp.changed() {
-                                r.color = theme::to_hex(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
-                                clicked = Some(r.uid);
+                                let mut rgb = [c.r(), c.g(), c.b()];
+                                let resp = ui.color_edit_button_srgb(&mut rgb).on_hover_text(hint);
+                                if resp.changed() {
+                                    r.color = theme::to_hex(Color32::from_rgb(rgb[0], rgb[1], rgb[2]));
+                                    clicked = Some(r.uid);
+                                }
                             }
                             if has && ui.small_button("×").clicked() {
                                 r.color.clear();

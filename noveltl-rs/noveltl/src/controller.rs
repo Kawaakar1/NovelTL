@@ -23,7 +23,7 @@ use noveltl_core::translators::{Http, HttpError, HttpResponse, TranslatorManager
 
 use crate::clipboard::CLIPBOARD_PID;
 use crate::hotkeys::{HotkeyEvent, Hotkeys};
-use crate::overlay::{self, parse_color, Cmd, Frac, Overlay, Style};
+use crate::overlay::{self, parse_color, Cmd, Frac, OrigSeg, Overlay, Style};
 use crate::paths::{data_dir, sub_data_dir};
 use crate::source::{HookEvent, HookSource, Waker};
 use crate::winutil::{self, WindowInfo};
@@ -334,6 +334,8 @@ pub struct Session {
     pub last_result: Option<LineResult>,
     /// последние переведённые реплики, самая новая — в конце
     pub history: VecDeque<LineResult>,
+    /// на сколько реплик назад от последней показана плашка (0 — последняя)
+    pub back: usize,
     pub started: f64,
 }
 
@@ -668,6 +670,7 @@ impl Controller {
                 overlay::Event::Menu(crate::tray::ID_COPY) => self.copy_last_translation(),
                 overlay::Event::Menu(crate::tray::ID_ORIGINAL) => self.toggle_show_original(),
                 overlay::Event::Menu(id) => self.menu_requests.push(id),
+                overlay::Event::Browse(d) => self.browse(d),
             }
         }
         while let Ok(ev) = self.hotkey_rx.try_recv() {
@@ -675,6 +678,8 @@ impl Controller {
                 HotkeyEvent::Fired(0) => self.toggle_overlay(),
                 HotkeyEvent::Fired(1) => self.retranslate(),
                 HotkeyEvent::Fired(2) => self.menu_requests.push(crate::tray::ID_SETTINGS),
+                HotkeyEvent::Fired(3) => self.browse(1),
+                HotkeyEvent::Fired(4) => self.browse(-1),
                 HotkeyEvent::Fired(_) => {}
             }
         }
@@ -764,7 +769,7 @@ impl Controller {
         self.worker.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    fn notice(&mut self, text: impl Into<String>) {
+    pub fn notice(&mut self, text: impl Into<String>) {
         self.notices.push(text.into());
     }
 
@@ -847,8 +852,12 @@ impl Controller {
         TranslationPipeline::new(manager, lang, glossary)
     }
 
-    pub fn start_session(&mut self, profile: Profile, win: &WindowInfo, saved: bool, setup: bool) {
+    pub fn start_session(&mut self, mut profile: Profile, win: &WindowInfo, saved: bool, setup: bool) {
         self.end_session();
+        if saved && !setup {
+            profile.last_played = now_secs() as u64;
+            let _ = self.store.save(&profile);
+        }
         self.window_lost_since = None;
         self.tracker.clear();
         let cache_path = sub_data_dir("cache").join(format!("{}.sqlite", profile.id));
@@ -877,6 +886,7 @@ impl Controller {
             last_src: (String::new(), String::new()),
             last_result: None,
             history: VecDeque::new(),
+            back: 0,
             started: now_secs(),
         });
         self.overlay.send(Cmd::Clear);
@@ -1151,11 +1161,13 @@ impl Controller {
             .name_color(&result.name)
             .or_else(|| self.name_color(&result.src_name))
             .map(|c| parse_color(&c, 0));
+        let segs = if self.session.is_some() && seq == self.seq { self.orig_segs(&result.src_text) } else { Vec::new() };
         let Some(s) = self.session.as_mut() else { return };
         if seq != self.seq {
             return;
         }
-        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone(), alt: result.alt.clone(), orig: result.src_text.clone(), name_color: nc });
+        s.back = 0;
+        self.overlay.send(Cmd::Line { name: result.name.clone(), text: result.text.clone(), alt: result.alt.clone(), orig: result.src_text.clone(), name_color: nc, segs, back: 0 });
         let notice = result.notice.clone();
         // новая реплика (не повторный перевод той же) — в статистику и журнал
         let new_line = s.history.back().is_none_or(|b| b.src_text != result.src_text || b.src_name != result.src_name);
@@ -1173,6 +1185,51 @@ impl Controller {
         if !notice.is_empty() {
             self.notices.push(notice);
         }
+    }
+
+    /// Оригинал по словам для фуриганы и подсказок плашки (Windows, режим изучения и словарь).
+    /// Словарь опрашивается здесь, один раз на реплику; в потоке плашки замок не держится.
+    fn orig_segs(&self, text: &str) -> Vec<OrigSeg> {
+        let Some(dict) = self.dict.as_ref().filter(|_| cfg!(windows) && self.settings.learn_mode) else { return Vec::new() };
+        let prefer_ru = noveltl_core::i18n::lang() == noveltl_core::i18n::UiLang::Ru;
+        let d = dict.lock().unwrap_or_else(|e| e.into_inner());
+        d.segments(text)
+            .into_iter()
+            .map(|seg| {
+                let japanese = seg.text.chars().any(|c| {
+                    matches!(c, '\u{3041}'..='\u{30FF}' | '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{FF66}'..='\u{FF9F}')
+                });
+                let tip = japanese
+                    .then(|| d.lookup_at(text, seg.start, prefer_ru))
+                    .flatten()
+                    .map(|m| {
+                        let mut tip = m.form.clone();
+                        if let Some(r) = m.entry.readings.first().filter(|r| **r != m.form) {
+                            tip.push_str(&format!("【{r}】"));
+                        }
+                        for g in m.entry.glosses.iter().take(2) {
+                            tip.push_str(&format!("\n• {g}"));
+                        }
+                        tip
+                    })
+                    .unwrap_or_default();
+                OrigSeg { text: seg.text, reading: seg.reading, tip }
+            })
+            .collect()
+    }
+
+    /// Листание реплик на плашке: `delta` > 0 — к более старым, < 0 — к более новым.
+    pub fn browse(&mut self, delta: i32) {
+        let Some(s) = self.session.as_mut() else { return };
+        let back = (s.back as i64 + delta as i64).clamp(0, s.history.len().saturating_sub(1) as i64) as usize;
+        if back == s.back {
+            return;
+        }
+        s.back = back;
+        let Some(r) = s.history.get(s.history.len() - 1 - back).cloned() else { return };
+        let nc = self.name_color(&r.name).or_else(|| self.name_color(&r.src_name)).map(|c| parse_color(&c, 0));
+        let segs = self.orig_segs(&r.src_text);
+        self.overlay.send(Cmd::Line { name: r.name, text: r.text, alt: r.alt, orig: r.src_text, name_color: nc, segs, back });
     }
 
     fn on_translate_failed(&mut self, seq: u64, message: String) {
@@ -1342,6 +1399,32 @@ impl Controller {
 
     /// Меняет язык оригинала игры: в сессии и в хранилище. Для текущей сессии пересоздаётся pipeline;
     /// если сменилась кодовая страница — игра переподключается.
+    /// Для снимков библиотеки: закрыть сессию и не давать автопоиску сразу подключиться заново.
+    pub fn end_session_for_shots(&mut self) {
+        self.end_session();
+        self.last_scan = Instant::now() + Duration::from_secs(30);
+    }
+
+    /// Путь к exe и своя команда запуска («Настройки запуска» в библиотеке).
+    pub fn set_profile_launch(&mut self, profile_id: &str, exe_path: &str, launch: &str) {
+        let apply = |p: &mut Profile| {
+            if p.exe_path != exe_path {
+                p.exe_path = exe_path.to_string();
+                p.exe_name = exe_path.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+            }
+            p.launch = launch.trim().to_string();
+        };
+        if let Some(s) = self.session.as_mut().filter(|s| s.profile.id == profile_id) {
+            apply(&mut s.profile);
+            if s.saved {
+                let _ = self.store.save(&s.profile);
+            }
+        } else if let Some(mut p) = self.store.get(profile_id) {
+            apply(&mut p);
+            let _ = self.store.save(&p);
+        }
+    }
+
     pub fn set_profile_lang(&mut self, profile_id: &str, lang: Lang) {
         let in_session = self.session.as_ref().is_some_and(|s| s.profile.id == profile_id);
         if !in_session {
@@ -1443,6 +1526,12 @@ impl Controller {
             if attempted.contains(&self.settings.hotkey_settings) {
                 self.settings.hotkey_settings = old.hotkey_settings.clone();
             }
+            if attempted.contains(&self.settings.hotkey_prev) {
+                self.settings.hotkey_prev = old.hotkey_prev.clone();
+            }
+            if attempted.contains(&self.settings.hotkey_next) {
+                self.settings.hotkey_next = old.hotkey_next.clone();
+            }
             self.register_hotkeys();
         }
         self.hotkey_errors = attempted;
@@ -1514,6 +1603,8 @@ impl Controller {
             self.settings.hotkey_toggle.clone(),
             self.settings.hotkey_retranslate.clone(),
             self.settings.hotkey_settings.clone(),
+            self.settings.hotkey_prev.clone(),
+            self.settings.hotkey_next.clone(),
         ];
         let failed = self.hotkeys.set(&combos);
         // пустое сочетание — «не задано», это не ошибка

@@ -60,6 +60,9 @@ enum Action {
     Glossary(String),
     Settings,
     SetLang(String, Lang),
+    Play(Profile),
+    LaunchSettings(Profile),
+    Library,
     OpenLog(String),
     Anki(String, String),
     OpenUrl(String),
@@ -145,8 +148,65 @@ fn furigana(
     });
 }
 
+struct LaunchEdit {
+    id: String,
+    name: String,
+    exe: String,
+    cmd: String,
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// «Играли: вчера» и подобное.
+fn played_text(last: u64, now: u64) -> String {
+    let when = if last == 0 {
+        t("ещё не запускали").to_string()
+    } else {
+        match now.saturating_sub(last) / 86400 {
+            0 => t("сегодня").to_string(),
+            1 => t("вчера").to_string(),
+            n => tf("{} дн. назад", &[&n]),
+        }
+    };
+    tf("Играли: {}", &[&when])
+}
+
+/// Значок игры: картинка из exe или первая буква названия на цветном квадрате.
+fn paint_game_icon(painter: &egui::Painter, rect: egui::Rect, tex: Option<egui::TextureId>, name: &str) {
+    if let Some(id) = tex {
+        let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+        painter.image(id, rect, uv, Color32::WHITE);
+        return;
+    }
+    let hue = (name.chars().map(|c| c as u32).sum::<u32>() % 360) as f32 / 360.0;
+    let fill: Color32 = egui::ecolor::Hsva::new(hue, 0.45, 0.55, 1.0).into();
+    painter.rect_filled(rect, CornerRadius::same((rect.height() / 5.0) as u8), fill);
+    let letter = name.chars().find(|c| c.is_alphanumeric()).unwrap_or('?').to_uppercase().to_string();
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        letter,
+        FontId::new(rect.height() * 0.5, theme::bold_family()),
+        Color32::WHITE,
+    );
+}
+
+/// Жёлтая плашка уведомления.
+fn notice_box(ui: &mut egui::Ui, text: &str) {
+    let p = pal();
+    Frame::new().fill(p.notice_bg).corner_radius(CornerRadius::same(8)).inner_margin(Margin::symmetric(12, 8)).show(
+        ui,
+        |ui| {
+            ui.set_width(ui.available_width());
+            ui.add(egui::Label::new(RichText::new(text).size(14.0).color(p.warn)).wrap_mode(egui::TextWrapMode::Wrap));
+        },
+    );
+}
+
 /// 12345 → "12 345".
-fn thousands(n: u64) -> String {
+pub(crate) fn thousands(n: u64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {
@@ -172,6 +232,14 @@ pub struct MainWindow {
     logo_big: Option<TextureHandle>,
     /// сегменты фуриганы по тексту реплики
     seg_cache: HashMap<String, Vec<Segment>>,
+    /// открыта страница игры (а не библиотека)
+    open_game: bool,
+    /// значки exe по пути (None — значка нет)
+    icons: HashMap<String, Option<TextureHandle>>,
+    /// игру запустили кнопкой: (id, название, до какого времени ждём подключения)
+    launching: Option<(String, String, Instant)>,
+    launch_edit: Option<LaunchEdit>,
+    pending_launch: Option<(String, String, String)>,
 }
 
 fn engine_title(engine: &str) -> String {
@@ -197,7 +265,24 @@ impl MainWindow {
             logo: None,
             logo_big: None,
             seg_cache: HashMap::new(),
+            open_game: false,
+            icons: HashMap::new(),
+            launching: None,
+            launch_edit: None,
+            pending_launch: None,
         }
+    }
+
+    fn icon_tex(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureId> {
+        if path.is_empty() {
+            return None;
+        }
+        let e = self.icons.entry(path.to_string()).or_insert_with(|| {
+            winutil::exe_icon(path).map(|(w, h, px)| {
+                ctx.load_texture(format!("exe:{path}"), ColorImage::from_rgba_unmultiplied([w, h], &px), TextureOptions::LINEAR)
+            })
+        });
+        e.as_ref().map(|t| t.id())
     }
 
     /// Окошко с сообщением и кнопкой «OK» (как QMessageBox).
@@ -280,6 +365,12 @@ impl MainWindow {
                 self.selected = Some(s.profile.id.clone()); // игра только что подключилась — показываем её
             }
         }
+        if self.last_session_id != session_id {
+            self.open_game = false; // игра запустилась или закрылась — к библиотеке/странице запущенной
+            if self.launching.as_ref().is_some_and(|l| session_id.as_deref() == Some(l.0.as_str())) {
+                self.launching = None;
+            }
+        }
         self.last_session_id = session_id.clone();
         if !self.selected.as_ref().is_some_and(|id| profiles.iter().any(|p| &p.id == id)) {
             self.selected = profiles.first().map(|p| p.id.clone());
@@ -291,6 +382,13 @@ impl MainWindow {
             } else {
                 ctx.request_repaint_after(Duration::from_millis(500));
             }
+        }
+
+        if self.launching.as_ref().is_some_and(|l| Instant::now() >= l.2) {
+            self.launching = None;
+        }
+        if self.launching.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(500));
         }
 
         let mut actions: Vec<Action> = Vec::new();
@@ -344,21 +442,28 @@ impl MainWindow {
                                 Color32::TRANSPARENT
                             };
                             ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+                            let icon = self.icon_tex(ctx, &pr.exe_path);
+                            let ir = egui::Rect::from_min_size(
+                                egui::pos2(rect.left() + 10.0, rect.center().y - 9.0),
+                                Vec2::splat(18.0),
+                            );
+                            paint_game_icon(ui.painter(), ir, icon, &pr.name);
                             let text = format!("{}  {}", if running { "●" } else { "○" }, pr.name);
                             let mut job = LayoutJob::simple(
                                 text,
                                 FontId::proportional(14.0),
                                 p.text,
-                                (rect.width() - 24.0).max(10.0),
+                                (rect.width() - 48.0).max(10.0),
                             );
                             job.wrap.max_rows = 1;
                             job.wrap.break_anywhere = true;
                             job.wrap.overflow_character = Some('…');
                             let galley = ui.painter().layout_job(job);
-                            let pos = egui::pos2(rect.left() + 12.0, rect.center().y - galley.size().y / 2.0);
+                            let pos = egui::pos2(rect.left() + 36.0, rect.center().y - galley.size().y / 2.0);
                             ui.painter().galley(pos, galley, p.text);
                             if resp.clicked() {
                                 self.selected = Some(pr.id.clone());
+                                self.open_game = true;
                             }
                             resp.on_hover_text(if running { t("Игра запущена") } else { t("Игра не запущена") });
                         }
@@ -375,8 +480,11 @@ impl MainWindow {
         let current: Option<Profile> =
             self.selected.as_ref().and_then(|id| profiles.iter().find(|p| &p.id == id)).cloned();
 
+        // страница игры — если открыта из списка или какая-то игра подключена; иначе библиотека
+        let show_game = current.is_some() && (self.open_game || snap.session.is_some());
+
         // ---------- нижняя часть страницы игры ----------
-        if let Some(profile) = &current {
+        if let Some(profile) = current.as_ref().filter(|_| show_game) {
             let s = snap.session.as_ref().filter(|s| s.profile.id == profile.id);
             let ready = s.is_some_and(|s| s.connected && !s.setup);
             let can_pos = ready && s.is_some_and(|s| s.has_selected);
@@ -446,17 +554,7 @@ impl MainWindow {
                     });
                     if let Some((text, _)) = &self.notice {
                         ui.add_space(4.0);
-                        Frame::new()
-                            .fill(p.notice_bg)
-                            .corner_radius(CornerRadius::same(8))
-                            .inner_margin(Margin::symmetric(12, 8))
-                            .show(ui, |ui| {
-                                ui.set_width(ui.available_width());
-                                ui.add(
-                                    egui::Label::new(RichText::new(text.as_str()).size(14.0).color(p.warn))
-                                        .wrap_mode(egui::TextWrapMode::Wrap),
-                                );
-                            });
+                        notice_box(ui, text);
                     }
                 });
         }
@@ -496,15 +594,110 @@ impl MainWindow {
         egui::CentralPanel::default()
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 28, right: 28, top: 24, bottom: 8 }))
             .show(ctx, |ui| match &current {
-                None => self.empty_page(ui, &mut actions),
-                Some(profile) => {
+                Some(profile) if show_game => {
                     let s = snap.session.as_ref().filter(|s| s.profile.id == profile.id);
-                    Self::game_page(ui, profile, s, &snap, &mut self.seg_cache, &mut actions);
+                    let launching = self.launching.as_ref().map(|l| l.0.as_str());
+                    Self::game_page(ui, profile, s, &snap, launching, &mut self.seg_cache, &mut actions);
                 }
+                _ if profiles.is_empty() => self.empty_page(ui, &mut actions),
+                _ => self.library(ui, ctx, &profiles, &mut actions),
             });
 
+        if let Some(id) = windows.launch.take() {
+            // только для снимков: окно «Настройки запуска» без клика
+            if let Some(pr) = profiles.iter().find(|p| p.id == id) {
+                let mut pr = pr.clone();
+                pr.exe_path = r"C:\Games\Kirinomori Lantern\Kirinomori.exe".to_string(); // вымышленный путь: на снимках не должно быть имени пользователя
+                actions.push(Action::LaunchSettings(pr));
+            }
+        }
         self.modals(ctx);
         self.run_actions(actions, shared, windows, &snap);
+    }
+
+    /// «Библиотека»: карточки игр, когда ни одна игра не открыта.
+    fn library(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, profiles: &[Profile], actions: &mut Vec<Action>) {
+        let p = pal();
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 12.0);
+        ui.label(theme::h1(t("Библиотека")));
+        if let Some((text, _)) = self.notice.clone() {
+            notice_box(ui, &text);
+        }
+        if let Some((_, name, _)) = &self.launching {
+            ui.label(RichText::new(tf("Запускаю {}…", &[name])).size(14.0).color(p.warn));
+        }
+        const GAP: f32 = 12.0;
+        let now = unix_now();
+        egui::ScrollArea::vertical().id_salt("library").auto_shrink([false, false]).show(ui, |ui| {
+            let w = ui.available_width() - 4.0;
+            let cols = (((w + GAP) / (270.0 + GAP)) as usize).clamp(1, 3);
+            let cw = (w - GAP * (cols as f32 - 1.0)) / cols as f32;
+            ui.spacing_mut().item_spacing = Vec2::new(GAP, GAP);
+            for chunk in profiles.chunks(cols) {
+                ui.horizontal_top(|ui| {
+                    for pr in chunk {
+                        let busy = self.launching.as_ref().is_some_and(|l| l.0 == pr.id);
+                        let icon = self.icon_tex(ctx, &pr.exe_path);
+                        Self::card(ui, pr, icon, cw, busy, now, actions);
+                    }
+                });
+            }
+        });
+    }
+
+    fn card(
+        ui: &mut egui::Ui,
+        pr: &Profile,
+        icon: Option<egui::TextureId>,
+        cw: f32,
+        busy: bool,
+        now: u64,
+        actions: &mut Vec<Action>,
+    ) {
+        theme::card_frame().inner_margin(Margin::same(14)).show(ui, |ui| {
+            // карточка лежит в строке horizontal_top — внутри нужна своя вертикаль
+            ui.vertical(|ui| {
+                ui.set_width(cw - 30.0);
+                ui.spacing_mut().item_spacing = Vec2::new(10.0, 8.0);
+                ui.horizontal(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::hover());
+                    paint_game_icon(ui.painter(), rect, icon, &pr.name);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.add(egui::Label::new(theme::h2(pr.name.as_str())).truncate());
+                        ui.add(egui::Label::new(theme::small(played_text(pr.last_played, now))).truncate());
+                        ui.add(
+                            egui::Label::new(theme::small(tf("Прочитано реплик: {}", &[&thousands(pr.stats.lines)])))
+                                .truncate(),
+                        );
+                    });
+                });
+                ui.horizontal(|ui| {
+                    let more_w = 38.0;
+                    let play_w = (ui.available_width() - more_w - ui.spacing().item_spacing.x).max(60.0);
+                    if button(ui, t("Играть"), BtnKind::Primary, !busy, Some(play_w)).clicked() {
+                        actions.push(Action::Play(pr.clone()));
+                    }
+                    let r = button(ui, "···", BtnKind::Normal, true, Some(more_w));
+                    let id = egui::Id::new(("library_menu", &pr.id));
+                    if r.clicked() {
+                        ui.memory_mut(|m| m.toggle_popup(id));
+                    }
+                    egui::popup_below_widget(ui, id, &r, egui::PopupCloseBehavior::CloseOnClick, |ui| {
+                        ui.set_min_width(170.0);
+                        if ui.button(t("Настройки запуска")).clicked() {
+                            actions.push(Action::LaunchSettings(pr.clone()));
+                        }
+                        if ui.button(t("Глоссарий имён")).clicked() {
+                            actions.push(Action::Glossary(pr.id.clone()));
+                        }
+                        if ui.button(t("Удалить игру")).clicked() {
+                            actions.push(Action::AskDelete(pr.id.clone(), pr.name.clone()));
+                        }
+                    });
+                });
+            });
+        });
     }
 
     fn empty_page(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -548,11 +741,15 @@ impl MainWindow {
         profile: &Profile,
         s: Option<&SessSnap>,
         snap: &Snap,
+        launching: Option<&str>,
         cache: &mut HashMap<String, Vec<Segment>>,
         actions: &mut Vec<Action>,
     ) {
         let p = pal();
         ui.spacing_mut().item_spacing = Vec2::new(8.0, 12.0);
+        if snap.session.is_none() && button(ui, t("‹ Библиотека"), BtnKind::Link, true, None).clicked() {
+            actions.push(Action::Library);
+        }
         ui.label(theme::h1(profile.name.as_str()));
         ui.horizontal(|ui| {
             ui.label(theme::dim(format!(
@@ -588,6 +785,11 @@ impl MainWindow {
         // статус
         let (mut color, mut text, mut retry) =
             (p.dim, t("Игра не запущена. Запустите её — NovelTL подключится сам.").to_string(), false);
+        let play = s.is_none();
+        if play && launching == Some(profile.id.as_str()) {
+            color = p.warn;
+            text = tf("Запускаю {}…", &[&profile.name]);
+        }
         if let Some(s) = s {
             if !s.error.is_empty() {
                 color = p.bad;
@@ -614,7 +816,7 @@ impl MainWindow {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.add_sized([18.0, 20.0], egui::Label::new(RichText::new("●").size(14.0).color(color)));
-                let btn_w = if retry { 110.0 } else { 0.0 };
+                let btn_w = if retry || play { 110.0 } else { 0.0 };
                 let w = (ui.available_width() - btn_w - 8.0).max(50.0);
                 ui.vertical(|ui| {
                     ui.set_width(w);
@@ -625,6 +827,12 @@ impl MainWindow {
                 });
                 if retry && button(ui, t("Повторить"), BtnKind::Normal, true, None).clicked() {
                     actions.push(Action::Retry);
+                }
+                if play {
+                    let busy = launching == Some(profile.id.as_str());
+                    if button(ui, t("Играть"), BtnKind::Primary, !busy, None).clicked() {
+                        actions.push(Action::Play(profile.clone()));
+                    }
                 }
             });
         });
@@ -705,6 +913,48 @@ impl MainWindow {
     }
 
     fn modals(&mut self, ctx: &egui::Context) {
+        if let Some(edit) = self.launch_edit.as_mut() {
+            let (mut save, mut cancel) = (false, false);
+            let m = egui::Modal::new(egui::Id::new("launch_settings")).show(ctx, |ui| {
+                ui.set_width(460.0);
+                ui.label(theme::h2(t("Настройки запуска")));
+                ui.label(theme::small(edit.name.as_str()));
+                ui.add_space(6.0);
+                ui.label(theme::body(t("Файл игры")));
+                ui.horizontal(|ui| {
+                    let w = (ui.available_width() - 120.0).max(100.0);
+                    ui.add(egui::TextEdit::singleline(&mut edit.exe).desired_width(w));
+                    if button(ui, t("Выбрать…"), BtnKind::Normal, true, None).clicked() {
+                        if let Some(path) = winutil::pick_exe() {
+                            edit.exe = path.to_string_lossy().into_owned();
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(theme::body(t("Своя команда запуска")));
+                ui.add(egui::TextEdit::singleline(&mut edit.cmd).desired_width(f32::INFINITY));
+                ui.add(
+                    egui::Label::new(theme::small(t("Для DMM, Locale Emulator и других лаунчеров. Пусто — запуск как обычно.")))
+                        .wrap_mode(egui::TextWrapMode::Wrap),
+                );
+                ui.add_space(8.0);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if button(ui, t("Сохранить"), BtnKind::Primary, true, Some(110.0)).clicked() {
+                        save = true;
+                    }
+                    if button(ui, t("Отмена"), BtnKind::Normal, true, Some(110.0)).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+            if save {
+                self.pending_launch = Some((edit.id.clone(), edit.exe.trim().to_string(), edit.cmd.clone()));
+                self.launch_edit = None;
+            } else if cancel || m.should_close() {
+                self.launch_edit = None;
+            }
+            return;
+        }
         if let Some((id, name)) = self.confirm_delete.clone() {
             let mut yes = false;
             let mut no = false;
@@ -767,6 +1017,24 @@ impl MainWindow {
                 Action::OpenLog(path) => winutil::reveal_in_explorer(&path),
                 Action::Anki(front, back) => lock_ctl(&shared.controller).add_to_anki(front, back),
                 Action::Glossary(id) => windows.open_glossary(id),
+                Action::Library => self.open_game = false,
+                Action::LaunchSettings(pr) => {
+                    self.launch_edit =
+                        Some(LaunchEdit { id: pr.id, name: pr.name, exe: pr.exe_path, cmd: pr.launch });
+                }
+                Action::Play(pr) => {
+                    if winutil::test_area().is_some() {
+                        // проверки разработчика не запускают игры пользователя
+                        self.show_notice(&tf("Проверочный режим: игра «{}» не запускается.", &[&pr.name]));
+                    } else {
+                        match crate::launch::plan(&pr).and_then(|how| crate::launch::run(&how)) {
+                            Ok(()) => {
+                                self.launching = Some((pr.id, pr.name, Instant::now() + Duration::from_secs(30)));
+                            }
+                            Err(e) => self.show_notice(&e),
+                        }
+                    }
+                }
                 Action::OpenUrl(url) => winutil::open_url(&url),
                 Action::DismissUpdate => lock_ctl(&shared.controller).dismiss_update(),
                 Action::AskDelete(id, name) => self.confirm_delete = Some((id, name)),
@@ -797,6 +1065,10 @@ impl MainWindow {
                     }
                 }
             }
+        }
+        if let Some((id, exe, cmd)) = self.pending_launch.take() {
+            lock_ctl(&shared.controller).set_profile_launch(&id, &exe, &cmd);
+            self.profiles_at = None;
         }
         if let Some(id) = self.pending_delete.take() {
             lock_ctl(&shared.controller).delete_profile(&id);

@@ -147,6 +147,8 @@ pub struct Windows {
     pub settings: bool,
     /// id профиля, для которого открыть глоссарий
     pub glossary: Option<String>,
+    /// id профиля, для которого открыть «Настройки запуска» (для снимков)
+    pub launch: Option<String>,
 }
 
 impl Windows {

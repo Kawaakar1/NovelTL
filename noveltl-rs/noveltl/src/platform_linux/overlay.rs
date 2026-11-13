@@ -73,7 +73,7 @@ impl State {
                     self.frac = f;
                 }
             }
-            Cmd::Line { name, text, alt, orig, name_color } => {
+            Cmd::Line { name, text, alt, orig, name_color, .. } => {
                 self.name = name;
                 self.name_color = name_color;
                 self.text = text;

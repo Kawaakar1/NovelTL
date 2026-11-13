@@ -223,7 +223,7 @@ fn rollback_key(orig: &AppSettings, saved: Option<&PreviewKey>) -> PreviewKey {
 }
 
 /// Переносит правки из `d` и сочетания клавиш `hk` в копию `base`.
-fn draft_to_settings(d: &AppSettings, hk: &[String; 3], base: &AppSettings) -> AppSettings {
+fn draft_to_settings(d: &AppSettings, hk: &[String; 5], base: &AppSettings) -> AppSettings {
     let mut new = base.clone();
     PreviewKey::of(d).put(&mut new);
     new.nickname = d.nickname.trim().to_string();
@@ -236,6 +236,8 @@ fn draft_to_settings(d: &AppSettings, hk: &[String; 3], base: &AppSettings) -> A
     new.hotkey_toggle = hk[0].trim().to_string();
     new.hotkey_retranslate = hk[1].trim().to_string();
     new.hotkey_settings = hk[2].trim().to_string();
+    new.hotkey_prev = hk[3].trim().to_string();
+    new.hotkey_next = hk[4].trim().to_string();
     new.engine_mode = d.engine_mode.clone();
     new.second_engine = d.second_engine.clone();
     new.learn_mode = d.learn_mode;
@@ -281,7 +283,7 @@ pub struct SettingsWindow {
     bind_ip: String,
     ifaces: Vec<(String, String)>,
     fonts: Vec<String>,
-    hk: [String; 3],
+    hk: [String; 5],
     capturing: Option<usize>,
     picking: Option<(usize, Color32)>,
     /// текст в поле HEX окна выбора цвета
@@ -293,6 +295,10 @@ pub struct SettingsWindow {
     check_result: Option<(bool, String)>,
     /// список моделей локального ИИ: результат фонового запроса
     models_slot: Arc<Mutex<Option<Result<Vec<String>, String>>>>,
+    /// расход символов DeepL: результат фонового запроса и последний ответ
+    usage_slot: Arc<Mutex<Option<Result<(u64, u64), String>>>>,
+    usage_loading: bool,
+    usage: Option<Result<(u64, u64), String>>,
     models_loading: bool,
     models: Vec<String>,
     models_error: String,
@@ -352,7 +358,13 @@ impl SettingsWindow {
             pos,
             applied: PreviewKey::of(&orig),
             d: orig.clone(),
-            hk: [orig.hotkey_toggle.clone(), orig.hotkey_retranslate.clone(), orig.hotkey_settings.clone()],
+            hk: [
+                orig.hotkey_toggle.clone(),
+                orig.hotkey_retranslate.clone(),
+                orig.hotkey_settings.clone(),
+                orig.hotkey_prev.clone(),
+                orig.hotkey_next.clone(),
+            ],
             net_mode: orig.net_mode.clone(),
             bind_ip: orig.bind_ip.clone(),
             orig,
@@ -374,6 +386,9 @@ impl SettingsWindow {
             checking: false,
             check_result: None,
             models_slot: Arc::new(Mutex::new(None)),
+            usage_slot: Arc::new(Mutex::new(None)),
+            usage_loading: false,
+            usage: None,
             models_loading: false,
             models: Vec::new(),
             models_error: String::new(),
@@ -469,6 +484,26 @@ impl SettingsWindow {
                 Some(Err(e)) => {
                     self.models_error = e;
                     self.models_loading = false;
+                }
+                None => ctx.request_repaint_after(Duration::from_millis(100)),
+            }
+        }
+        if self.frames == 1 && !self.orig.deepl_key.trim().is_empty() {
+            self.start_usage(ctx);
+        }
+        if self.usage_loading {
+            let got = self.usage_slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            match got {
+                Some(r) => {
+                    self.usage_loading = false;
+                    if let Ok((used, limit)) = r {
+                        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                        if limit > 0 && used * 10 >= limit * 9 && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            lock_ctl(&shared.controller)
+                                .notice(tf("Лимит DeepL почти исчерпан: использовано {} из {} символов в этом месяце.", &[&used, &limit]));
+                        }
+                    }
+                    self.usage = Some(r);
                 }
                 None => ctx.request_repaint_after(Duration::from_millis(100)),
             }
@@ -573,6 +608,32 @@ impl SettingsWindow {
             *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
             ctx.request_repaint();
         });
+    }
+
+    /// Запрашивает расход символов DeepL в фоне (ключ — как он сохранён).
+    fn start_usage(&mut self, ctx: &egui::Context) {
+        let key = self.orig.deepl_key.trim().to_string();
+        let http = match net::make_http(&self.net_mode, &self.proxy_addr, &self.bind_ip, &self.proxy_user, &self.proxy_pass) {
+            Ok(h) => h,
+            Err(e) => {
+                self.usage = Some(Err(e));
+                return;
+            }
+        };
+        self.usage_loading = true;
+        let slot = self.usage_slot.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let r = noveltl_core::translators::deepl_usage(&http, &key);
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+            ctx.request_repaint();
+        });
+    }
+
+    /// Для `--shots`: показать строку расхода DeepL без сети.
+    pub fn fill_deepl_usage_for_shots(&mut self, used: u64, limit: u64) {
+        self.d.deepl_key = "demo:fx".to_string();
+        self.usage = Some(Ok((used, limit)));
     }
 
     /// Запрашивает список моделей локального сервера в фоне.
@@ -1169,6 +1230,22 @@ impl SettingsWindow {
                             &[&self.status],
                         )),
                     );
+                    if key_on && !self.d.deepl_key.trim().is_empty() {
+                        match &self.usage {
+                            Some(Ok((used, limit))) => {
+                                theme::note(
+                                    ui,
+                                    theme::small(tf(
+                                        "Использовано: {} из {} символов в этом месяце",
+                                        &[&crate::ui::main_window::thousands(*used), &crate::ui::main_window::thousands(*limit)],
+                                    )),
+                                );
+                                usage_bar(ui, *used, *limit);
+                            }
+                            Some(Err(_)) => theme::note(ui, theme::small(t("Расход символов: не удалось узнать"))),
+                            None => {}
+                        }
+                    }
                 }
             }
             theme::row_w(
@@ -1383,7 +1460,13 @@ impl SettingsWindow {
     fn draw_hotkeys(&mut self, ui: &mut Ui) {
         theme::section_label(ui, t("Сочетания клавиш"));
         theme::card(ui, |ui| {
-            let titles = [t("Скрыть / показать плашку"), t("Перевести заново без кэша"), t("Открыть настройки")];
+            let titles = [
+                t("Скрыть / показать плашку"),
+                t("Перевести заново без кэша"),
+                t("Открыть настройки"),
+                t("Предыдущая реплика на плашке"),
+                t("Следующая реплика на плашке"),
+            ];
             for (i, title) in titles.into_iter().enumerate() {
                 theme::row_w(ui, title, None, 200.0, |ui| {
                     let resp = hotkey_field(ui, &self.hk[i], self.capturing == Some(i), ui.available_width());
@@ -1750,6 +1833,17 @@ fn gradient_image(w: usize, h: usize, radius: f32) -> ColorImage {
 }
 
 /// Поле сочетания: по щелчку ждёт нажатия.
+/// Полоска расхода: заполненная часть — акцентом, от 90 % — красным.
+fn usage_bar(ui: &mut Ui, used: u64, limit: u64) {
+    let p = pal();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
+    ui.painter().rect_filled(rect, CornerRadius::same(3), p.border);
+    let frac = if limit == 0 { 0.0 } else { (used as f32 / limit as f32).clamp(0.0, 1.0) };
+    let fill = if frac >= 0.9 { Color32::from_rgb(0xE5, 0x48, 0x4D) } else { p.accent };
+    ui.painter().rect_filled(Rect::from_min_size(rect.min, Vec2::new(rect.width() * frac, 6.0)), CornerRadius::same(3), fill);
+    ui.add_space(12.0);
+}
+
 fn hotkey_field(ui: &mut Ui, text: &str, capturing: bool, width: f32) -> egui::Response {
     let p = pal();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 32.0), Sense::click());
@@ -1857,13 +1951,20 @@ mod tests {
         d.accent = "#2FBF8A".into();
         d.overlay_show_original = true;
         d.overlay_toolbar_dim = true;
-        let hk = ["Ctrl+Alt+H".to_string(), "Ctrl+Alt+R".to_string(), " Ctrl+Alt+O ".to_string()];
+        let hk = [
+            "Ctrl+Alt+H".to_string(),
+            "Ctrl+Alt+R".to_string(),
+            " Ctrl+Alt+O ".to_string(),
+            "Ctrl+Alt+Left".to_string(),
+            "Ctrl+Alt+Right".to_string(),
+        ];
         let new = draft_to_settings(&d, &hk, &base);
         assert_eq!(new.ui_lang, Some(UiLang::En));
         assert_eq!(new.accent, "#2FBF8A");
         assert!(new.overlay_show_original);
         assert!(new.overlay_toolbar_dim);
         assert_eq!(new.hotkey_settings, "Ctrl+Alt+O");
+        assert_eq!(new.hotkey_next, "Ctrl+Alt+Right");
     }
 
     #[test]

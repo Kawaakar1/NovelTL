@@ -24,12 +24,18 @@ No manual hook codes, no command line — three wizard steps and you are playing
 
 ## Features
 
+### 📚 Game library
+- 📚 **Game cards in the main window.** Icon from the exe, “Played: …”, “Lines read: N”, a Play button and a “···” menu.
+- ▶️ **One-button launch.** From the game folder, via Steam or a “Custom launch command” (DMM, Locale Emulator); NovelTL connects by itself.
+
 ### 🌐 Translation
 - 🗺️ **5 languages, any direction.** Japanese, English, Chinese, Korean, Russian; source language per game (or “Auto”).
 - 🌐 **DeepL and Google.** Google without a key, DeepL with one (uses previous lines as context); if DeepL refuses, Google takes over.
 - 🆓 **Free options.** Local AI ([Ollama](https://ollama.com), LM Studio), offline, and Microsoft Translator (2M characters a month).
 - ⚖️ **Second translation.** A smaller line under the main one from another translator, to cross-check the meaning.
 - 📖 **Glossary.** Names and terms come out the way you set them (“灯里 → Akari”); DeepL and local AI also get a “who is this” note.
+- 🎨 **A color for each character's name.** “Color” column in the glossary: the name in that color on the overlay and in history.
+- 📊 **DeepL limit counter.** Settings → Translation: characters used this month; a warning at 90 %.
 - 💾 **Cache and cleanup.** Repeats are instant and use no limits; KiriKiri tags, doubled characters and repeated phrases are removed.
 
 ### 🪟 Overlay on top of the game
@@ -39,9 +45,13 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🔒 **Lock.** Open it to move and resize the box during play; close it and the box stays put.
 - 🔤 **Original in small text under the translation.** Optional.
 - 🖌️ **Your own look.** Font, size, colors and opacity, with a live preview.
+- 🎭 **Ready-made styles.** Classic, Subtitles, Like in the game, Minimal; plus corner rounding, border, centering and shadow.
+- ✨ **Fade-in and typing effect.** Fade-in is on by default, typing is optional.
+- ⏪ **Past lines on the overlay.** Ctrl+Alt+←/→ or the mouse wheel while the lock is open; a “‹ N back” label.
 
 ### 🎓 For Japanese learners
 - 🈶 **Furigana** over kanji in the dialogue history.
+- 🈷️ **Furigana on the overlay.** Over the original, if “Show original under translation” is on; word meaning on hover.
 - 📚 **Word meanings on hover.** Verbs are shown in dictionary form; the [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) dictionary (© EDRDG, CC BY-SA 4.0) downloads with one button.
 - 🗂️ **“Add to Anki”** on right click, via AnkiConnect.
 
@@ -57,7 +67,9 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🎨 **Theme.** Mode: Follow Windows, Dark, Light or Custom (your own background, card and text colors).
 - 🌈 **Accent color.** Six presets or any color you like.
 - 🌍 **Interface in 5 languages.** Русский, English, 日本語, 中文, 한국어.
-- ⌨️ **Hotkeys in the game.** Ctrl+Alt+S settings, Ctrl+Alt+H overlay, Ctrl+Alt+R translate again; tray icon.
+- ⌨️ **Hotkeys in the game.** Ctrl+Alt+S settings, Ctrl+Alt+H overlay, Ctrl+Alt+R translate again.
+- 🟢 **Tray icon with a dot.** Green — game connected, yellow — looking for text.
+- 🔔 **Update check.** Once a day; a “Version … is out” banner in the main window; can be turned off in Settings → General.
 - 📜 **History, log, statistics.** Last 50 lines, a text log per game and a reading counter.
 - 🛡️ **Network.** SOCKS5 / HTTP proxy with login, network interface choice, for when Google limits requests over a VPN.
 - 👤 **Profile.** Your own nickname and avatar in the main window.
@@ -68,6 +80,10 @@ Made first of all for YUZUSOFT games on the KiriKiri engine (Senren\*Banka and o
 ## Screenshots
 
 <table>
+<tr>
+<td width="50%"><img src="shots_en/01_main_library.png" alt="Game library"><br><sub>Game library: cards, a Play button and the “···” menu</sub></td>
+<td width="50%"><img src="shots_en/12b_settings_plate_game.png" alt="Overlay styles"><br><sub>“Overlay”: the “Like in the game” style and style cards</sub></td>
+</tr>
 <tr>
 <td width="50%"><img src="shots_en/09_main_running.png" alt="Main window"><br><sub>Main window: the game is connected, original and translation are shown</sub></td>
 <td width="50%"><img src="shots_en/02_wizard_step1.png" alt="Wizard, step 1"><br><sub>Wizard, step 1 — choose the game window and language</sub></td>
@@ -94,6 +110,7 @@ Made first of all for YUZUSOFT games on the KiriKiri engine (Senren\*Banka and o
 <summary><b>Other settings sections</b> (click to expand)</summary>
 <br>
 <p align="center">
+<img src="shots_en/01b_launch_settings.png" width="400" alt="Launch settings">
 <img src="shots_en/10_settings_look.png" width="400" alt="Appearance">
 <img src="shots_en/15_settings_japanese.png" width="400" alt="Japanese">
 <img src="shots_en/18_settings_local_ai.png" width="400" alt="Local AI">
@@ -134,7 +151,7 @@ Details are in `README-Linux.txt` inside the archive. The Linux build is checked
    Wrong text? Open “Other options” and pick the right line.
 5. **Step 3.** Drag the box onto the game's dialogue window, stretch it by the edges and press **“Done”**.
 
-Next time just start NovelTL and the game — it connects automatically.
+Next time just start NovelTL and the game — it connects automatically. You can also launch the game with the **“Play”** button on its card in the library.
 
 Want to look at the program without a game? Run `NovelTL.exe --demo` (or the “demo mode” shortcut in the Start menu).
 
@@ -145,6 +162,8 @@ Want to look at the program without a game? Run `NovelTL.exe --demo` (or the “
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> | open settings |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>H</kbd> | hide / show the overlay |
 | <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>R</kbd> | translate the line again, bypassing the cache |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>←</kbd> | previous line on the overlay |
+| <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>→</kbd> | next line on the overlay |
 
 The shortcuts can be changed in Settings.
 
@@ -183,7 +202,7 @@ Everything is next to the program, in the `data` folder:
 | `data\reports` | setup reports |
 | `data\settings.json` | general settings |
 
-🔒 The DeepL key and the proxy password are stored **encrypted** with Windows means (DPAPI) — they can be read only under your account on this computer. The program sends no data anywhere except the dialogue text to the chosen translator.
+🔒 The DeepL key and the proxy password are stored **encrypted** with Windows means (DPAPI) — they can be read only under your account on this computer. The program sends no data anywhere except the dialogue text to the chosen translator and the daily update check: it contacts api.github.com, sends nothing but the request, and can be turned off in Settings → General.
 
 ## Building from source
 

@@ -7,7 +7,7 @@
 //! При наведении мыши (или в режиме настройки) в углу плашки появляется панель кнопок: перевести
 //! заново, копировать, показать оригинал, замочек, настройки, скрыть и меню (те же пункты, что у значка в трее).
 
-use noveltl_core::i18n::t;
+use noveltl_core::i18n::{t, tf};
 use std::cell::RefCell;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -30,8 +30,8 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextLayout, DWRITE_FACTORY_TYPE_SHARED,
     DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD,
-    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER,
-    DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_WRAP,
+    DWRITE_FONT_WEIGHT_NORMAL, DWRITE_HIT_TEST_METRICS, DWRITE_LINE_SPACING_METHOD_UNIFORM,
+    DWRITE_PARAGRAPH_ALIGNMENT_CENTER, DWRITE_TEXT_ALIGNMENT_CENTER, DWRITE_TEXT_METRICS, DWRITE_TEXT_RANGE, DWRITE_WORD_WRAPPING_WRAP,
 };
 use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
@@ -122,6 +122,14 @@ struct State {
     alt: String,
     /// исходная реплика (рисуется мелко, если включено в стиле)
     orig: String,
+    /// оригинал по словам: фуригана и подсказки словаря (пусто — без них)
+    segs: Vec<OrigSeg>,
+    /// на сколько реплик назад от последней показана плашка
+    back: usize,
+    /// слово оригинала под курсором
+    hover_seg: Option<usize>,
+    /// где слова оригинала нарисованы (DIP): left, top, right, bottom, номер слова
+    seg_rects: RefCell<Vec<(f32, f32, f32, f32, usize)>>,
     /// шрифт значков панели кнопок (нет в системе — рисуем запасные формы)
     icon_font: Option<String>,
     note: String,
@@ -254,6 +262,10 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 anim: None,
                 alt: String::new(),
                 orig: String::new(),
+                segs: Vec::new(),
+                back: 0,
+                hover_seg: None,
+                seg_rects: RefCell::new(Vec::new()),
                 icon_font,
                 note: String::new(),
                 edit: false,
@@ -371,6 +383,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
+        WM_MOUSEWHEEL => {
+            // колесо над плашкой, пока замочек открыт: листание реплик
+            let d = (wp.0 >> 16) as i16;
+            if d != 0 {
+                if let Some(Some(e)) = with_state(|st| st.movable().then(|| st.events.clone())) {
+                    let _ = e.send(Event::Browse(if d > 0 { 1 } else { -1 }));
+                }
+            }
+            LRESULT(0)
+        }
         WM_ENTERSIZEMOVE => {
             with_state(|st| st.in_size_move = true);
             LRESULT(0)
@@ -430,8 +452,11 @@ impl State {
                         self.frac = f;
                     }
                 }
-                Cmd::Line { name, text, alt, orig, name_color } => {
+                Cmd::Line { name, text, alt, orig, name_color, segs, back } => {
                     self.start_anim(&text);
+                    self.segs = segs;
+                    self.back = back;
+                    self.hover_seg = None;
                     self.name = name;
                     self.name_color = name_color;
                     self.text = text;
@@ -446,6 +471,7 @@ impl State {
                         self.text.clear();
                         self.alt.clear();
                         self.orig.clear();
+                        self.segs.clear();
                     }
                 }
                 Cmd::Clear => {
@@ -453,6 +479,8 @@ impl State {
                     self.text.clear();
                     self.alt.clear();
                     self.orig.clear();
+                    self.segs.clear();
+                    self.back = 0;
                     self.note.clear();
                 }
                 Cmd::EditMode(on) => {
@@ -549,6 +577,13 @@ impl State {
         let hover = self.visible && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
         let k = dpi_scale(self.hwnd);
         let hover_btn = if hover { tb_button_at(dip(r.right - r.left, k), dip(p.x - r.left, k), dip(p.y - r.top, k)) } else { None };
+        let (cx, cy) = ((p.x - r.left) as f32 / k, (p.y - r.top) as f32 / k);
+        let hover_seg = if hover {
+            self.seg_rects.borrow().iter().find(|(l, t, rr, b, _)| cx >= *l && cx < *rr && cy >= *t && cy < *b).map(|s| s.4)
+        } else {
+            None
+        };
+        self.hover_seg = hover_seg;
         if (hover, hover_btn) != (self.hover, self.hover_btn) {
             self.hover = hover;
             self.hover_btn = hover_btn;
@@ -683,6 +718,7 @@ impl State {
         self.anim_secs().map(|e| (e * 100.0) as u32).hash(&mut h);
         (self.style.show_original, self.style.toolbar_dim).hash(&mut h);
         (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
+        (self.segs.len(), self.back, self.hover_seg).hash(&mut h);
         dpi_scale(self.hwnd).to_bits().hash(&mut h);
         (self.style.font_size as u32, self.style.text_color, self.style.name_color).hash(&mut h);
         (self.style.outline_color, self.style.bg_color, self.style.bg_opacity).hash(&mut h);
@@ -801,8 +837,17 @@ impl State {
                     let alt_size = (size * 0.7).max(MIN_FONT);
                     let alt = if self.alt.is_empty() || self.edit { None } else { Some(self.layout(&self.alt, alt_size, false, inner_w, inner_h)?) };
                     // оригинал — ещё мельче и бледнее, под переводом (по настройке; в режиме настройки — нет)
-                    let orig_size = (size * 0.62).max(MIN_FONT);
-                    let orig = if self.orig.is_empty() || self.edit || !s.show_original { None } else { Some(self.layout(&self.orig, orig_size, false, inner_w, inner_h)?) };
+                    let show_orig = !(self.orig.is_empty() || self.edit || !s.show_original);
+                    // фуригана: в каждой строке оригинала над иероглифами оставляем место под чтение
+                    let ruby = show_orig && self.segs_usable() && self.segs.iter().any(|g| g.reading.is_some());
+                    // с фуриганой оригинал крупнее, иначе чтения над ним не прочитать
+                    let orig_size = (size * if ruby { 0.8 } else { 0.62 }).max(MIN_FONT);
+                    let orig = if show_orig { Some(self.layout(&self.orig, orig_size, false, inner_w, inner_h)?) } else { None };
+                    let ruby_size = (orig_size * 0.5).max(10.0);
+                    if let (Some(l), true) = (&orig, ruby) {
+                        let extra = ruby_size * 1.15;
+                        l.SetLineSpacing(DWRITE_LINE_SPACING_METHOD_UNIFORM, orig_size * 1.3 + extra, orig_size * 1.02 + extra)?;
+                    }
                     let name_h = match &name_layout { Some(l) => metrics(l)?.height + 2.0, None => 0.0 };
                     let body_h = metrics(&body)?.height;
                     let alt_h = match &alt { Some(l) => metrics(l)?.height + 4.0, None => 0.0 };
@@ -822,8 +867,13 @@ impl State {
                         if let Some(l) = &alt {
                             self.outlined(rt, l, left, y + body_h + 4.0, 0xC9CBE0, alt_size, alpha, None)?;
                         }
+                        self.seg_rects.borrow_mut().clear();
                         if let Some(l) = &orig {
-                            self.outlined(rt, l, left, y + body_h + alt_h + 4.0, 0xA2A4B8, orig_size, alpha, None)?;
+                            let oy = y + body_h + alt_h + 4.0;
+                            self.outlined(rt, l, left, oy, 0xA2A4B8, orig_size, alpha, None)?;
+                            if self.segs_usable() {
+                                self.draw_segs(rt, l, left, oy, ruby_size, orig_size, alpha, w as f32)?;
+                            }
                         }
                         break;
                     }
@@ -841,6 +891,12 @@ impl State {
                 };
                 self.outlined(rt, &l, x, y, 0xC9CBE0, small, 1.0, None)?;
             }
+            if self.back > 0 {
+                // метка в левом нижнем углу: сколько реплик назад от последней
+                let l = self.layout(&tf("‹ {} назад", &[&self.back]), 13.0, false, inner_w, inner_h)?;
+                let m = metrics(&l)?;
+                self.outlined(rt, &l, left, h as f32 - m.height - 6.0, 0xC9CBE0, 13.0, 1.0, None)?;
+            }
             if self.toolbar_shown() {
                 self.draw_toolbar(rt, w)?;
             }
@@ -856,6 +912,65 @@ impl State {
             }
             rt.EndDraw(None, None)
         }
+    }
+
+    /// Слова оригинала годятся для фуриганы: в сумме дают ровно показанный текст.
+    fn segs_usable(&self) -> bool {
+        !self.segs.is_empty() && self.segs.iter().map(|g| g.text.as_str()).collect::<String>() == self.orig
+    }
+
+    /// Фуригана над словами оригинала, подсветка и подсказка слова под курсором; заполняет `seg_rects`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_segs(&self, rt: &ID2D1RenderTarget, layout: &IDWriteTextLayout, ox: f32, oy: f32, ruby_size: f32, tip_size: f32, alpha: f32, w: f32) -> windows::core::Result<()> {
+        unsafe {
+            let mut rects = self.seg_rects.borrow_mut();
+            let mut pos = 0u32;
+            for (i, seg) in self.segs.iter().enumerate() {
+                let len = seg.text.encode_utf16().count() as u32;
+                if len > 0 && (seg.reading.is_some() || !seg.tip.is_empty()) {
+                    let mut n = 0u32;
+                    let _ = layout.HitTestTextRange(pos, len, 0.0, 0.0, None, &mut n); // первый вызов только считает прямоугольники
+                    let mut ms = vec![DWRITE_HIT_TEST_METRICS::default(); n as usize];
+                    if n > 0 && layout.HitTestTextRange(pos, len, 0.0, 0.0, Some(&mut ms), &mut n).is_ok() {
+                        for (j, m) in ms.iter().take(n as usize).enumerate() {
+                            rects.push((ox + m.left, oy + m.top, ox + m.left + m.width, oy + m.top + m.height, i));
+                            if j == 0 {
+                                if let Some(r) = &seg.reading {
+                                    let l = self.layout(r, ruby_size, false, 400.0, 100.0)?;
+                                    let mw = metrics(&l)?.width;
+                                    self.outlined(rt, &l, ox + m.left + (m.width - mw) / 2.0, oy + m.top, 0xC9CBE0, ruby_size, alpha, None)?;
+                                }
+                            }
+                        }
+                    }
+                }
+                pos += len;
+            }
+            let Some(i) = self.hover_seg else { return Ok(()) };
+            let mine: Vec<_> = rects.iter().filter(|r| r.4 == i).collect();
+            let Some(first) = mine.first() else { return Ok(()) };
+            let hl = rt.CreateSolidColorBrush(&color(0xFFFFFF, 0.14), None)?;
+            for r in &mine {
+                let rect = D2D_RECT_F { left: r.0, top: r.1, right: r.2, bottom: r.3 };
+                rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 3.0, radiusY: 3.0 }, &hl);
+            }
+            let tip = &self.segs[i].tip;
+            if tip.is_empty() {
+                return Ok(());
+            }
+            // подсказка над строкой оригинала, внутри плашки
+            let l = self.layout(tip, tip_size.max(13.0), false, (w - 40.0).clamp(80.0, 380.0), 200.0)?;
+            let m = metrics(&l)?;
+            let (bw, bh) = (m.width + 16.0, m.height + 10.0);
+            let bx = ((first.0 + first.2) / 2.0 - bw / 2.0).clamp(4.0, (w - bw - 4.0).max(4.0));
+            let by = (first.1 - bh - 4.0).max(2.0);
+            let rect = D2D_RECT_F { left: bx, top: by, right: bx + bw, bottom: by + bh };
+            let rr = D2D1_ROUNDED_RECT { rect, radiusX: 7.0, radiusY: 7.0 };
+            rt.FillRoundedRectangle(&rr, &rt.CreateSolidColorBrush(&color(0x1B1C25, 0.96), None)?);
+            rt.DrawRoundedRectangle(&rr, &rt.CreateSolidColorBrush(&color(0xFFFFFF, 0.25), None)?, 1.0, &self.round);
+            rt.DrawTextLayout(D2D_POINT_2F { x: bx + 8.0, y: by + 5.0 }, &l, &rt.CreateSolidColorBrush(&color(0xFFFFFF, 1.0), None)?, D2D1_DRAW_TEXT_OPTIONS_NONE);
+        }
+        Ok(())
     }
 
     /// Панель кнопок: подложка-«пилюля» у правого верхнего края и семь кнопок. Значки — шрифтом

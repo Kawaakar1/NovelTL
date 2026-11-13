@@ -100,6 +100,16 @@ pub fn reveal_in_explorer(path: &str) {
     let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
+/// Значок exe (ширина, высота, RGBA) — только в Windows.
+pub fn exe_icon(_path: &str) -> Option<(usize, usize, Vec<u8>)> {
+    None
+}
+
+/// Диалога выбора файла в Linux нет.
+pub fn pick_exe() -> Option<std::path::PathBuf> {
+    None
+}
+
 /// Открывает папку или ссылку программой по умолчанию.
 pub fn open_url(target: &str) {
     let _ = std::process::Command::new("xdg-open").arg(target).spawn();

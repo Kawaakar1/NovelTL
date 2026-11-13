@@ -17,6 +17,7 @@ mod demo;
 mod diag;
 #[allow(dead_code)]
 mod hotkeys;
+mod launch;
 #[allow(dead_code)]
 mod overlay_common;
 // чтение текста с экрана — встроенное распознавание Windows
@@ -278,6 +279,14 @@ fn main() {
             let _ = std::fs::remove_dir_all(&dir);
         }
         let _ = std::fs::create_dir_all(&dir);
+        // только для проверок: готовые настройки и словарь в папку демо
+        if let Some(f) = std::env::var_os("NOVELTL_TEST_SETTINGS") {
+            let _ = std::fs::copy(f, dir.join("settings.json"));
+        }
+        if let Some(f) = std::env::var_os("NOVELTL_TEST_DICT") {
+            let _ = std::fs::create_dir_all(dir.join("dict"));
+            let _ = std::fs::copy(f, dir.join("dict").join("jmdict.sqlite"));
+        }
         if let Ok(abs) = dir.canonicalize() {
             dir = abs;
         }
