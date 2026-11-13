@@ -1038,7 +1038,7 @@ impl SettingsWindow {
                     theme::row_w(
                         ui,
                         t("Адрес сервера"),
-                        Some(t("Адрес сервера: Ollama — http://localhost:11434, LM Studio — http://localhost:1234")),
+                        Some(t("Ollama — http://localhost:11434, LM Studio — http://localhost:1234")),
                         260.0,
                         |ui| {
                             ui.add(

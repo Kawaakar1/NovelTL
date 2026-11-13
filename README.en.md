@@ -128,7 +128,7 @@ Details are in `README-Linux.txt` inside the archive. The Linux build is checked
 ## How to use
 
 1. Start the game **in windowed mode** and get to a place with dialogue.
-2. Start NovelTL → **“Add game”**. The interface language can be changed in Settings → General.
+2. Start NovelTL → **“Add game”**. The interface language can be changed in Settings → Appearance.
 3. **Step 1.** Choose the game window and the source language. If Windows asks for administrator permission, allow it.
 4. **Step 2.** Click through 3–4 lines in the game. When the dialogue text appears in the window, press **“This is the dialogue text”**.
    Wrong text? Open “Other options” and pick the right line.

@@ -128,7 +128,7 @@ pub(crate) const ROWS: &[Row] = &[
     ("Ключ Microsoft", ["Microsoft key", "Microsoft キー", "Microsoft 密钥", "Microsoft 키"]),
     ("Показать", ["Show", "表示", "显示", "표시"]),
     ("Регион, например, westeurope; если ресурс глобальный — оставьте пустым", ["Region, e.g. westeurope; leave empty if the resource is global", "リージョン（例：westeurope）。グローバルリソースの場合は空欄にしてください", "区域，例如 westeurope；如果资源是全局的，请留空", "리전(예: westeurope). 글로벌 리소스라면 비워 두세요"]),
-    ("Адрес сервера: Ollama — http://localhost:11434, LM Studio — http://localhost:1234", ["Server address: Ollama — http://localhost:11434, LM Studio — http://localhost:1234", "サーバーアドレス：Ollama — http://localhost:11434、LM Studio — http://localhost:1234", "服务器地址：Ollama — http://localhost:11434，LM Studio — http://localhost:1234", "서버 주소: Ollama — http://localhost:11434, LM Studio — http://localhost:1234"]),
+    ("Ollama — http://localhost:11434, LM Studio — http://localhost:1234", ["Ollama — http://localhost:11434, LM Studio — http://localhost:1234", "Ollama — http://localhost:11434, LM Studio — http://localhost:1234", "Ollama — http://localhost:11434, LM Studio — http://localhost:1234", "Ollama — http://localhost:11434, LM Studio — http://localhost:1234"]),
     ("Выберите модель", ["Choose a model", "モデルを選択", "选择模型", "모델 선택"]),
     ("Обновить список", ["Refresh list", "リストを更新", "刷新列表", "목록 새로 고침"]),
     ("Загрузка…", ["Loading…", "読み込み中…", "加载中…", "불러오는 중…"]),
