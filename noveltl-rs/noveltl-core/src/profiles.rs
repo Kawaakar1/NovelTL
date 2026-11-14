@@ -39,11 +39,75 @@ pub struct GlossaryEntry {
 }
 
 /// Сколько прочитано в игре (считается по переведённым репликам).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ReadStats {
     pub lines: u64,
     pub chars: u64,
+    /// реплик по дням: "YYYY-MM-DD" (местное время) -> число
+    #[serde(default)]
+    pub daily: std::collections::BTreeMap<String, u32>,
+}
+
+/// День "YYYY-MM-DD" -> число дней от 1970-01-01 (алгоритм Говарда Хиннанта).
+fn day_number(day: &str) -> Option<i64> {
+    let mut it = day.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (it.next()??, it.next()??, it.next()??);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    Some(era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468)
+}
+
+fn day_string(n: i64) -> String {
+    let z = n + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+impl ReadStats {
+    /// Одна новая реплика за день `day` ("YYYY-MM-DD").
+    pub fn record(&mut self, day: &str) {
+        let n = self.daily.entry(day.to_string()).or_insert(0);
+        *n = n.saturating_add(1);
+    }
+
+    /// Дней подряд с репликами; считается от сегодня, а если сегодня пусто — от вчера.
+    pub fn streak(&self, today: &str) -> u32 {
+        let Some(mut d) = day_number(today) else { return 0 };
+        if self.daily.get(&day_string(d)).copied().unwrap_or(0) == 0 {
+            d -= 1;
+        }
+        let mut n = 0;
+        while self.daily.get(&day_string(d)).copied().unwrap_or(0) > 0 {
+            n += 1;
+            d -= 1;
+        }
+        n
+    }
+
+    /// Последние `n` дней по возрастанию, заканчивая `today`; дни без реплик — 0.
+    pub fn last_days(&self, today: &str, n: usize) -> Vec<(String, u32)> {
+        let Some(end) = day_number(today) else { return Vec::new() };
+        (0..n as i64)
+            .map(|i| {
+                let day = day_string(end - (n as i64 - 1 - i));
+                let c = self.daily.get(&day).copied().unwrap_or(0);
+                (day, c)
+            })
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +132,17 @@ pub struct Profile {
     pub last_played: u64,
     /// своя команда запуска (DMM, Locale Emulator…); пусто — запуск как обычно
     pub launch: String,
+    /// id игры на VNDB ("v19073"); пусто — не выбрана
+    #[serde(default)]
+    pub vndb_id: String,
+    /// имена файлов в data/art/<id>/; пусто — нет
+    #[serde(default)]
+    pub cover: String,
+    #[serde(default)]
+    pub backdrop: String,
+    /// true — картинки выбраны автоматически
+    #[serde(default)]
+    pub art_auto: bool,
 }
 
 impl Default for Profile {
@@ -87,6 +162,10 @@ impl Default for Profile {
             stats: ReadStats::default(),
             last_played: 0,
             launch: String::new(),
+            vndb_id: String::new(),
+            cover: String::new(),
+            backdrop: String::new(),
+            art_auto: false,
         }
     }
 }
@@ -355,9 +434,13 @@ pub struct AppSettings {
     pub overlay_fade: bool,
     /// Эффект печати.
     pub overlay_typewriter: bool,
+    /// Портрет говорящего (или кружок с первой буквой) рядом с именем на плашке.
+    pub overlay_portraits: bool,
     pub check_updates: bool,
     /// unix-секунды последней проверки обновлений.
     pub last_update_check: u64,
+    /// Согласие на запросы к VNDB (обложки, картинки, портреты); None — ещё не спрашивали.
+    pub vndb: Option<bool>,
 }
 
 impl Default for AppSettings {
@@ -408,8 +491,10 @@ impl Default for AppSettings {
             overlay_shadow: false,
             overlay_fade: true,
             overlay_typewriter: false,
+            overlay_portraits: true,
             check_updates: true,
             last_update_check: 0,
+            vndb: None,
         }
     }
 }
@@ -476,6 +561,51 @@ impl AppSettings {
         let fallback = plain(&copy.deepl_key) || plain(&copy.proxy_pass) || plain(&copy.ms_key);
         save_json(path, &copy)?;
         Ok(fallback)
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    fn st(days: &[(&str, u32)]) -> ReadStats {
+        let mut s = ReadStats::default();
+        for (d, n) in days {
+            s.daily.insert(d.to_string(), *n);
+        }
+        s
+    }
+
+    #[test]
+    fn record_and_empty() {
+        let mut s = ReadStats::default();
+        assert_eq!(s.streak("2025-03-01"), 0);
+        s.record("2025-03-01");
+        s.record("2025-03-01");
+        assert_eq!(s.daily["2025-03-01"], 2);
+    }
+
+    #[test]
+    fn streak_over_month_and_year() {
+        let s = st(&[("2024-12-30", 1), ("2024-12-31", 5), ("2025-01-01", 2), ("2025-01-02", 1)]);
+        assert_eq!(s.streak("2025-01-02"), 4);
+        assert_eq!(s.streak("2025-01-03"), 4, "сегодня пусто — считаем от вчера");
+        assert_eq!(s.streak("2025-01-04"), 0);
+        let m = st(&[("2024-02-28", 1), ("2024-02-29", 1), ("2024-03-01", 1)]);
+        assert_eq!(m.streak("2024-03-01"), 3, "високосный февраль");
+    }
+
+    #[test]
+    fn streak_gap_and_last_days() {
+        let s = st(&[("2025-03-01", 1), ("2025-03-03", 4), ("2025-03-04", 2)]);
+        assert_eq!(s.streak("2025-03-04"), 2);
+        let l = s.last_days("2025-03-04", 5);
+        let want: Vec<(String, u32)> =
+            [("2025-02-28", 0), ("2025-03-01", 1), ("2025-03-02", 0), ("2025-03-03", 4), ("2025-03-04", 2)]
+                .iter()
+                .map(|(d, n)| (d.to_string(), *n))
+                .collect();
+        assert_eq!(l, want);
     }
 }
 
@@ -743,7 +873,7 @@ mod tests {
         assert!(!s.overlay_toolbar_dim);
         assert_eq!((s.overlay_preset.as_str(), s.overlay_radius), ("classic", 12));
         assert!(!s.overlay_border && !s.overlay_center && !s.overlay_shadow && !s.overlay_typewriter);
-        assert!(s.overlay_fade && s.check_updates);
+        assert!(s.overlay_fade && s.overlay_portraits && s.check_updates);
         assert_eq!(s.last_update_check, 0);
     }
 

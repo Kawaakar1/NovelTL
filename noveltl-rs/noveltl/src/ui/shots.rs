@@ -63,6 +63,46 @@ fn demo_profile(shared: &Shared) {
     c.save_settings(s);
 }
 
+/// Собственные картинки демо-игры (нарисованы для проекта; чужих обложек на снимках нет).
+const DEMO_COVER: &[u8] = include_bytes!("../../assets/demo/cover.png");
+const DEMO_BACKDROP: &[u8] = include_bytes!("../../assets/demo/backdrop.png");
+
+/// Обложка, фон и правдоподобная активность чтения (~6 недель) для демо-игры — только для снимков.
+fn demo_art(shared: &Shared) {
+    let tmp = std::env::temp_dir();
+    let (cover, back) = (
+        tmp.join(format!("noveltl_demo_cover_{}.png", std::process::id())),
+        tmp.join(format!("noveltl_demo_backdrop_{}.png", std::process::id())),
+    );
+    if std::fs::write(&cover, DEMO_COVER).is_err() || std::fs::write(&back, DEMO_BACKDROP).is_err() {
+        return;
+    }
+    let mut c = lock_ctl(&shared.controller);
+    let Some(id) = c.session.as_ref().map(|s| s.profile.id.clone()) else { return };
+    let today = crate::controller::local_time_text("%Y-%m-%d");
+    if let Some(s) = c.session.as_mut() {
+        let mut x: u32 = 2024;
+        for (day, _) in s.profile.stats.last_days(&today, 44) {
+            x = x.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let n = match (x >> 16) % 100 {
+                0..=29 => 0,
+                30..=64 => 4 + (x >> 8) % 20,
+                65..=89 => 25 + (x >> 8) % 60,
+                _ => 90 + (x >> 8) % 140,
+            };
+            if n > 0 {
+                s.profile.stats.daily.insert(day, n);
+            }
+        }
+    }
+    // set_*_file сохраняют профиль на диск вместе со статистикой
+    c.set_cover_file(&id, &cover);
+    c.set_backdrop_file(&id, &back);
+    drop(c);
+    let _ = std::fs::remove_file(cover);
+    let _ = std::fs::remove_file(back);
+}
+
 /// Сохраняет RGBA-картинку в PNG.
 pub fn save_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), String> {
     let file = File::create(path).map_err(|e| e.to_string())?;
@@ -193,6 +233,11 @@ enum Stage {
     GlossaryClose,
     /// игра закрыта: снимок библиотеки
     LibraryEnd,
+    /// окно «Обложка и фон»: открыть, подставить результаты поиска, снять, закрыть
+    ArtOpen,
+    ArtFill,
+    ArtShot,
+    ArtClose,
     /// окно «Настройки запуска»
     LaunchOpen,
     LaunchShot,
@@ -446,6 +491,7 @@ impl Shots {
             }
             Stage::AfterFinish => {
                 if waited > Duration::from_millis(600) {
+                    demo_art(shared);
                     game.advance();
                     self.go(Stage::Translate);
                 }
@@ -639,8 +685,34 @@ impl Shots {
                 }
                 // главное окно перечитывает профили раз в секунду
                 if waited > Duration::from_millis(1500) {
-                    self.request(ctx, "01_main_library.png", Stage::LaunchOpen);
+                    self.request(ctx, "01_main_library.png", Stage::ArtOpen);
                 }
+            }
+            Stage::ArtOpen => {
+                windows.art = self.lib_id.clone();
+                self.go(Stage::ArtFill);
+            }
+            Stage::ArtFill => {
+                if waited > Duration::from_millis(500) {
+                    // в демо VNDB не вызывается: показываем вымышленный результат без картинки
+                    lock_ctl(&shared.controller).vndb_results = Some(Ok(vec![noveltl_core::vndb::VnHit {
+                        id: "v0".to_string(),
+                        title: "Kirinomori Lantern".to_string(),
+                        alttitle: "霧ノ森の灯".to_string(),
+                        cover: None,
+                        screens: Vec::new(),
+                    }]));
+                    self.go(Stage::ArtShot);
+                }
+            }
+            Stage::ArtShot => {
+                if waited > Duration::from_millis(700) {
+                    self.request(ctx, "01c_cover_window.png", Stage::ArtClose);
+                }
+            }
+            Stage::ArtClose => {
+                windows.art = Some(String::new()); // пустой id — закрыть окно
+                self.go(Stage::LaunchOpen);
             }
             Stage::LaunchOpen => {
                 windows.launch = self.lib_id.clone();

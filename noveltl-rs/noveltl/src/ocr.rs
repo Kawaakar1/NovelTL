@@ -139,7 +139,7 @@ fn run(
 }
 
 /// Снимок области экрана: BGRA, сверху вниз, альфа = 255.
-fn capture(x: i32, y: i32, w: i32, h: i32) -> Option<Vec<u8>> {
+pub(crate) fn capture(x: i32, y: i32, w: i32, h: i32) -> Option<Vec<u8>> {
     if w <= 0 || h <= 0 {
         return None;
     }

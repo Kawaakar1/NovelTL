@@ -160,6 +160,7 @@ struct PreviewKey {
     overlay_shadow: bool,
     overlay_fade: bool,
     overlay_typewriter: bool,
+    overlay_portraits: bool,
     custom_bg: String,
     custom_card: String,
     custom_text: String,
@@ -190,6 +191,7 @@ impl PreviewKey {
             overlay_shadow: s.overlay_shadow,
             overlay_fade: s.overlay_fade,
             overlay_typewriter: s.overlay_typewriter,
+            overlay_portraits: s.overlay_portraits,
         }
     }
 
@@ -214,6 +216,7 @@ impl PreviewKey {
         s.overlay_shadow = self.overlay_shadow;
         s.overlay_fade = self.overlay_fade;
         s.overlay_typewriter = self.overlay_typewriter;
+        s.overlay_portraits = self.overlay_portraits;
     }
 }
 
@@ -722,6 +725,11 @@ impl SettingsWindow {
         let errors = {
             let mut c = lock_ctl(&shared.controller);
             c.save_settings(new);
+            if self.d.vndb != self.orig.vndb {
+                if let Some(on) = self.d.vndb {
+                    c.set_vndb_consent(on);
+                }
+            }
             c.hotkey_errors.clone()
         };
         // автозапуск: ошибка не мешает остальным настройкам
@@ -1442,6 +1450,9 @@ impl SettingsWindow {
                     theme::toggle(ui, v);
                 });
             }
+            theme::row_w(ui, t("Портреты персонажей"), Some(t("Картинка говорящего рядом с именем; если картинки нет — кружок с первой буквой имени")), 36.0, |ui| {
+                theme::toggle(ui, &mut self.d.overlay_portraits);
+            });
             theme::row_w(ui, t("Показывать оригинал под переводом"), Some(t("Мелким шрифтом под текстом перевода")), 36.0, |ui| {
                 theme::toggle(ui, &mut self.d.overlay_show_original);
             });
@@ -1534,6 +1545,18 @@ impl SettingsWindow {
                     theme::toggle(ui, &mut self.d.check_updates);
                 },
             );
+        });
+        theme::section_label(ui, "VNDB");
+        theme::card(ui, |ui| {
+            let mut on = self.d.vndb == Some(true);
+            let note = t("Программа отправляет на vndb.org названия ваших игр, чтобы найти обложки, кадры и портреты. Только картинки без откровенных сцен.");
+            let hint = if self.d.vndb.is_none() { format!("{}{}", t("Пока не выбрано. "), note) } else { note.to_string() };
+            theme::row_w(ui, t("Обложки и портреты с VNDB"), Some(&hint), 36.0, |ui| {
+                theme::toggle(ui, &mut on);
+            });
+            if on != (self.d.vndb == Some(true)) {
+                self.d.vndb = Some(on);
+            }
         });
         theme::section_label(ui, t("О программе"));
         theme::card(ui, |ui| {

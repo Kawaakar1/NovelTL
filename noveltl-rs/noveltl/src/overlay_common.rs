@@ -42,6 +42,8 @@ pub struct Style {
     pub fade: bool,
     /// эффект печати
     pub typewriter: bool,
+    /// портрет (или кружок с буквой) рядом с именем
+    pub portraits: bool,
 }
 
 impl Default for Style {
@@ -62,6 +64,7 @@ impl Default for Style {
             shadow: false,
             fade: true,
             typewriter: false,
+            portraits: true,
         }
     }
 }
@@ -93,6 +96,8 @@ pub enum Cmd {
         name_color: Option<u32>,
         segs: Vec<OrigSeg>,
         back: usize,
+        /// картинка говорящего из VNDB (jpg/png) — для плашки
+        portrait: Option<std::path::PathBuf>,
     },
     Note { note: String, keep_text: bool },
     Clear,

@@ -388,6 +388,18 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
     let inner_w = (rect.width() - 2.0 * PAD).max(10.0);
     let inner_h = (rect.height() - 1.2 * PAD).max(10.0);
     let (left, top) = (rect.min.x + PAD, rect.min.y + 0.6 * PAD);
+    // кружок с первой буквой имени слева; текст правее (картинки портретов на Linux не рисуем)
+    let circle = st.portraits && !name.is_empty() && !text.is_empty();
+    let diam = (st.font_size * 1.7).clamp(28.0, inner_h.max(28.0));
+    let off = if circle { diam + 12.0 } else { 0.0 };
+    let (left, inner_w) = (left + off, (inner_w - off).max(10.0));
+    if circle {
+        let c = pos2(left - off + diam / 2.0, top + diam / 2.0);
+        p.circle_filled(c, diam / 2.0 - 1.0, rgba(name_rgb, 0.3));
+        p.circle_stroke(c, diam / 2.0 - 1.0, Stroke::new(2.0_f32, rgba(name_rgb, 1.0)));
+        let letter: String = name.trim().chars().next().into_iter().flat_map(char::to_uppercase).collect();
+        p.text(c, egui::Align2::CENTER_CENTER, letter, FontId::new(diam * 0.5, FontFamily::Proportional), rgba(name_rgb, 1.0));
+    }
 
     if !text.is_empty() {
         // автоуменьшение шрифта, пока текст не влезет

@@ -126,7 +126,7 @@ pub fn pal() -> Palette {
 // ---------- вычисление цветов ----------
 
 /// Смесь двух цветов: `t` = 0 даёт `a`, 1 даёт `b`.
-fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round().clamp(0.0, 255.0) as u8;
     Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
 }
@@ -707,6 +707,248 @@ pub fn icon_data(size: u32) -> egui::IconData {
     egui::IconData { rgba: icon_rgba(size), width: size, height: size }
 }
 
+// ---------- плавность, акцентная кнопка, картинки игр, календарь чтения ----------
+
+/// Плавное значение 0..1 для подсветки; в проверочном режиме (снимки) анимаций нет.
+pub fn anim(ctx: &egui::Context, id: egui::Id, on: bool, secs: f32) -> f32 {
+    static TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *TEST.get_or_init(|| crate::winutil::test_area().is_some()) {
+        return if on { 1.0 } else { 0.0 };
+    }
+    ctx.animate_bool_with_time(id, on, secs)
+}
+
+/// Кнопка с заливкой цветом акцента страницы игры (белый текст).
+pub fn accent_button(ui: &mut Ui, text: &str, accent: Color32, enabled: bool, width: Option<f32>) -> Response {
+    let p = pal();
+    let font = FontId::new(14.0, bold_family());
+    let m = ui.painter().layout_no_wrap(text.to_string(), font.clone(), Color32::WHITE);
+    let w = (m.size().x + 32.0).max(width.unwrap_or(0.0));
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, m.size().y + 16.0), sense);
+    let (fill, col) = if !enabled {
+        (p.primary_disabled, p.primary_disabled_text)
+    } else if resp.hovered() {
+        (mix(accent, Color32::WHITE, 0.15), Color32::WHITE)
+    } else {
+        (accent, Color32::WHITE)
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+    ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, font, col);
+    resp
+}
+
+/// Часть картинки (uv), которая заполняет прямоугольник с пропорциями `aspect` (ширина/высота) без искажений.
+pub fn fit_uv(img: Vec2, aspect: f32) -> Rect {
+    let img_aspect = img.x / img.y.max(1.0);
+    let (w, h) = if img_aspect > aspect { (aspect / img_aspect, 1.0) } else { (1.0, img_aspect / aspect) };
+    Rect::from_center_size(egui::pos2(0.5, 0.5), Vec2::new(w, h))
+}
+
+/// Размытый и затемнённый снизу фон для шапки страницы игры: уменьшение, box-blur, затемнение.
+pub fn blurred_backdrop(w: u32, h: u32, rgba: &[u8]) -> egui::ColorImage {
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    let (tw, th) = (160usize, (h * 160 / w).max(1));
+    let mut cur = vec![[0f32; 3]; tw * th];
+    for y in 0..th {
+        for x in 0..tw {
+            let (x0, x1) = (x * w / tw, ((x + 1) * w / tw).max(x * w / tw + 1).min(w));
+            let (y0, y1) = (y * h / th, ((y + 1) * h / th).max(y * h / th + 1).min(h));
+            let (mut s, mut n) = ([0f32; 3], 0f32);
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = (sy * w + sx) * 4;
+                    if let Some(px) = rgba.get(i..i + 3) {
+                        (0..3).for_each(|c| s[c] += px[c] as f32);
+                        n += 1.0;
+                    }
+                }
+            }
+            cur[y * tw + x] = if n > 0.0 { [s[0] / n, s[1] / n, s[2] / n] } else { [0.0; 3] };
+        }
+    }
+    let r = 3isize;
+    for _ in 0..2 {
+        for horizontal in [true, false] {
+            let src = cur.clone();
+            for y in 0..th as isize {
+                for x in 0..tw as isize {
+                    let mut s = [0f32; 3];
+                    for k in -r..=r {
+                        let (sx, sy) = if horizontal {
+                            ((x + k).clamp(0, tw as isize - 1), y)
+                        } else {
+                            (x, (y + k).clamp(0, th as isize - 1))
+                        };
+                        let v = src[sy as usize * tw + sx as usize];
+                        (0..3).for_each(|c| s[c] += v[c]);
+                    }
+                    cur[y as usize * tw + x as usize] = s.map(|v| v / (2 * r + 1) as f32);
+                }
+            }
+        }
+    }
+    let mut out = egui::ColorImage::new([tw, th], Color32::BLACK);
+    for y in 0..th {
+        let k = 0.95 - 0.45 * (y as f32 / th as f32); // к низу темнее — на нём лежит название
+        for x in 0..tw {
+            let v = cur[y * tw + x];
+            out.pixels[y * tw + x] = Color32::from_rgb((v[0] * k) as u8, (v[1] * k) as u8, (v[2] * k) as u8);
+        }
+    }
+    out
+}
+
+/// Акцент страницы игры: средний насыщенный цвет обложки, яркость прижата, чтобы белый текст читался.
+pub fn dominant_accent(w: u32, h: u32, rgba: &[u8]) -> Option<Color32> {
+    let (w, h) = (w as usize, h as usize);
+    let (mut sum, mut wsum) = ([0f32; 3], 0f32);
+    for y in (0..h).step_by((h / 48).max(1)) {
+        for x in (0..w).step_by((w / 48).max(1)) {
+            let Some(px) = rgba.get((y * w + x) * 4..(y * w + x) * 4 + 3) else { continue };
+            let hsv = egui::ecolor::Hsva::from_srgb([px[0], px[1], px[2]]);
+            let wt = hsv.s * hsv.s * hsv.v;
+            if hsv.s > 0.25 && hsv.v > 0.2 {
+                (0..3).for_each(|c| sum[c] += px[c] as f32 * wt);
+                wsum += wt;
+            }
+        }
+    }
+    if wsum < 1e-3 {
+        return None;
+    }
+    let mut hsv = egui::ecolor::Hsva::from_srgb([(sum[0] / wsum) as u8, (sum[1] / wsum) as u8, (sum[2] / wsum) as u8]);
+    hsv.s = hsv.s.clamp(0.45, 0.85);
+    hsv.v = hsv.v.clamp(0.18, 0.38); // Hsva хранит линейные значения: 0.38 ≈ 65% яркости в sRGB
+    let [r, g, b] = hsv.to_srgb(); // to_srgb — в той же (гамма) шкале, что и from_srgb
+    Some(Color32::from_rgb(r, g, b))
+}
+
+/// Градиентная заглушка вместо обложки: цвет по названию. Текстура 2x64.
+pub fn placeholder_image(name: &str) -> egui::ColorImage {
+    let hue = (name.chars().map(|c| c as u32).sum::<u32>() % 360) as f32 / 360.0;
+    let top: Color32 = egui::ecolor::Hsva::new(hue, 0.45, 0.62, 1.0).into();
+    let bottom: Color32 = egui::ecolor::Hsva::new((hue + 0.05).fract(), 0.55, 0.34, 1.0).into();
+    let mut img = egui::ColorImage::new([2, 64], top);
+    for y in 0..64 {
+        let c = mix(top, bottom, y as f32 / 63.0);
+        img.pixels[y * 2] = c;
+        img.pixels[y * 2 + 1] = c;
+    }
+    img
+}
+
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+/// День недели "YYYY-MM-DD": 0 — понедельник … 6 — воскресенье.
+fn weekday_mon0(day: &str) -> Option<usize> {
+    let mut it = day.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, d) = (it.next()??, it.next()??, it.next()??);
+    Some((days_from_civil(y, m, d) + 3).rem_euclid(7) as usize)
+}
+
+fn month_day(day: &str) -> (usize, u32) {
+    let mut it = day.split('-').skip(1).map(|p| p.parse::<u32>().unwrap_or(1));
+    (it.next().unwrap_or(1).clamp(1, 12) as usize, it.next().unwrap_or(1))
+}
+
+/// Уровень 0..=4 для числа реплик относительно максимума.
+fn cal_level(n: u32, max: u32) -> usize {
+    if n == 0 {
+        0
+    } else {
+        (n * 4).div_ceil(max.max(1)).clamp(1, 4) as usize
+    }
+}
+
+fn cal_color(level: usize, accent: Color32) -> Color32 {
+    let p = pal();
+    mix(mix(p.card, p.text, 0.10), accent, [0.0, 0.35, 0.6, 0.8, 1.0][level])
+}
+
+/// Календарь чтения как на GitHub: колонки — недели (последняя заканчивается сегодняшним днём), строки — дни недели
+/// с понедельника. `summary` — строки «Сегодня/Серия» сверху, `legend` — «меньше … больше» снизу.
+pub fn reading_calendar(
+    ui: &mut Ui,
+    stats: &noveltl_core::profiles::ReadStats,
+    today: &str,
+    weeks: usize,
+    accent: Color32,
+    summary: bool,
+    legend: bool,
+) {
+    use noveltl_core::i18n::{t, tf};
+    const CELL: f32 = 11.0;
+    const GAP: f32 = 3.0;
+    let p = pal();
+    ui.spacing_mut().item_spacing.y = 3.0;
+    let wd = weekday_mon0(today).unwrap_or(0);
+    let days = stats.last_days(today, (weeks - 1) * 7 + wd + 1);
+    let max = days.iter().map(|d| d.1).max().unwrap_or(0).max(1);
+    if summary {
+        let n = days.last().map_or(0, |d| d.1);
+        ui.label(body(tf("Сегодня: {} реплик", &[&n])));
+        ui.label(small(tf("Серия: {} дн. подряд", &[&stats.streak(today)])));
+        ui.add_space(4.0);
+    }
+    let width = weeks as f32 * (CELL + GAP) - GAP;
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 16.0 + 7.0 * (CELL + GAP) - GAP), Sense::hover());
+    let cell_rect = |s: usize| {
+        let (col, row) = ((s / 7) as f32, (s % 7) as f32);
+        Rect::from_min_size(rect.min + Vec2::new(col * (CELL + GAP), 16.0 + row * (CELL + GAP)), Vec2::splat(CELL))
+    };
+    let months_text = t("янв фев мар апр май июн июл авг сен окт ноя дек");
+    let months: Vec<&str> = months_text.split(' ').collect();
+    let month_at = |col: usize| days.get(col * 7).map(|(d, _)| month_day(d).0);
+    let mut last_label: Option<usize> = None;
+    for col in 0..weeks {
+        let Some(m) = month_at(col) else { continue };
+        // подпись месяца — там, где он сменился; первую колонку — если дальше месяц не меняется сразу
+        let changed = col > 0 && month_at(col - 1) != Some(m);
+        let first_ok = col == 0 && month_at(1) == Some(m) && month_at(2) == Some(m);
+        if (changed || first_ok) && last_label.is_none_or(|l| col >= l + 3) {
+            let x = rect.left() + col as f32 * (CELL + GAP);
+            let name = months.get(m - 1).copied().unwrap_or("");
+            ui.painter().text(egui::pos2(x, rect.top()), Align2::LEFT_TOP, name, FontId::proportional(10.0), p.dim);
+            last_label = Some(col);
+        }
+    }
+    for (s, (_, n)) in days.iter().enumerate() {
+        ui.painter().rect_filled(cell_rect(s), CornerRadius::same(2), cal_color(cal_level(*n, max), accent));
+    }
+    // подсказка у квадрата под курсором: «12 ноября: 340 реплик»
+    let hover = ui.rect_contains_pointer(rect).then(|| ui.input(|i| i.pointer.hover_pos())).flatten();
+    if let Some(pos) = hover {
+        if let Some(i) = (0..days.len()).find(|&i| cell_rect(i).expand(GAP / 2.0).contains(pos)) {
+            let (day, n) = &days[i];
+            let (m, d) = month_day(day);
+            let full_months = t("января февраля марта апреля мая июня июля августа сентября октября ноября декабря");
+            let name = full_months.split(' ').nth(m - 1).unwrap_or("");
+            let date = t("{d} {m}").replace("{d}", &d.to_string()).replace("{m}", name);
+            ui.interact(cell_rect(i), ui.id().with(("cal_cell", i)), Sense::hover())
+                .on_hover_text(tf("{}: {} реплик", &[&date, n]));
+        }
+    }
+    if legend {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.label(small(t("меньше")));
+            for l in 0..5 {
+                let (r, _) = ui.allocate_exact_size(Vec2::splat(CELL), Sense::hover());
+                ui.painter().rect_filled(r, CornerRadius::same(2), cal_color(l, accent));
+            }
+            ui.label(small(t("больше")));
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,5 +970,24 @@ mod tests {
         assert!(!has_icon_font());
         assert_eq!(icon(Icon::Settings), "⚙");
         assert_eq!(icon(Icon::Original), "あ");
+    }
+    #[test]
+    fn calendar_helpers() {
+        assert_eq!(weekday_mon0("2024-01-01"), Some(0)); // понедельник
+        assert_eq!(weekday_mon0("1970-01-01"), Some(3)); // четверг
+        assert_eq!(weekday_mon0("2024-03-03"), Some(6)); // воскресенье
+        assert_eq!((cal_level(0, 10), cal_level(1, 10), cal_level(5, 10), cal_level(10, 10)), (0, 1, 2, 4));
+    }
+
+    #[test]
+    fn art_pixels() {
+        // красная картинка: акцент красноватый, яркость прижата; размытие даёт 160 px по ширине
+        let px: Vec<u8> = (0..64 * 36).flat_map(|_| [220u8, 30, 30, 255]).collect();
+        let a = dominant_accent(64, 36, &px).unwrap();
+        assert!(a.r() > a.g() && a.r() > a.b() && a.r() <= 190, "{a:?}");
+        let img = blurred_backdrop(64, 36, &px);
+        assert_eq!(img.size, [160, 90]);
+        assert!(img.pixels.iter().all(|c| c.r() > c.g()));
+        assert!(dominant_accent(4, 4, &[128u8; 64]).is_none()); // серое — акцента нет
     }
 }

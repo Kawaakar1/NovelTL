@@ -17,7 +17,7 @@ use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{BOOL, COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN,
-    D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_F,
+    D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1CreateFactory, ID2D1DCRenderTarget, ID2D1Factory, ID2D1RenderTarget, ID2D1StrokeStyle,
@@ -26,6 +26,7 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
     D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_SMALL,
     D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_DASH_STYLE_SOLID,
+    ID2D1Bitmap, D2D1_BITMAP_PROPERTIES,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWriteCreateFactory, IDWriteFactory, IDWriteTextLayout, DWRITE_FACTORY_TYPE_SHARED,
@@ -115,6 +116,10 @@ struct State {
     name: String,
     /// цвет имени персонажа из глоссария (рамка и имя)
     name_color: Option<u32>,
+    /// файл портрета говорящего
+    portrait: Option<std::path::PathBuf>,
+    /// кэш битмапа портрета: (путь, время изменения файла, битмап; None — не читается)
+    portrait_bmp: RefCell<Option<(std::path::PathBuf, Option<std::time::SystemTime>, Option<ID2D1Bitmap>)>>,
     text: String,
     /// начало анимации появления реплики (None — не идёт)
     anim: Option<std::time::Instant>,
@@ -258,6 +263,8 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 style: Style::default(),
                 name: String::new(),
                 name_color: None,
+                portrait: None,
+                portrait_bmp: RefCell::new(None),
                 text: String::new(),
                 anim: None,
                 alt: String::new(),
@@ -452,13 +459,14 @@ impl State {
                         self.frac = f;
                     }
                 }
-                Cmd::Line { name, text, alt, orig, name_color, segs, back } => {
+                Cmd::Line { name, text, alt, orig, name_color, segs, back, portrait } => {
                     self.start_anim(&text);
                     self.segs = segs;
                     self.back = back;
                     self.hover_seg = None;
                     self.name = name;
                     self.name_color = name_color;
+                    self.portrait = portrait;
                     self.text = text;
                     self.alt = alt;
                     self.orig = orig;
@@ -715,6 +723,7 @@ impl State {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         (&self.name, &self.text, &self.alt, &self.orig, &self.note, self.edit, &self.style.font_family).hash(&mut h);
         (self.name_color, self.style.radius, self.style.border, self.style.center, self.style.shadow).hash(&mut h);
+        (&self.portrait, self.style.portraits).hash(&mut h);
         self.anim_secs().map(|e| (e * 100.0) as u32).hash(&mut h);
         (self.style.show_original, self.style.toolbar_dim).hash(&mut h);
         (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
@@ -821,13 +830,21 @@ impl State {
             let inner_h = (h as f32 - 1.2 * PAD).max(10.0);
             let (left, top) = (PAD, 0.6 * PAD);
 
+            // круг портрета слева от имени и текста; текст сдвигается правее
+            let circle = s.portraits && !name.is_empty() && !text.is_empty();
+            let diam = (s.font_size * 1.7).clamp(28.0, inner_h.max(28.0));
+            let off = if circle { diam + 12.0 } else { 0.0 };
+            let (tx, tw) = (left + off, (inner_w - off).max(10.0));
+            if circle {
+                self.draw_portrait(rt, name, left, top, diam, name_rgb, alpha)?;
+            }
             if !text.is_empty() {
                 // автоуменьшение шрифта, пока текст не влезет
                 let mut size = s.font_size.max(MIN_FONT);
                 loop {
                     let name_size = (size * 0.8).max(MIN_FONT);
-                    let name_layout = if name.is_empty() { None } else { Some(self.layout(name, name_size, true, inner_w, inner_h)?) };
-                    let body = self.layout(text, size, false, inner_w, inner_h)?;
+                    let name_layout = if name.is_empty() { None } else { Some(self.layout(name, name_size, true, tw, inner_h)?) };
+                    let body = self.layout(text, size, false, tw, inner_h)?;
                     // эффект печати: (видимых, всего) UTF-16-символов
                     let vis = typed.map(|n| {
                         let v: usize = text.chars().take(n).map(char::len_utf16).sum();
@@ -835,14 +852,14 @@ impl State {
                     });
                     // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
                     let alt_size = (size * 0.7).max(MIN_FONT);
-                    let alt = if self.alt.is_empty() || self.edit { None } else { Some(self.layout(&self.alt, alt_size, false, inner_w, inner_h)?) };
+                    let alt = if self.alt.is_empty() || self.edit { None } else { Some(self.layout(&self.alt, alt_size, false, tw, inner_h)?) };
                     // оригинал — ещё мельче и бледнее, под переводом (по настройке; в режиме настройки — нет)
                     let show_orig = !(self.orig.is_empty() || self.edit || !s.show_original);
                     // фуригана: в каждой строке оригинала над иероглифами оставляем место под чтение
                     let ruby = show_orig && self.segs_usable() && self.segs.iter().any(|g| g.reading.is_some());
                     // с фуриганой оригинал крупнее, иначе чтения над ним не прочитать
                     let orig_size = (size * if ruby { 0.8 } else { 0.62 }).max(MIN_FONT);
-                    let orig = if show_orig { Some(self.layout(&self.orig, orig_size, false, inner_w, inner_h)?) } else { None };
+                    let orig = if show_orig { Some(self.layout(&self.orig, orig_size, false, tw, inner_h)?) } else { None };
                     let ruby_size = (orig_size * 0.5).max(10.0);
                     if let (Some(l), true) = (&orig, ruby) {
                         let extra = ruby_size * 1.15;
@@ -860,19 +877,19 @@ impl State {
                         }
                         let mut y = top;
                         if let Some(l) = &name_layout {
-                            self.outlined(rt, l, left, y, name_rgb, name_size, alpha, None)?;
+                            self.outlined(rt, l, tx, y, name_rgb, name_size, alpha, None)?;
                             y += name_h;
                         }
-                        self.outlined(rt, &body, left, y, s.text_color, size, alpha, vis)?;
+                        self.outlined(rt, &body, tx, y, s.text_color, size, alpha, vis)?;
                         if let Some(l) = &alt {
-                            self.outlined(rt, l, left, y + body_h + 4.0, 0xC9CBE0, alt_size, alpha, None)?;
+                            self.outlined(rt, l, tx, y + body_h + 4.0, 0xC9CBE0, alt_size, alpha, None)?;
                         }
                         self.seg_rects.borrow_mut().clear();
                         if let Some(l) = &orig {
                             let oy = y + body_h + alt_h + 4.0;
-                            self.outlined(rt, l, left, oy, 0xA2A4B8, orig_size, alpha, None)?;
+                            self.outlined(rt, l, tx, oy, 0xA2A4B8, orig_size, alpha, None)?;
                             if self.segs_usable() {
-                                self.draw_segs(rt, l, left, oy, ruby_size, orig_size, alpha, w as f32)?;
+                                self.draw_segs(rt, l, tx, oy, ruby_size, orig_size, alpha, w as f32)?;
                             }
                         }
                         break;
@@ -912,6 +929,69 @@ impl State {
             }
             rt.EndDraw(None, None)
         }
+    }
+
+    /// Битмап портрета (квадрат по центру, `SIZE`×`SIZE`); кэш по пути и времени изменения файла.
+    fn portrait_bitmap(&self, rt: &ID2D1RenderTarget) -> Option<ID2D1Bitmap> {
+        let path = self.portrait.as_ref()?;
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        let mut c = self.portrait_bmp.borrow_mut();
+        if let Some((p, m, b)) = c.as_ref() {
+            if p == path && *m == mtime {
+                return b.clone();
+            }
+        }
+        let bmp = (|| {
+            let (w, h, px) = crate::ui::avatar::decode_image(path).ok()?;
+            let sq = crate::ui::avatar::square_resize(w, h, &px);
+            // RGBA с прямой альфой -> BGRA с предумноженной
+            let bgra: Vec<u8> = sq
+                .chunks_exact(4)
+                .flat_map(|p| {
+                    let a = p[3] as u32;
+                    let m = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+                    [m(p[2]), m(p[1]), m(p[0]), p[3]]
+                })
+                .collect();
+            let n = crate::ui::avatar::SIZE;
+            let props = D2D1_BITMAP_PROPERTIES {
+                pixelFormat: D2D1_PIXEL_FORMAT { format: DXGI_FORMAT_B8G8R8A8_UNORM, alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED },
+                dpiX: 96.0,
+                dpiY: 96.0,
+            };
+            unsafe { rt.CreateBitmap(D2D_SIZE_U { width: n, height: n }, Some(bgra.as_ptr() as *const _), n * 4, &props).ok() }
+        })();
+        *c = Some((path.clone(), mtime, bmp.clone()));
+        bmp
+    }
+
+    /// Круг 2 px цветом имени слева: портрет, а без него — приглушённый круг с первой буквой имени.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_portrait(&self, rt: &ID2D1RenderTarget, name: &str, x: f32, y: f32, d: f32, rgb: u32, alpha: f32) -> windows::core::Result<()> {
+        unsafe {
+            let r = d / 2.0;
+            let ell = D2D1_ELLIPSE { point: D2D_POINT_2F { x: x + r, y: y + r }, radiusX: r - 1.0, radiusY: r - 1.0 };
+            if let Some(bmp) = self.portrait_bitmap(rt) {
+                let n = crate::ui::avatar::SIZE as f32;
+                let brush = rt.CreateBitmapBrush(&bmp, None, None)?;
+                let k = d / n;
+                brush.SetTransform(&windows::Foundation::Numerics::Matrix3x2 { M11: k, M12: 0.0, M21: 0.0, M22: k, M31: x, M32: y });
+                brush.SetOpacity(alpha);
+                rt.FillEllipse(&ell, &brush);
+            } else {
+                rt.FillEllipse(&ell, &rt.CreateSolidColorBrush(&color(rgb, 0.3 * alpha), None)?);
+                let letter: String = name.trim().chars().next().into_iter().flat_map(char::to_uppercase).collect();
+                let l = self.layout(&letter, d * 0.5, true, d, d)?;
+                l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+                l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+                // layout растянут по высоте в 4 раза (см. layout), поэтому центрируем по реальной высоте
+                let m = metrics(&l)?;
+                l.SetMaxHeight(m.height)?;
+                self.outlined(rt, &l, x, y + (d - m.height) / 2.0, rgb, d * 0.5, alpha, None)?;
+            }
+            rt.DrawEllipse(&ell, &rt.CreateSolidColorBrush(&color(rgb, alpha), None)?, 2.0, None);
+        }
+        Ok(())
     }
 
     /// Слова оригинала годятся для фуриганы: в сумме дают ровно показанный текст.

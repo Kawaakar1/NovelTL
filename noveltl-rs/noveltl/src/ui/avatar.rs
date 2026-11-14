@@ -22,7 +22,7 @@ use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
 
 /// Сторона сохранённого аватара, пикселей.
-const SIZE: u32 = 256;
+pub(crate) const SIZE: u32 = 256;
 
 /// Инициализация COM; если поток уже инициализирован иначе — это не ошибка.
 #[cfg(windows)]
@@ -56,7 +56,7 @@ pub fn pick_image() -> Option<PathBuf> {
 
 /// Читает картинку через WIC в RGBA8 (прямая альфа): (ширина, высота, пиксели).
 #[cfg(windows)]
-fn decode(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+pub(crate) fn decode_image(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     init_com();
     let wide: Vec<u16> = src.to_string_lossy().encode_utf16().chain(std::iter::once(0)).collect();
     unsafe {
@@ -100,7 +100,7 @@ pub fn pick_image() -> Option<PathBuf> {
 
 /// В Linux читаем только PNG (RGBA8).
 #[cfg(not(windows))]
-fn decode(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+pub(crate) fn decode_image(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
     let file = std::fs::File::open(src).map_err(|e| e.to_string())?;
     let mut dec = png::Decoder::new(std::io::BufReader::new(file));
     dec.set_transformations(png::Transformations::normalize_to_color8());
@@ -123,7 +123,7 @@ fn decode(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
 }
 
 /// Обрезка по центру до квадрата и масштаб до `SIZE`×`SIZE` (усреднение по площади, с учётом альфы).
-fn square_resize(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
+pub(crate) fn square_resize(w: u32, h: u32, px: &[u8]) -> Vec<u8> {
     let side = w.min(h) as f32;
     let x0 = (w as f32 - side) / 2.0;
     let y0 = (h as f32 - side) / 2.0;
@@ -180,7 +180,7 @@ fn write_png(path: &Path, w: u32, h: u32, rgba: &[u8]) -> Result<(), String> {
 
 /// Сохраняет аватар в `dir` под уникальным именем; возвращает имя файла.
 fn store_avatar_to(dir: &Path, src: &Path) -> Result<String, String> {
-    let (w, h, px) = decode(src).map_err(|e| tf("Не удалось открыть картинку: {}", &[&e]))?;
+    let (w, h, px) = decode_image(src).map_err(|e| tf("Не удалось открыть картинку: {}", &[&e]))?;
     let out = square_resize(w, h, &px);
     let mut ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

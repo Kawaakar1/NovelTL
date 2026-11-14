@@ -25,7 +25,10 @@ No manual hook codes, no command line — three wizard steps and you are playing
 ## Features
 
 ### 📚 Game library
-- 📚 **Game cards in the main window.** Icon from the exe, “Played: …”, “Lines read: N”, a Play button and a “···” menu.
+- 📚 **Game cards in the main window.** A 2:3 cover like in Steam, “Played: …”, “Lines read: N”, a Play button and a “···” menu.
+- 🖼️ **Covers, screenshots and portraits from VNDB.** Only with your consent, no explicit scenes; set your own cover and background if you like.
+- 🌫️ **Game page.** Blurred background from a screenshot or the cover; the page accent color matches the cover.
+- 🗓️ **Reading calendar.** A GitHub-style grid: lines read per day, “Today”, a streak — per game and overall.
 - ▶️ **One-button launch.** From the game folder, via Steam or a “Custom launch command” (DMM, Locale Emulator); NovelTL connects by itself.
 
 ### 🌐 Translation
@@ -46,6 +49,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🔤 **Original in small text under the translation.** Optional.
 - 🖌️ **Your own look.** Font, size, colors and opacity, with a live preview.
 - 🎭 **Ready-made styles.** Classic, Subtitles, Like in the game, Minimal; plus corner rounding, border, centering and shadow.
+- 👤 **Speaker portraits.** A round picture next to the name (from VNDB) or a circle with a letter in the character's color; off in “Overlay”.
 - ✨ **Fade-in and typing effect.** Fade-in is on by default, typing is optional.
 - ⏪ **Past lines on the overlay.** Ctrl+Alt+←/→ or the mouse wheel while the lock is open; a “‹ N back” label.
 
@@ -66,6 +70,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🗂️ **New settings window.** Sections with icons on the left, options in cards: Appearance, Translation, Overlay, Network, Hotkeys, Japanese, General.
 - 🎨 **Theme.** Mode: Follow Windows, Dark, Light or Custom (your own background, card and text colors).
 - 🌈 **Accent color.** Six presets or any color you like.
+- 💫 **Smooth interface.** Soft page fade-in and hover highlights.
 - 🌍 **Interface in 5 languages.** Русский, English, 日本語, 中文, 한국어.
 - ⌨️ **Hotkeys in the game.** Ctrl+Alt+S settings, Ctrl+Alt+H overlay, Ctrl+Alt+R translate again.
 - 🟢 **Tray icon with a dot.** Green — game connected, yellow — looking for text.
@@ -81,11 +86,11 @@ Made first of all for YUZUSOFT games on the KiriKiri engine (Senren\*Banka and o
 
 <table>
 <tr>
-<td width="50%"><img src="shots_en/01_main_library.png" alt="Game library"><br><sub>Game library: cards, a Play button and the “···” menu</sub></td>
+<td width="50%"><img src="shots_en/01_main_library.png" alt="Game library"><br><sub>Game library: covers, reading calendar, a Play button</sub></td>
 <td width="50%"><img src="shots_en/12b_settings_plate_game.png" alt="Overlay styles"><br><sub>“Overlay”: the “Like in the game” style and style cards</sub></td>
 </tr>
 <tr>
-<td width="50%"><img src="shots_en/09_main_running.png" alt="Main window"><br><sub>Main window: the game is connected, original and translation are shown</sub></td>
+<td width="50%"><img src="shots_en/09_main_running.png" alt="Main window"><br><sub>Game page: blurred background, reading calendar, original and translation</sub></td>
 <td width="50%"><img src="shots_en/02_wizard_step1.png" alt="Wizard, step 1"><br><sub>Wizard, step 1 — choose the game window and language</sub></td>
 </tr>
 <tr>
@@ -203,6 +208,8 @@ Everything is next to the program, in the `data` folder:
 | `data\settings.json` | general settings |
 
 🔒 The DeepL key and the proxy password are stored **encrypted** with Windows means (DPAPI) — they can be read only under your account on this computer. The program sends no data anywhere except the dialogue text to the chosen translator and the daily update check: it contacts api.github.com, sends nothing but the request, and can be turned off in Settings → General.
+
+🖼️ Covers and portraits are downloaded from vndb.org only with your consent: game titles are sent there. Downloaded images are stored only on your computer; turn it off in Settings → General. On Linux, VNDB images (JPEG) are not displayed — placeholders and letter circles are shown instead.
 
 ## Building from source
 

@@ -15,3 +15,4 @@ pub mod scorer;
 pub mod secret;
 pub mod translators;
 pub mod updates;
+pub mod vndb;
