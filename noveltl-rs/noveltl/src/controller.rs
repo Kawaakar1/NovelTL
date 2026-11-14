@@ -784,6 +784,7 @@ impl Controller {
                 overlay::Event::Failed(msg) => self.notice(tf("Не удалось создать плашку перевода: {}", &[&msg])),
                 overlay::Event::Menu(crate::tray::ID_COPY) => self.copy_last_translation(),
                 overlay::Event::Menu(crate::tray::ID_ORIGINAL) => self.toggle_show_original(),
+                overlay::Event::Menu(crate::tray::ID_DIM) => self.toggle_toolbar_dim(),
                 overlay::Event::Menu(id) => self.menu_requests.push(id),
                 overlay::Event::Browse(d) => self.browse(d),
             }
@@ -1953,6 +1954,15 @@ impl Controller {
     }
 
     /// Кнопка «あ» на плашке: показывать или прятать оригинал под переводом.
+    /// Глазик на панели плашки: приглушить панель кнопок или вернуть её (как настройка «Приглушённые кнопки»).
+    fn toggle_toolbar_dim(&mut self) {
+        self.settings.overlay_toolbar_dim = !self.settings.overlay_toolbar_dim;
+        if let Err(e) = self.settings.save_checked(&self.settings_path) {
+            self.notice(tf("Не удалось сохранить настройки: {}", &[&e]));
+        }
+        self.apply_overlay_style();
+    }
+
     fn toggle_show_original(&mut self) {
         self.settings.overlay_show_original = !self.settings.overlay_show_original;
         if let Err(e) = self.settings.save_checked(&self.settings_path) {

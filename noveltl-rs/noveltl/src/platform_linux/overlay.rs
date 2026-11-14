@@ -298,6 +298,7 @@ fn show_buttons(ctx: &egui::Context, s: &mut State, plate: Rect) {
                     TB_LOCK if s.unlocked => icon(Icon::Unlock),
                     TB_LOCK => icon(Icon::Lock),
                     4 => icon(Icon::Settings),
+                    5 if s.style.toolbar_dim => icon(Icon::Eye),
                     5 => icon(Icon::EyeOff),
                     _ => icon(Icon::Menu),
                 };

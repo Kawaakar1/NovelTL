@@ -131,6 +131,7 @@ pub fn menu_label(id: &str) -> &'static str {
         crate::tray::ID_RETR => t("Перевести заново без кэша"),
         crate::tray::ID_COPY => t("Копировать перевод"),
         crate::tray::ID_ORIGINAL => t("Показать оригинал"),
+        crate::tray::ID_DIM => t("Приглушить кнопки"),
         crate::tray::ID_SETTINGS => t("Настройки"),
         crate::tray::ID_QUIT => t("Выход"),
         _ => "",
@@ -155,7 +156,8 @@ pub const TB_IDS: [Option<&str>; TB_BUTTONS] = [
     Some(crate::tray::ID_ORIGINAL),
     None,
     Some(crate::tray::ID_SETTINGS),
-    Some(crate::tray::ID_TOGGLE),
+    // глазик не прячет плашку с переводом — он приглушает только эту панель («как в тумане»)
+    Some(crate::tray::ID_DIM),
     None,
 ];
 
@@ -201,5 +203,6 @@ mod tests {
     fn new_menu_ids_have_labels() {
         assert!(!menu_label(crate::tray::ID_COPY).is_empty());
         assert!(!menu_label(crate::tray::ID_ORIGINAL).is_empty());
+        assert!(!menu_label(crate::tray::ID_DIM).is_empty());
     }
 }

@@ -364,7 +364,7 @@ impl eframe::App for App {
                 None => {
                     // в режиме снимков окно мастера ставим справа, чтобы оно не закрывало «игру»
                     let pos = match crate::winutil::test_area() {
-                        Some([x, y, w, _]) => Some([x + w - 620.0, y + 20.0]),
+                        Some([x, y, w, _]) => Some([x + w - 600.0, y + 20.0]),
                         None => self.shots.as_ref().map(|_| {
                             let w = ctx.input(|i| i.viewport().monitor_size).map_or(1920.0, |s| s.x);
                             [(w - 590.0).max(0.0), 20.0]

@@ -43,8 +43,8 @@ No manual hook codes, no command line — three wizard steps and you are playing
 
 ### 🪟 Overlay on top of the game
 - 🪟 **Stays out of the way.** Clicks go through it, it never steals focus, it follows the game window.
-- 🖱️ **Button bar on hover.** Translate again, copy translation, show original, pin/move, settings, hide, menu.
-- 👻 **Dimmed bar.** Make the buttons almost transparent so they do not distract.
+- 🖱️ **Button bar on hover.** Translate again, copy translation, show original, pin/move, settings, dim the bar (eye), menu.
+- 👻 **Dimmed bar.** The eye button or a setting makes the buttons almost transparent — the translation stays.
 - 🔒 **Lock.** Open it to move and resize the box during play; close it and the box stays put.
 - 🔤 **Original in small text under the translation.** Optional.
 - 🖌️ **Your own look.** Font, size, colors and opacity, with a live preview.

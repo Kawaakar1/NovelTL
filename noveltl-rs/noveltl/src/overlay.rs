@@ -1088,6 +1088,8 @@ impl State {
                         TB_LOCK if self.unlocked => "\u{E785}",
                         TB_LOCK => "\u{E72E}",
                         4 => "\u{E713}",
+                        // приглушено — открытый глаз (вернуть), иначе перечёркнутый (приглушить)
+                        5 if self.style.toolbar_dim => "\u{E7B3}",
                         5 => "\u{ED1A}",
                         _ => "\u{E700}",
                     };
