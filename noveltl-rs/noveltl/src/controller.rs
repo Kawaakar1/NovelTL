@@ -528,11 +528,6 @@ pub fn art_dir(profile_id: &str) -> PathBuf {
 }
 
 /// Подходит ли найденная игра под запрос: название совпало или содержит запрос (без регистра и знаков).
-fn hit_matches(hit: &VnHit, query: &str) -> bool {
-    let q = vndb::norm(query);
-    !q.is_empty() && [&hit.title, &hit.alttitle].iter().any(|t| vndb::norm(t).contains(&q))
-}
-
 fn download(http: &dyn Http, url: &str, path: &Path) -> Result<(), String> {
     let bytes = http.get_bytes(url).map_err(|e| e.name())?;
     std::fs::write(path, bytes).map_err(|e| e.to_string())
@@ -963,7 +958,7 @@ impl Controller {
             };
             let missing = p.vndb_id.is_empty() && p.cover.is_empty() && p.backdrop.is_empty();
             if missing && !name.trim().is_empty() && self.art_tried.insert(id.clone()) {
-                todo.push((id, vndb::clean_title(&name)));
+                todo.push((id, vndb::title_variants(&name)));
             }
         }
         if todo.is_empty() {
@@ -973,13 +968,21 @@ impl Controller {
         self.art_status = t("Загружаю картинки с VNDB…").to_string();
         let (http, tx) = (self.http.clone(), self.art_tx.clone());
         let _ = std::thread::Builder::new().name("art".into()).spawn(move || {
-            for (i, (id, title)) in todo.into_iter().enumerate() {
+            for (i, (id, variants)) in todo.into_iter().enumerate() {
                 if i > 0 {
                     std::thread::sleep(Duration::from_millis(1500));
                 }
+                // несколько вариантов названия по очереди (целиком, без подзаголовка), до первого совпадения
                 let res = (|| {
-                    let hit = vndb::search(http.as_ref(), &title)?.into_iter().find(|h| hit_matches(h, &title));
-                    hit.map(|h| fetch_art(http.as_ref(), &id, &h)).transpose()
+                    for (k, q) in variants.iter().take(3).enumerate() {
+                        if k > 0 {
+                            std::thread::sleep(Duration::from_millis(1000));
+                        }
+                        if let Some(h) = vndb::search(http.as_ref(), q)?.into_iter().find(|h| vndb::hit_matches(h, q)) {
+                            return fetch_art(http.as_ref(), &id, &h).map(Some);
+                        }
+                    }
+                    Ok(None)
                 })();
                 let _ = tx.send(ArtMsg::Done { profile_id: id, auto: true, res });
             }

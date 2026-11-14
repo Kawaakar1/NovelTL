@@ -1064,6 +1064,14 @@ impl MainWindow {
             actions.push(Action::Library);
         }
         let more = pill(ui, rect.right_top() + Vec2::new(-12.0, 12.0), false, "···", "more");
+        // картинок нет (автопоиск не нашёл игру или ещё не искал) — сразу предложить выбрать игру на VNDB
+        if profile.cover.is_empty()
+            && !snap.demo
+            && snap.vndb != Some(false)
+            && pill(ui, more.rect.left_top() - Vec2::new(8.0, 0.0), false, t("Найти картинки на VNDB"), "vndb").clicked()
+        {
+            actions.push(Action::ArtOpen(profile.id.clone(), profile.name.clone()));
+        }
         let menu_id = egui::Id::new(("game_menu", &profile.id));
         if more.clicked() {
             ui.memory_mut(|m| m.toggle_popup(menu_id));
@@ -1530,7 +1538,8 @@ impl MainWindow {
                     lock_ctl(&shared.controller).vndb_results = None;
                     self.art_edit = Some(ArtEdit {
                         id,
-                        query: vndb::clean_title(&name),
+                        // в поле поиска — короткий вариант названия (без подзаголовка): так VNDB находит надёжнее
+                        query: vndb::title_variants(&name).pop().unwrap_or_default(),
                         name,
                         thumbs: Arc::new(Mutex::new(HashMap::new())),
                         tex: HashMap::new(),

@@ -119,6 +119,31 @@ pub fn clean_title(window_title: &str) -> String {
     s.trim_matches(|c: char| c.is_whitespace() || "-–—|:".contains(c)).to_string()
 }
 
+/// Варианты запроса для автопоиска: заголовок целиком, затем без подзаголовка
+/// («Senren*Banka - A Thousand Colors Of Love -» → «Senren*Banka»).
+pub fn title_variants(window_title: &str) -> Vec<String> {
+    let full = clean_title(window_title);
+    let mut out = vec![full.clone()];
+    for sep in [" - ", " – ", " — ", ":", "：", "～", " ~ "] {
+        if let Some((head, _)) = full.split_once(sep) {
+            out.push(head.trim().to_string());
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|v| norm(v).chars().count() >= 2 && seen.insert(norm(v)));
+    out
+}
+
+/// Подходит ли найденная игра к запросу: одно название содержит другое.
+/// Короткое название VNDB (меньше 4 знаков) засчитываем только целиком — иначе «Air» нашёлся бы где угодно.
+pub fn hit_matches(hit: &VnHit, query: &str) -> bool {
+    let q = norm(query);
+    !q.is_empty()
+        && [&hit.title, &hit.alttitle].iter().map(|t| norm(t)).filter(|t| !t.is_empty()).any(|t| {
+            t == q || t.contains(&q) || (t.chars().count() >= 4 && q.contains(&t))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,11 +206,31 @@ mod tests {
 
     /// Живой запрос (только чтение): cargo test -p noveltl-core vndb_live -- --ignored
     #[test]
+    fn variants_and_matching() {
+        let v = title_variants("Senren*Banka - A Thousand Colors Of Love -");
+        assert_eq!(v, ["Senren*Banka - A Thousand Colors Of Love", "Senren*Banka"]);
+        assert_eq!(title_variants("千恋＊万花"), ["千恋＊万花"]);
+        let hit = |t: &str, a: &str| VnHit { id: "v1".into(), title: t.into(), alttitle: a.into(), cover: None, screens: vec![] };
+        // заголовок окна длиннее названия на VNDB — раньше это не засчитывалось
+        assert!(hit_matches(&hit("Senren * Banka", "千恋＊万花"), "Senren*Banka - A Thousand Colors Of Love"));
+        assert!(hit_matches(&hit("Senren * Banka", "千恋＊万花"), "千恋＊万花"));
+        assert!(hit_matches(&hit("Riddle Joker", ""), "Riddle"));
+        // короткое название — только целиком
+        assert!(!hit_matches(&hit("Air", ""), "Fairy Tale Air Edition"));
+        assert!(hit_matches(&hit("Air", ""), "AIR"));
+        assert!(!hit_matches(&hit("Sabbat of the Witch", ""), "Senren Banka"));
+    }
+
+    #[test]
     #[ignore]
     fn vndb_live() {
         let http = crate::net::make_http("system", "", "", "", "").unwrap();
         let hits = search(&http, "Senren Banka").unwrap();
         assert!(hits.iter().any(|h| h.id == "v19073"));
+        // заголовок окна Steam-версии целиком: первый же вариант должен найти игру
+        let q = &title_variants("Senren*Banka - A Thousand Colors Of Love -")[0];
+        let found = search(&http, q).unwrap().into_iter().find(|h| hit_matches(h, q));
+        assert_eq!(found.map(|h| h.id).as_deref(), Some("v19073"));
         let ch = characters(&http, "v19073").unwrap();
         assert!(match_character("芳乃", &ch).is_some());
     }
