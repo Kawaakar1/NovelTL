@@ -745,6 +745,35 @@ pub fn fit_uv(img: Vec2, aspect: f32) -> Rect {
     Rect::from_center_size(egui::pos2(0.5, 0.5), Vec2::new(w, h))
 }
 
+/// Уменьшает RGBA-картинку так, чтобы большая сторона была не больше `max` (усреднение по блокам); меньшую не трогает.
+pub fn shrink_rgba(w: u32, h: u32, rgba: &[u8], max: u32) -> (u32, u32, Vec<u8>) {
+    let big = w.max(h);
+    if big <= max || w == 0 || h == 0 || rgba.len() < (w as usize) * (h as usize) * 4 {
+        return (w, h, rgba.to_vec());
+    }
+    let (nw, nh) = (((w as u64 * max as u64) / big as u64).max(1) as usize, ((h as u64 * max as u64) / big as u64).max(1) as usize);
+    let (ow, oh) = (w as usize, h as usize);
+    let mut out = Vec::with_capacity(nw * nh * 4);
+    for y in 0..nh {
+        let (y0, y1) = (y * oh / nh, ((y + 1) * oh / nh).max(y * oh / nh + 1).min(oh));
+        for x in 0..nw {
+            let (x0, x1) = (x * ow / nw, ((x + 1) * ow / nw).max(x * ow / nw + 1).min(ow));
+            let (mut s, mut n) = ([0u32; 4], 0u32);
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = (sy * ow + sx) * 4;
+                    for k in 0..4 {
+                        s[k] += rgba[i + k] as u32;
+                    }
+                    n += 1;
+                }
+            }
+            out.extend(s.iter().map(|v| (v / n) as u8));
+        }
+    }
+    (nw as u32, nh as u32, out)
+}
+
 /// Размытый и затемнённый снизу фон для шапки страницы игры: уменьшение, box-blur, затемнение.
 pub fn blurred_backdrop(w: u32, h: u32, rgba: &[u8]) -> egui::ColorImage {
     let (w, h) = (w.max(1) as usize, h.max(1) as usize);
@@ -893,8 +922,8 @@ pub fn reading_calendar(
     let max = days.iter().map(|d| d.1).max().unwrap_or(0).max(1);
     if summary {
         let n = days.last().map_or(0, |d| d.1);
-        ui.label(body(tf("Сегодня: {} реплик", &[&n])));
-        ui.label(small(tf("Серия: {} дн. подряд", &[&stats.streak(today)])));
+        ui.label(body(tf("Реплик сегодня: {}", &[&n])));
+        ui.label(small(tf("Дней подряд: {}", &[&stats.streak(today)])));
         ui.add_space(4.0);
     }
     let width = weeks as f32 * (CELL + GAP) - GAP;
@@ -932,7 +961,7 @@ pub fn reading_calendar(
             let name = full_months.split(' ').nth(m - 1).unwrap_or("");
             let date = t("{d} {m}").replace("{d}", &d.to_string()).replace("{m}", name);
             ui.interact(cell_rect(i), ui.id().with(("cal_cell", i)), Sense::hover())
-                .on_hover_text(tf("{}: {} реплик", &[&date, n]));
+                .on_hover_text(tf("{}, реплик: {}", &[&date, n]));
         }
     }
     if legend {
@@ -952,6 +981,17 @@ pub fn reading_calendar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shrink_keeps_aspect_and_small_images() {
+        let big = vec![200u8; 1000 * 500 * 4];
+        let (w, h, px) = shrink_rgba(1000, 500, &big, 400);
+        assert_eq!((w, h), (400, 200));
+        assert_eq!(px.len(), 400 * 200 * 4);
+        assert_eq!(px[0], 200);
+        let (w, h, _) = shrink_rgba(300, 100, &vec![0u8; 300 * 100 * 4], 400);
+        assert_eq!((w, h), (300, 100));
+    }
 
     #[test]
     fn accent_applies() {

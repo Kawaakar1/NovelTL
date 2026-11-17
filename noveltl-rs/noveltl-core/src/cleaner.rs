@@ -77,7 +77,8 @@ pub fn collapse_repeated_chars(text: &str) -> String {
             if all_same {
                 let out: Vec<char> = chars.iter().step_by(k).copied().collect();
                 let uniq: HashSet<char> = out.iter().copied().collect();
-                if uniq.len() > 1 {
+                // «ええ……» — короткая реплика, не удвоение хука
+                if uniq.len() > 1 && out.len() >= 3 {
                     return out.into_iter().collect();
                 }
             }
@@ -146,7 +147,9 @@ pub fn split_name(text: &str) -> (String, String) {
     }
 
     if let Some(m) = RE_QUOTE_NAME.captures(s) {
-        if looks_like_name(&m[1], 12) {
+        // «母は「おかえり」» — оканчивается частицей, значит это повествование, а не имя
+        let ends_with_particle = m[1].chars().last().is_some_and(|c| "はがをにでとものへ".contains(c));
+        if looks_like_name(&m[1], 12) && !ends_with_particle {
             return (m[1].trim().to_string(), m[2].trim().to_string());
         }
     }
@@ -298,6 +301,14 @@ mod tests {
         assert_eq!(strip_tags("[to be continued]"), "[to be continued]");
         assert_eq!(strip_tags("[ruby text=\"よ\"]芳"), "芳");
         assert_eq!(strip_tags("[font size=3,color=red]赤"), "赤");
+    }
+
+    #[test]
+    fn test_short_lines_and_particles() {
+        assert_eq!(clean("ええ……").text, "ええ……");
+        assert_eq!(clean("ああ……").text, "ああ……");
+        assert_eq!(clean("母は「おかえり」").name, "");
+        assert_eq!(clean("母は「おかえり」").text, "母は「おかえり」");
     }
 
     #[test]

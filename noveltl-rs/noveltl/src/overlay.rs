@@ -82,9 +82,14 @@ impl Overlay {
 
 // ---------------- поток плашки ----------------
 
-const EDGE: i32 = 10;
-const MIN_W: i32 = 220;
-const MIN_H: i32 = 70;
+// размеры в DIP (как панель кнопок: она 234 DIP шириной), в пиксели переводятся через `px`
+const EDGE_DIP: f32 = 10.0;
+const MIN_W_DIP: f32 = 240.0;
+const MIN_H_DIP: f32 = 70.0;
+
+fn px(dip: f32, k: f32) -> i32 {
+    (dip * k).round() as i32
+}
 const PAD: f32 = 18.0;
 const MIN_FONT: f32 = 11.0;
 /// размер запасного замочка, нарисованного фигурами (когда нет шрифта значков)
@@ -338,7 +343,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if !movable {
                 return LRESULT(HTTRANSPARENT as isize);
             }
-            let (l, t, rr, b) = (x - r.left <= EDGE, y - r.top <= EDGE, r.right - x <= EDGE, r.bottom - y <= EDGE);
+            let edge = px(EDGE_DIP, k);
+            let (l, t, rr, b) = (x - r.left <= edge, y - r.top <= edge, r.right - x <= edge, r.bottom - y <= edge);
             let code = match (l, t, rr, b) {
                 (true, true, _, _) => HTTOPLEFT,
                 (_, true, true, _) => HTTOPRIGHT,
@@ -408,11 +414,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             // не даём сжать меньше минимума
             let r = &mut *(lp.0 as *mut RECT);
             let edge = wp.0 as u32;
-            if r.right - r.left < MIN_W {
-                if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) { r.left = r.right - MIN_W } else { r.right = r.left + MIN_W }
+            let k = dpi_scale(hwnd);
+            let (min_w, min_h) = (px(MIN_W_DIP, k), px(MIN_H_DIP, k));
+            if r.right - r.left < min_w {
+                if matches!(edge, WMSZ_LEFT | WMSZ_TOPLEFT | WMSZ_BOTTOMLEFT) { r.left = r.right - min_w } else { r.right = r.left + min_w }
             }
-            if r.bottom - r.top < MIN_H {
-                if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) { r.top = r.bottom - MIN_H } else { r.bottom = r.top + MIN_H }
+            if r.bottom - r.top < min_h {
+                if matches!(edge, WMSZ_TOP | WMSZ_TOPLEFT | WMSZ_TOPRIGHT) { r.top = r.bottom - min_h } else { r.bottom = r.top + min_h }
             }
             LRESULT(1)
         }
@@ -472,6 +480,7 @@ impl State {
                     self.orig = orig;
                     self.note.clear();
                 }
+                Cmd::Alt(alt) => self.alt = alt,
                 Cmd::Note { note, keep_text } => {
                     self.note = note;
                     if !keep_text {
@@ -504,7 +513,10 @@ impl State {
                 }
                 Cmd::ForceActive(on) => self.force_active = on,
                 Cmd::ExcludeFromCapture(on) => unsafe {
-                    let _ = SetWindowDisplayAffinity(self.hwnd, if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE });
+                    let r = SetWindowDisplayAffinity(self.hwnd, if on { WDA_EXCLUDEFROMCAPTURE } else { WDA_NONE });
+                    if on && r.is_err() {
+                        let _ = self.events.send(Event::CaptureUnsupported);
+                    }
                 },
                 Cmd::Quit => return true,
             }
@@ -683,8 +695,9 @@ impl State {
         let f = self.frac;
         let x = game.left + (f.x * gw).round() as i32;
         let y = game.top + (f.y * gh).round() as i32;
-        let w = ((f.w * gw).round() as i32).max(MIN_W);
-        let h = ((f.h * gh).round() as i32).max(MIN_H);
+        let k = dpi_scale(self.hwnd);
+        let w = ((f.w * gw).round() as i32).max(px(MIN_W_DIP, k));
+        let h = ((f.h * gh).round() as i32).max(px(MIN_H_DIP, k));
         unsafe {
             let mut cur = RECT::default();
             let _ = GetWindowRect(self.hwnd, &mut cur);
@@ -1107,7 +1120,9 @@ impl State {
                         }
                     }
                     _ => {
-                        let sym = ["↻", "⧉", "", "", "⚙", "⊘", ""][i];
+                        // глазик: приглушено — «◐» (вернуть), иначе «⊘» (приглушить)
+                        let eye = if self.style.toolbar_dim { "◐" } else { "⊘" };
+                        let sym = ["↻", "⧉", "", "", "⚙", eye, ""][i];
                         self.glyph(rt, sym, "Segoe UI Symbol", 15.0, b, 0xFFFFFF, alpha)?;
                     }
                 }

@@ -515,7 +515,8 @@ impl AppSettings {
                 let mut probe = merged.clone();
                 probe.insert(key.clone(), value.clone());
                 let ok = serde_json::from_value::<Self>(serde_json::Value::Object(probe)).is_ok();
-                if ok && std::mem::discriminant(default) == std::mem::discriminant(&value) {
+                // у полей-Option умолчание — null: тогда тип из файла сверять не с чем (иначе ui_lang и vndb терялись при загрузке)
+                if ok && (default.is_null() || std::mem::discriminant(default) == std::mem::discriminant(&value)) {
                     merged.insert(key, value);
                 }
             }
@@ -859,6 +860,23 @@ mod tests {
         // поле accent уже есть — миграция не трогает тему
         let s = load(r##"{"theme":"sakura","accent":"#111111"}"##);
         assert_eq!((s.theme.as_str(), s.accent.as_str()), ("sakura", "#111111"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn optional_fields_survive_reload() {
+        let dir = tmp_dir("optreload");
+        let path = dir.join("settings.json");
+        let mut s = AppSettings::default();
+        s.ui_lang = Some(crate::i18n::UiLang::En);
+        s.vndb = Some(true);
+        s.save(&path).unwrap();
+        let back = AppSettings::load(&path);
+        assert_eq!(back.ui_lang, Some(crate::i18n::UiLang::En), "язык интерфейса потерялся при загрузке");
+        assert_eq!(back.vndb, Some(true), "согласие на VNDB потерялось при загрузке");
+        s.vndb = Some(false);
+        s.save(&path).unwrap();
+        assert_eq!(AppSettings::load(&path).vndb, Some(false));
         let _ = fs::remove_dir_all(&dir);
     }
 

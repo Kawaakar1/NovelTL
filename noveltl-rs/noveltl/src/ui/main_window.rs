@@ -54,7 +54,8 @@ struct Snap {
     demo: bool,
     /// согласие на VNDB: None — ещё не спрашивали
     vndb: Option<bool>,
-    art_rev: u64,
+    /// ревизия картинок по играм (заполняется после загрузки списка профилей)
+    art_revs: HashMap<String, u64>,
     art_status: String,
     art_pending: usize,
     vndb_results: Option<Result<Vec<VnHit>, String>>,
@@ -64,6 +65,7 @@ struct Snap {
 
 enum Action {
     Retry,
+    ToggleOverlay,
     AskDelete(String, String),
     Report,
     Wizard(WizardMode),
@@ -81,7 +83,8 @@ enum Action {
     VndbConsent(bool),
     /// окно «Обложка и фон»: (id игры, название)
     ArtOpen(String, String),
-    VndbSearch(String),
+    /// поиск на VNDB: (id игры, запрос)
+    VndbSearch(String, String),
     VndbPick(String, VnHit),
     /// выбрать файл: (id игры, true — фон, false — обложка)
     PickArt(String, bool),
@@ -332,14 +335,6 @@ pub struct MainWindow {
     page_since: Instant,
 }
 
-fn engine_title(engine: &str) -> String {
-    match engine {
-        "deepl" => "DeepL".to_string(),
-        "google" => "Google".to_string(),
-        other => other.to_string(),
-    }
-}
-
 impl MainWindow {
     pub fn new() -> Self {
         MainWindow {
@@ -421,7 +416,7 @@ impl MainWindow {
             learn: if c.settings.learn_mode { c.dict.clone() } else { None },
             demo: c.is_demo(),
             vndb: c.settings.vndb,
-            art_rev: c.art_rev,
+            art_revs: HashMap::new(),
             art_status: c.art_status.clone(),
             art_pending: c.art_pending,
             vndb_results: c.vndb_results.clone(),
@@ -448,7 +443,7 @@ impl MainWindow {
         avatar: Option<&TextureHandle>,
     ) {
         self.ensure_logos(ctx);
-        let snap = Self::snapshot(shared);
+        let mut snap = Self::snapshot(shared);
 
         if self.profiles_at.map_or(true, |t| t.elapsed() >= PROFILES_REFRESH) {
             self.profiles = self.store.all();
@@ -462,6 +457,12 @@ impl MainWindow {
                 None => profiles.push(s.profile.clone()),
             }
         }
+        {
+            let c = lock_ctl(&shared.controller);
+            snap.art_revs = profiles.iter().map(|p| (p.id.clone(), c.art_rev_of(&p.id))).collect();
+        }
+        // текстуры удалённых игр не держим
+        self.art_cache.retain(|id, _| profiles.iter().any(|p| p.id == *id));
         let session_id = snap.session.as_ref().map(|s| s.profile.id.clone());
         if let Some(s) = snap.session.as_ref().filter(|s| s.saved) {
             if self.last_session_id.as_deref() != Some(s.profile.id.as_str()) {
@@ -689,7 +690,7 @@ impl MainWindow {
         }
 
         // ---------- центральная часть ----------
-        let view = current.as_ref().filter(|_| show_game).map(|pr| self.art_view(ctx, pr, snap.art_rev, true));
+        let view = current.as_ref().filter(|_| show_game).map(|pr| self.art_view(ctx, pr, snap.art_revs.get(&pr.id).copied().unwrap_or(0), true));
         // смена страницы — плавное появление (в проверочном режиме без анимации)
         let page_key = current.as_ref().filter(|_| show_game).map(|pr| pr.id.clone()).unwrap_or_default();
         if page_key != self.page_key {
@@ -749,6 +750,7 @@ impl MainWindow {
             *e = ArtEntry { loaded: true, rev, cover_name: pr.cover.clone(), back_name: pr.backdrop.clone(), ..ArtEntry::default() };
             if !pr.cover.is_empty() {
                 if let Ok((w, h, px)) = super::avatar::decode_image(&crate::controller::art_dir(&pr.id).join(&pr.cover)) {
+                    let (w, h, px) = theme::shrink_rgba(w, h, &px, 400);
                     e.accent = theme::dominant_accent(w, h, &px);
                     let img = ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px);
                     e.cover = Some(ctx.load_texture(format!("cover:{}", pr.id), img, TextureOptions::LINEAR));
@@ -829,8 +831,8 @@ impl MainWindow {
                     theme::reading_calendar(ui, &all, &snap.today, 12, p.accent, false, false);
                     ui.add_space(12.0);
                     ui.vertical(|ui| {
-                        ui.label(theme::body(tf("Сегодня: {} реплик", &[&all.daily.get(&snap.today).copied().unwrap_or(0)])));
-                        ui.label(theme::small(tf("Серия: {} дн. подряд", &[&all.streak(&snap.today)])));
+                        ui.label(theme::body(tf("Реплик сегодня: {}", &[&all.daily.get(&snap.today).copied().unwrap_or(0)])));
+                        ui.label(theme::small(tf("Дней подряд: {}", &[&all.streak(&snap.today)])));
                     });
                 });
             });
@@ -847,7 +849,7 @@ impl MainWindow {
                         }
                         if let Some(pr) = shown.get(idx) {
                             let busy = launching.as_deref() == Some(pr.id.as_str());
-                            self.game_card(ui, ctx, pr, snap.art_rev, cw, running == Some(pr.id.as_str()), busy, now, actions);
+                            self.game_card(ui, ctx, pr, snap.art_revs.get(&pr.id).copied().unwrap_or(0), cw, running == Some(pr.id.as_str()), busy, now, actions);
                         } else {
                             Self::add_card(ui, ctx, cw, actions);
                         }
@@ -1020,8 +1022,6 @@ impl MainWindow {
 
     /// Шапка страницы игры: размытый фон, обложка с белой рамкой на нижнем крае, название.
     fn game_header(ui: &mut egui::Ui, profile: &Profile, snap: &Snap, view: &ArtView, actions: &mut Vec<Action>) {
-        let p = pal();
-        let accent = view.accent.unwrap_or(p.accent);
         let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 108.0), Sense::hover());
         let rr = CornerRadius::same(14);
         match &view.back {
@@ -1030,7 +1030,11 @@ impl MainWindow {
                 egui::Image::new((b.id(), rect.size())).uv(uv).corner_radius(rr).paint_at(ui, rect);
             }
             None => {
-                ui.painter().rect_filled(rect, rr, theme::mix(accent, Color32::BLACK, 0.55));
+                // картинок нет — градиент цвета игры, как у заглушки обложки (приглушённый)
+                egui::Image::new((view.placeholder.id(), rect.size()))
+                    .tint(Color32::from_gray(150))
+                    .corner_radius(rr)
+                    .paint_at(ui, rect);
             }
         }
         // обложка 62x93 с белой рамкой наезжает на нижний край шапки
@@ -1145,6 +1149,7 @@ impl MainWindow {
         let (mut color, mut text, mut retry) =
             (p.dim, t("Игра не запущена. Запустите её — NovelTL подключится сам.").to_string(), false);
         let play = s.is_none();
+        let mut show_plate = false;
         if play && launching == Some(profile.id.as_str()) {
             color = p.warn;
             text = tf("Запускаю {}…", &[&profile.name]);
@@ -1167,7 +1172,13 @@ impl MainWindow {
                 color = p.ok;
                 text = t("Перевод работает.").to_string();
                 if snap.user_hidden {
-                    text += &tf(" Плашка скрыта — {}, чтобы показать.", &[&snap.hotkey_toggle]);
+                    // в Linux глобальных клавиш нет — вместо подсказки про сочетание кнопка ниже
+                    text += &if cfg!(windows) {
+                        tf(" Плашка скрыта — {}, чтобы показать.", &[&snap.hotkey_toggle])
+                    } else {
+                        t(" Плашка скрыта.").to_string()
+                    };
+                    show_plate = !cfg!(windows);
                 }
             }
         }
@@ -1175,7 +1186,7 @@ impl MainWindow {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.add_sized([18.0, 20.0], egui::Label::new(RichText::new("●").size(14.0).color(color)));
-                let btn_w = if retry || play { 110.0 } else { 0.0 };
+                let btn_w = if show_plate { 150.0 } else if retry || play { 110.0 } else { 0.0 };
                 let w = (ui.available_width() - btn_w - 8.0).max(50.0);
                 ui.vertical(|ui| {
                     ui.set_width(w);
@@ -1186,6 +1197,9 @@ impl MainWindow {
                 });
                 if retry && button(ui, t("Повторить"), BtnKind::Normal, true, None).clicked() {
                     actions.push(Action::Retry);
+                }
+                if show_plate && button(ui, t("Показать плашку"), BtnKind::Normal, true, None).clicked() {
+                    actions.push(Action::ToggleOverlay);
                 }
                 if play {
                     let busy = launching == Some(profile.id.as_str());
@@ -1208,7 +1222,11 @@ impl MainWindow {
             theme::card_frame().show(ui, |ui| ui.vertical(|ui| theme::reading_calendar(ui, stats, &today, weeks, accent, true, legend)));
         };
         if narrow {
-            Self::history_card(ui, total_w - 34.0, (fill_h - 190.0).max(60.0), profile, s, snap, accent, cache, actions);
+            // история ограничена по высоте, иначе она растягивается до низа и календарь уходит за край окна
+            let hist_h = (fill_h - 190.0).max(100.0);
+            ui.allocate_ui(Vec2::new(ui.available_width(), hist_h), |ui| {
+                Self::history_card(ui, total_w - 34.0, (hist_h - 30.0).max(60.0), profile, s, snap, accent, cache, actions);
+            });
             calendar(ui);
         } else {
             ui.horizontal_top(|ui| {
@@ -1295,7 +1313,7 @@ impl MainWindow {
                     if i == 0 {
                         ui.label(theme::small(format!(
                             "{}{}",
-                            engine_title(res.engine),
+                            noveltl_core::translators::engine_title(res.engine),
                             if res.cached { t(" · из кэша") } else { "" }
                         )));
                     }
@@ -1337,7 +1355,7 @@ impl MainWindow {
                 let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                 let can = allowed && !edit.query.trim().is_empty();
                 if (button(ui, t("Найти"), BtnKind::Primary, can, Some(80.0)).clicked() || enter) && can {
-                    actions.push(Action::VndbSearch(edit.query.trim().to_string()));
+                    actions.push(Action::VndbSearch(edit.id.clone(), edit.query.trim().to_string()));
                 }
             });
             if !allowed {
@@ -1535,7 +1553,7 @@ impl MainWindow {
                 }
                 Action::VndbConsent(on) => lock_ctl(&shared.controller).set_vndb_consent(on),
                 Action::ArtOpen(id, name) => {
-                    lock_ctl(&shared.controller).vndb_results = None;
+                    lock_ctl(&shared.controller).art_window_opened(&id);
                     self.art_edit = Some(ArtEdit {
                         id,
                         // в поле поиска — короткий вариант названия (без подзаголовка): так VNDB находит надёжнее
@@ -1546,7 +1564,7 @@ impl MainWindow {
                         requested: Default::default(),
                     });
                 }
-                Action::VndbSearch(q) => lock_ctl(&shared.controller).vndb_search(&q),
+                Action::VndbSearch(id, q) => lock_ctl(&shared.controller).vndb_search(&id, &q),
                 Action::VndbPick(id, hit) => lock_ctl(&shared.controller).vndb_pick(&id, hit),
                 Action::PickArt(id, backdrop) => {
                     // диалог выбора файла — без замка контроллера
@@ -1627,12 +1645,13 @@ impl MainWindow {
                         Err(e) => self.add_message(t("Отчёт"), &tf("Не удалось сохранить отчёт: {}", &[&e])),
                     }
                 }
+                Action::ToggleOverlay => lock_ctl(&shared.controller).toggle_overlay(),
                 Action::Retry => {
                     if let Some(s) = snap.session.as_ref() {
                         let mut c = lock_ctl(&shared.controller);
                         let win = c.windows().into_iter().find(|w| w.pid == s.pid);
                         if let Some(win) = win {
-                            c.start_session(s.profile.clone(), &win, s.saved, false);
+                            c.start_session(s.profile.clone(), &win, s.saved, s.setup);
                         }
                     }
                 }

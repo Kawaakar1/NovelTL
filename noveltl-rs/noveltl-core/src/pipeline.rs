@@ -118,7 +118,7 @@ impl TranslationPipeline {
         }
         let prepared = apply_glossary(text, &self.glossary);
         let res = self.manager.translate(&prepared, lang, &context, use_cache)?;
-        let alt = self.manager.translate_alt(&prepared, lang, &context, use_cache, res.engine).unwrap_or_default();
+        // второй перевод — отдельно (`translate_alt`), чтобы основной не ждал его
         let mut notice = res.notice.clone();
         let mut name_tr = String::new();
         if !name.is_empty() {
@@ -153,8 +153,25 @@ impl TranslationPipeline {
             engine: res.engine,
             cached: res.cached,
             notice,
-            alt,
+            alt: String::new(),
         })
+    }
+
+    /// Второй перевод реплики (мелко под основным); пусто — не выбран, не нужен или не сработал.
+    /// Зовётся после `process`, когда основной перевод уже показан.
+    pub fn translate_alt(&mut self, name: &str, text: &str, use_cache: bool, main_engine: &str) -> String {
+        let lang = resolve_language(self.lang, text);
+        if lang.is_some() && lang == Some(self.manager.target()) {
+            return String::new();
+        }
+        // текущая реплика уже в контексте — как и в `process`, её из контекста убираем
+        let mut context = self.context.iter().filter(|c| c.as_str() != text).cloned().collect::<Vec<_>>().join("\n");
+        let notes = character_notes(name, text, &self.glossary);
+        if !notes.is_empty() {
+            context = if context.is_empty() { notes } else { format!("{notes}\n{context}") };
+        }
+        let prepared = apply_glossary(text, &self.glossary);
+        self.manager.translate_alt(&prepared, lang, &context, use_cache, main_engine).unwrap_or_default()
     }
 }
 
@@ -297,6 +314,18 @@ mod tests {
         assert_eq!(r.text, "D:「おはよう」");
         assert_eq!(r.name, "将臣");
         assert_eq!(r.notice, "Имя не удалось перевести — показано как есть.");
+    }
+
+    #[test]
+    fn pipeline_alt_is_separate_from_main() {
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("key", None, s.clone());
+        m.set_second("google");
+        let mut p = TranslationPipeline::new(m, Lang::Ja, vec![]);
+        let r = p.process("", "「おはよう」", true).unwrap();
+        assert_eq!((r.text.as_str(), r.alt.as_str()), ("D:「おはよう」", ""), "основной не ждёт второй");
+        assert!(s.gets().is_empty());
+        assert_eq!(p.translate_alt("", "「おはよう」", true, r.engine), "G:「おはよう」");
     }
 
     #[test]

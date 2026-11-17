@@ -7,6 +7,8 @@ use serde_json::{json, Value};
 use crate::translators::Http;
 
 const API: &str = "https://api.vndb.org/kana";
+/// Сколько страниц по 100 персонажей берём у одной игры.
+const MAX_CHAR_PAGES: u32 = 5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct VnHit {
@@ -37,13 +39,19 @@ fn safe_url(img: &Value) -> Option<String> {
     (sexual < 0.5 && violence < 1.0 && url.starts_with("https://t.vndb.org/")).then(|| url.to_string())
 }
 
-fn query(http: &dyn Http, path: &str, body: Value) -> Result<Vec<Value>, String> {
+/// Результаты страницы и флаг `more` (есть следующая страница).
+fn query_page(http: &dyn Http, path: &str, body: Value) -> Result<(Vec<Value>, bool), String> {
     let r = http.post_json(&format!("{API}/{path}"), &[], &body).map_err(|e| e.name())?;
     if r.status != 200 {
         return Err(format!("HTTP {}", r.status));
     }
     let v: Value = serde_json::from_str(&r.body).map_err(|e| e.to_string())?;
-    Ok(v.get("results").and_then(Value::as_array).cloned().unwrap_or_default())
+    let more = v.get("more").and_then(Value::as_bool).unwrap_or(false);
+    Ok((v.get("results").and_then(Value::as_array).cloned().unwrap_or_default(), more))
+}
+
+fn query(http: &dyn Http, path: &str, body: Value) -> Result<Vec<Value>, String> {
+    Ok(query_page(http, path, body)?.0)
 }
 
 fn parse_hit(v: &Value) -> VnHit {
@@ -78,12 +86,21 @@ pub fn search(http: &dyn Http, query_text: &str) -> Result<Vec<VnHit>, String> {
 }
 
 pub fn characters(http: &dyn Http, vid: &str) -> Result<Vec<VnChar>, String> {
-    let body = json!({
-        "filters": ["vn", "=", ["id", "=", vid]],
-        "fields": "id,name,original,image.url,image.sexual,image.violence",
-        "results": 100
-    });
-    Ok(query(http, "character", body)?.iter().map(parse_char).filter(|c| !c.id.is_empty()).collect())
+    let mut out = Vec::new();
+    for page in 1..=MAX_CHAR_PAGES {
+        let body = json!({
+            "filters": ["vn", "=", ["id", "=", vid]],
+            "fields": "id,name,original,image.url,image.sexual,image.violence",
+            "results": 100,
+            "page": page
+        });
+        let (items, more) = query_page(http, "character", body)?;
+        out.extend(items.iter().map(parse_char).filter(|c| !c.id.is_empty()));
+        if !more {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 /// Строка для сравнения: без пробелов, «・» и знаков, в нижнем регистре.
@@ -130,17 +147,25 @@ pub fn title_variants(window_title: &str) -> Vec<String> {
         }
     }
     let mut seen = std::collections::HashSet::new();
-    out.retain(|v| norm(v).chars().count() >= 2 && seen.insert(norm(v)));
+    // подзаголовок-обрезок короче 3 знаков («ef», «Re») находит чужие игры; полное название оставляем всегда
+    let mut first = true;
+    out.retain(|v| {
+        let keep = (first || norm(v).chars().count() >= 3) && seen.insert(norm(v));
+        first = false;
+        keep
+    });
     out
 }
 
 /// Подходит ли найденная игра к запросу: одно название содержит другое.
-/// Короткое название VNDB (меньше 4 знаков) засчитываем только целиком — иначе «Air» нашёлся бы где угодно.
+/// Короткое название VNDB или короткий запрос (меньше 4 знаков) засчитываем только целиком — иначе «Air» нашёлся бы где угодно.
 pub fn hit_matches(hit: &VnHit, query: &str) -> bool {
     let q = norm(query);
     !q.is_empty()
         && [&hit.title, &hit.alttitle].iter().map(|t| norm(t)).filter(|t| !t.is_empty()).any(|t| {
-            t == q || t.contains(&q) || (t.chars().count() >= 4 && q.contains(&t))
+            t == q
+                || (q.chars().count() >= 4 && t.contains(&q))
+                || (t.chars().count() >= 4 && q.contains(&t))
         })
 }
 
@@ -150,7 +175,7 @@ mod tests {
     use crate::translators::{HttpError, HttpResponse};
 
     const VN: &str = r#"{"more":false,"results":[{"alttitle":"千恋＊万花","id":"v19073","image":{"sexual":0,"url":"https://t.vndb.org/cv/46/80746.jpg","violence":0},"screenshots":[{"sexual":0.07,"url":"https://t.vndb.org/sf/37/96737.jpg","violence":0},{"sexual":0.25,"url":"https://t.vndb.org/sf/38/96738.jpg","violence":0},{"sexual":2,"url":"https://t.vndb.org/sf/44/96744.jpg","violence":0},{"sexual":0,"url":"https://t.vndb.org/sf/45/96745.jpg","violence":1}],"title":"Senren * Banka"}]}"#;
-    const CH: &str = r#"{"more":true,"results":[{"id":"c44768","image":{"sexual":0,"url":"https://t.vndb.org/ch/07/95007.jpg","violence":0},"name":"Tomotake Yoshino","original":"朝武 芳乃"},{"id":"c44769","image":{"sexual":1,"url":"https://t.vndb.org/ch/02/95002.jpg","violence":0},"name":"Hitachi Mako","original":"常陸 茉子"},{"id":"c44771","image":null,"name":"Lena Liechtenauer","original":"レナ・リヒテナウアー"}]}"#;
+    const CH: &str = r#"{"more":false,"results":[{"id":"c44768","image":{"sexual":0,"url":"https://t.vndb.org/ch/07/95007.jpg","violence":0},"name":"Tomotake Yoshino","original":"朝武 芳乃"},{"id":"c44769","image":{"sexual":1,"url":"https://t.vndb.org/ch/02/95002.jpg","violence":0},"name":"Hitachi Mako","original":"常陸 茉子"},{"id":"c44771","image":null,"name":"Lena Liechtenauer","original":"レナ・リヒテナウアー"}]}"#;
 
     struct Fixed(String);
     impl Http for Fixed {
@@ -219,6 +244,32 @@ mod tests {
         assert!(!hit_matches(&hit("Air", ""), "Fairy Tale Air Edition"));
         assert!(hit_matches(&hit("Air", ""), "AIR"));
         assert!(!hit_matches(&hit("Sabbat of the Witch", ""), "Senren Banka"));
+        // короткий запрос — только целиком
+        assert!(!hit_matches(&hit("Rewrite", ""), "Re"));
+        assert!(!hit_matches(&hit("Chef", ""), "ef"));
+        assert!(hit_matches(&hit("ef", ""), "ef"));
+        assert!(title_variants("ef - a fairy tale of the two.").iter().all(|v| v.chars().count() >= 3));
+        assert_eq!(title_variants("Re:LieF ～親愛なるあなたへ～"), ["Re:LieF ～親愛なるあなたへ～", "Re:LieF"]);
+    }
+
+    #[test]
+    fn characters_follow_pages() {
+        use std::sync::atomic::{AtomicU32, Ordering::SeqCst};
+        struct Pages(AtomicU32);
+        impl Http for Pages {
+            fn post_json(&self, _: &str, _: &[(&str, &str)], b: &Value) -> Result<HttpResponse, HttpError> {
+                let page = b["page"].as_u64().unwrap() as u32;
+                self.0.fetch_add(1, SeqCst);
+                let body = format!(r#"{{"more":true,"results":[{{"id":"c{page}","name":"n","original":"o","image":null}}]}}"#);
+                Ok(HttpResponse { status: 200, body })
+            }
+            fn get(&self, _: &str, _: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+                Err(HttpError::Other("get".into()))
+            }
+        }
+        let h = Pages(AtomicU32::new(0));
+        let ch = characters(&h, "v1").unwrap();
+        assert_eq!((ch.len(), h.0.load(SeqCst)), (5, 5), "не больше 5 страниц");
     }
 
     #[test]

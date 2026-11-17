@@ -355,8 +355,10 @@ impl eframe::App for App {
                 Request::OpenSettings => self.windows.open_settings(),
             }
         }
-        if let Some(text) = self.shared.take_notices().pop() {
-            self.main.show_notice(&text);
+        // несколько уведомлений за кадр показываем вместе, чтобы ни одно (например, про открытый ключ) не терялось
+        let notices = self.shared.take_notices();
+        if !notices.is_empty() {
+            self.main.show_notice(&notices.join("\n"));
         }
         if let Some(mode) = self.windows.wizard.take() {
             match &self.wizard {
@@ -394,6 +396,11 @@ impl eframe::App for App {
             match &self.glossary {
                 Some(w) if w.profile_id() == id => {
                     ctx.send_viewport_cmd_to(w.viewport_id(), egui::ViewportCommand::Focus)
+                }
+                // в открытом глоссарии другой игры есть несохранённые правки — не терять их
+                Some(w) if w.dirty() => {
+                    ctx.send_viewport_cmd_to(w.viewport_id(), egui::ViewportCommand::Focus);
+                    lock_ctl(&self.shared.controller).notice(t("Сохраните или закройте открытый глоссарий."));
                 }
                 _ => {
                     if let Some(w) = glossary::GlossaryWindow::new(&self.shared, &id, side_pos(840.0)) {

@@ -41,6 +41,8 @@ pub struct GlossaryWindow {
     focus: Option<Id>,
     closed: bool,
     frames: u32,
+    /// состояние строк при открытии (по нему узнаём о несохранённых правках)
+    baseline: String,
 }
 
 impl GlossaryWindow {
@@ -67,6 +69,7 @@ impl GlossaryWindow {
             focus: None,
             closed: false,
             frames: 0,
+            baseline: String::new(),
         };
         for e in &profile.glossary {
             w.push_row(&e.src, &e.dst, &e.note);
@@ -74,7 +77,19 @@ impl GlossaryWindow {
                 r.color = e.color.clone();
             }
         }
+        w.baseline = w.state();
         Some(w)
+    }
+
+    fn state(&self) -> String {
+        let rows: Vec<String> =
+            self.rows.iter().map(|r| format!("{}{}{}{}", r.src, r.dst, r.note, r.color)).collect();
+        format!("{}{}", self.filters, rows.join(""))
+    }
+
+    /// В окне есть несохранённые правки.
+    pub fn dirty(&self) -> bool {
+        self.state() != self.baseline
     }
 
     pub fn viewport_id(&self) -> ViewportId {
@@ -124,9 +139,14 @@ impl GlossaryWindow {
     /// Рисует окно; false — окно нужно закрыть.
     pub fn show(&mut self, ctx: &egui::Context, shared: &Shared) -> bool {
         self.frames += 1;
+        // высота не больше рабочей области (как у настроек)
+        let mut h = (super::settings::work_area_height_px() / ctx.pixels_per_point().max(0.5) - 60.0).clamp(420.0, 620.0);
+        if let Some([_, _, _, th]) = crate::winutil::test_area() {
+            h = h.min(th - 80.0).max(420.0);
+        }
         let mut builder = ViewportBuilder::default()
             .with_title(self.title.clone())
-            .with_inner_size([840.0, 620.0])
+            .with_inner_size([840.0, h])
             .with_min_inner_size([640.0, 420.0])
             .with_active(!crate::winutil::test_area().is_some())
             .with_always_on_top()

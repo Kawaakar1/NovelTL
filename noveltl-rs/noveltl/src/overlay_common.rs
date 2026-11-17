@@ -100,6 +100,8 @@ pub enum Cmd {
         portrait: Option<std::path::PathBuf>,
     },
     Note { note: String, keep_text: bool },
+    /// второй перевод пришёл позже основного: дописать его под текущей репликой
+    Alt(String),
     Clear,
     EditMode(bool),
     UserHidden(bool),
@@ -118,6 +120,8 @@ pub enum Event {
     Failed(String),
     /// Выбран пункт меню плашки (id пункта меню трея).
     Menu(&'static str),
+    /// Windows не умеет прятать плашку от снимков экрана (до 10 версии 2004): OCR может читать свой перевод.
+    CaptureUnsupported,
     /// Колёсико над плашкой: +1 — к более старой реплике, -1 — к более новой.
     #[allow(dead_code)]
     Browse(i32),

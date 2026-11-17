@@ -81,6 +81,7 @@ impl State {
                 self.orig = orig;
                 self.note.clear();
             }
+            Cmd::Alt(alt) => self.alt = alt,
             Cmd::Note { note, keep_text } => {
                 self.note = note;
                 if !keep_text {

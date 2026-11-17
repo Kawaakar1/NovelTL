@@ -115,13 +115,13 @@ fn installed_fonts() -> Vec<String> {
 
 /// Высота рабочей области экрана в пикселях (в Linux — обычная высота экрана ноутбука).
 #[cfg(not(windows))]
-fn work_area_height_px() -> f32 {
+pub(crate) fn work_area_height_px() -> f32 {
     1000.0
 }
 
 /// Высота рабочей области экрана в пикселях.
 #[cfg(windows)]
-fn work_area_height_px() -> f32 {
+pub(crate) fn work_area_height_px() -> f32 {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
         SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -225,8 +225,9 @@ fn rollback_key(orig: &AppSettings, saved: Option<&PreviewKey>) -> PreviewKey {
     saved.cloned().unwrap_or_else(|| PreviewKey::of(orig))
 }
 
-/// Переносит правки из `d` и сочетания клавиш `hk` в копию `base`.
-fn draft_to_settings(d: &AppSettings, hk: &[String; 5], base: &AppSettings) -> AppSettings {
+/// Переносит правки из `d` и сочетания клавиш `hk` в копию `base` (текущие настройки приложения).
+/// Поля, которые меняются и вне окна (кнопки плашки), берутся из черновика, только если их правили в окне (`d` != `orig`).
+fn draft_to_settings(d: &AppSettings, orig: &AppSettings, hk: &[String; 5], base: &AppSettings) -> AppSettings {
     let mut new = base.clone();
     PreviewKey::of(d).put(&mut new);
     new.nickname = d.nickname.trim().to_string();
@@ -243,12 +244,18 @@ fn draft_to_settings(d: &AppSettings, hk: &[String; 5], base: &AppSettings) -> A
     new.hotkey_next = hk[4].trim().to_string();
     new.engine_mode = d.engine_mode.clone();
     new.second_engine = d.second_engine.clone();
-    new.learn_mode = d.learn_mode;
+    if d.learn_mode != orig.learn_mode {
+        new.learn_mode = d.learn_mode;
+    }
     new.target_lang = d.target_lang;
     new.default_source_lang = d.default_source_lang;
     new.ui_lang = d.ui_lang;
-    new.overlay_show_original = d.overlay_show_original;
-    new.overlay_toolbar_dim = d.overlay_toolbar_dim;
+    if d.overlay_show_original != orig.overlay_show_original {
+        new.overlay_show_original = d.overlay_show_original;
+    }
+    if d.overlay_toolbar_dim != orig.overlay_toolbar_dim {
+        new.overlay_toolbar_dim = d.overlay_toolbar_dim;
+    }
     new.check_updates = d.check_updates;
     new
 }
@@ -317,6 +324,11 @@ pub struct SettingsWindow {
     content_h: f32,
     sent_h: f32,
     bg_tex: Option<TextureHandle>,
+    /// раздел, который показан сейчас, и когда он сменился (для плавного появления)
+    shown_section: usize,
+    /// глобальные клавиши сняты на время захвата сочетания
+    hk_suspended: bool,
+    section_since: std::time::Instant,
 }
 
 impl SettingsWindow {
@@ -405,6 +417,9 @@ impl SettingsWindow {
             content_h: 0.0,
             sent_h: 0.0,
             bg_tex: None,
+            shown_section: 0,
+            hk_suspended: false,
+            section_since: std::time::Instant::now(),
         }
     }
 
@@ -552,6 +567,11 @@ impl SettingsWindow {
                 Act::DownloadDict => lock_ctl(&shared.controller).download_dictionary(),
             }
         }
+        let want = self.capturing.is_some();
+        if want != self.hk_suspended {
+            lock_ctl(&shared.controller).set_hotkeys_suspended(want);
+            self.hk_suspended = want;
+        }
         self.push_preview(ctx, shared);
         !self.closed
     }
@@ -565,8 +585,16 @@ impl SettingsWindow {
         let key = rollback_key(&self.orig, self.saved.as_ref());
         {
             let mut c = lock_ctl(&shared.controller);
+            if self.hk_suspended {
+                c.set_hotkeys_suspended(false);
+                self.hk_suspended = false;
+            }
             key.put(&mut c.settings);
             c.apply_overlay_style();
+            // кнопки плашки могли уже записать предпросмотр в файл — переписываем откатанное
+            if self.saved.is_none() {
+                c.persist_settings();
+            }
         }
         shared.ctx.request_repaint();
     }
@@ -656,7 +684,7 @@ impl SettingsWindow {
 
     /// Черновик окна (без сети и прокси) поверх `base`.
     fn apply_draft(&self, base: &AppSettings) -> AppSettings {
-        draft_to_settings(&self.d, &self.hk, base)
+        draft_to_settings(&self.d, &self.orig, &self.hk, base)
     }
 
     fn save(&mut self, shared: &Shared) {
@@ -714,7 +742,8 @@ impl SettingsWindow {
                 pass = p;
             }
         }
-        let mut new = self.apply_draft(&self.orig);
+        let current = lock_ctl(&shared.controller).settings.clone();
+        let mut new = self.apply_draft(&current);
         new.net_mode = mode;
         new.proxy_url = proxy_text;
         new.proxy_user = user;
@@ -725,6 +754,8 @@ impl SettingsWindow {
         let errors = {
             let mut c = lock_ctl(&shared.controller);
             c.save_settings(new);
+            self.hk_suspended = false; // save_settings заново занимает сочетания
+            self.capturing = None;
             if self.d.vndb != self.orig.vndb {
                 if let Some(on) = self.d.vndb {
                     c.set_vndb_consent(on);
@@ -790,7 +821,17 @@ impl SettingsWindow {
                     }
                 }
             });
+        // смена раздела — плавное появление (в проверочном режиме без анимации)
+        if self.shown_section != self.section {
+            self.shown_section = self.section;
+            self.section_since = std::time::Instant::now();
+        }
+        let fade = if crate::winutil::test_area().is_some() { 1.0 } else { (self.section_since.elapsed().as_secs_f32() / 0.15).min(1.0) };
+        if fade < 1.0 {
+            ctx.request_repaint();
+        }
         let central = egui::CentralPanel::default().frame(Frame::new().fill(p.bg)).show(ctx, |ui| {
+            ui.set_opacity(fade);
             // полоса прокрутки всегда на виду (а не плавающая)
             ui.style_mut().spacing.scroll.floating = false;
             egui::ScrollArea::vertical().id_salt("settings_scroll").auto_shrink([false, false]).show(ui, |ui| {
@@ -1112,7 +1153,7 @@ impl SettingsWindow {
     fn draw_translate(&mut self, ui: &mut Ui) {
         theme::section_label(ui, t("Переводчик"));
         theme::card(ui, |ui| {
-            theme::row_w(ui, t("Основной переводчик"), None, 260.0, |ui| {
+            theme::row_w(ui, t("Основной переводчик"), None, 380.0, |ui| {
                 let cur = ENGINE_MODES.iter().find(|(c, _)| *c == self.d.engine_mode).map_or(ENGINE_MODES[0].1, |m| m.1);
                 egui::ComboBox::from_id_salt("set_engine")
                     .width(ui.available_width().max(80.0))
@@ -1127,7 +1168,7 @@ impl SettingsWindow {
             match self.d.engine_mode.as_str() {
                 "microsoft" => {
                     theme::row_w(ui, t("Ключ Microsoft"), None, 300.0, |ui| {
-                        let w = (ui.available_width() - 110.0).max(80.0);
+                        let w = secret_width(ui);
                         ui.add(
                             egui::TextEdit::singleline(&mut self.d.ms_key)
                                 .password(!self.ms_key_show)
@@ -1209,7 +1250,7 @@ impl SettingsWindow {
                         ui,
                         theme::small(tf(
                             "Бесплатно и без интернета. Установите Ollama (ollama.com) и скачайте модель командой \
-                             `ollama pull <модель>`; для перевода нужна видеокарта примерно от 6–8 ГБ. Первая реплика \
+                             ollama pull <модель>; для перевода нужна видеокарта примерно от 6–8 ГБ. Первая реплика \
                              может переводиться дольше — модель загружается в память. Сейчас: {}.",
                             &[&self.status],
                         )),
@@ -1218,7 +1259,7 @@ impl SettingsWindow {
                 _ => {
                     let key_on = self.d.engine_mode != "google";
                     theme::row_w(ui, t("Ключ DeepL API (необязательно)"), None, 300.0, |ui| {
-                        let w = (ui.available_width() - 110.0).max(80.0);
+                        let w = secret_width(ui);
                         ui.add_enabled(
                             key_on,
                             egui::TextEdit::singleline(&mut self.d.deepl_key)
@@ -1346,7 +1387,7 @@ impl SettingsWindow {
                 );
             });
             theme::row_w(ui, t("Пароль"), Some(t("если прокси требует")), 300.0, |ui| {
-                let w = (ui.available_width() - 110.0).max(80.0);
+                let w = secret_width(ui);
                 ui.add_enabled(
                     proxy_on,
                     egui::TextEdit::singleline(&mut self.proxy_pass)
@@ -1565,7 +1606,7 @@ impl SettingsWindow {
                 ui,
                 &title,
                 Some(t("Перехват текста — LunaHook (GPL-3.0). Лицензии — в папке files\\licenses.")),
-                140.0,
+                btn_w(ui, t("Страница проекта")) + 4.0,
                 |ui| {
                     if button(ui, t("Страница проекта"), BtnKind::Normal, true, None).clicked() {
                         let _ = crate::winutil::open_url(PROJECT_URL);
@@ -1661,7 +1702,9 @@ impl SettingsWindow {
         let painter = painter.with_clip_rect(plate);
         let (text_c, name_c, outline_c) = (self.color_value(0), self.color_value(1), self.color_value(2));
         let pad = Vec2::new(14.0, 8.0);
-        let wrap_w = (plate.width() - 2.0 * pad.x).max(40.0);
+        // портреты включены — слева кружок с первой буквой имени, текст сдвигается вправо
+        let portrait = if self.d.overlay_portraits { 32.0 + 10.0 } else { 0.0 };
+        let wrap_w = (plate.width() - 2.0 * pad.x - portrait).max(40.0);
         let avail_h = plate.height() - 2.0 * pad.y;
         let (name, line) = (t("Акари"), t("Доброе утро. Вы сегодня снова рано."));
         // размер подгоняется, чтобы всё поместилось в плашку
@@ -1681,7 +1724,14 @@ impl SettingsWindow {
         };
         let mut y = plate.top() + pad.y;
         let (c, sh) = (self.d.overlay_center, self.d.overlay_shadow);
-        let x = plate.left() + pad.x;
+        let x = plate.left() + pad.x + portrait;
+        if self.d.overlay_portraits {
+            let c = Pos2::new(plate.left() + pad.x + 16.0, plate.center().y);
+            painter.circle_filled(c, 16.0, Color32::from_black_alpha(110));
+            painter.circle_stroke(c, 16.0, Stroke::new(1.5_f32, name_c));
+            let letter = name.chars().next().map_or(String::new(), |ch| ch.to_uppercase().to_string());
+            painter.text(c, Align2::CENTER_CENTER, letter, FontId::new(16.0, theme::bold_family()), name_c);
+        }
         let name_h = paint_outlined(&painter, Pos2::new(x, y), name, name_font, name_c, outline_c, wrap_w, c, sh);
         y += name_h + 2.0;
         paint_outlined(&painter, Pos2::new(x, y), line, text_font, text_c, outline_c, wrap_w, c, sh);
@@ -1785,6 +1835,17 @@ fn accent_dot(ui: &mut Ui, hex: Option<&str>, selected: bool) -> egui::Response 
         painter.circle_stroke(c, r + 2.0, Stroke::new(2.0_f32, p.text));
     }
     resp.on_hover_cursor(CursorIcon::PointingHand)
+}
+
+/// Ширина обычной кнопки с таким текстом (как в `theme::button`).
+fn btn_w(ui: &Ui, text: &str) -> f32 {
+    ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(14.0), Color32::WHITE).size().x + 32.0
+}
+
+/// Ширина поля ключа/пароля в ряду с кнопкой «Показать»: вместе они занимают ряд до правого края.
+fn secret_width(ui: &Ui) -> f32 {
+    // 16 — поля текстового поля (Margin::symmetric(8, _)) входят в ширину сверх desired_width
+    (ui.available_width() - btn_w(ui, t("Показать")) - ui.spacing().item_spacing.x - 16.0).max(80.0)
 }
 
 /// Название языка по-русски. Родные названия (日本語, 한국어) не показываем: шрифты для них
@@ -1981,13 +2042,35 @@ mod tests {
             "Ctrl+Alt+Left".to_string(),
             "Ctrl+Alt+Right".to_string(),
         ];
-        let new = draft_to_settings(&d, &hk, &base);
+        let new = draft_to_settings(&d, &base, &hk, &base);
         assert_eq!(new.ui_lang, Some(UiLang::En));
         assert_eq!(new.accent, "#2FBF8A");
         assert!(new.overlay_show_original);
         assert!(new.overlay_toolbar_dim);
         assert_eq!(new.hotkey_settings, "Ctrl+Alt+O");
         assert_eq!(new.hotkey_next, "Ctrl+Alt+Right");
+    }
+
+    #[test]
+    fn save_keeps_changes_made_outside_window() {
+        let orig = AppSettings::default();
+        let mut d = orig.clone();
+        d.font_size = 33; // правка в окне
+        // пока окно было открыто, кнопки плашки включили оригинал и приглушение, баннер дал согласие
+        let mut cur = orig.clone();
+        cur.overlay_show_original = true;
+        cur.overlay_toolbar_dim = true;
+        cur.vndb = Some(true);
+        let hk = [String::new(), String::new(), String::new(), String::new(), String::new()];
+        let new = draft_to_settings(&d, &orig, &hk, &cur);
+        assert_eq!(new.font_size, 33);
+        assert!(new.overlay_show_original && new.overlay_toolbar_dim);
+        assert_eq!(new.vndb, Some(true));
+        // а если правили в окне — побеждает окно
+        d.overlay_show_original = false;
+        let mut orig2 = orig.clone();
+        orig2.overlay_show_original = true;
+        assert!(!draft_to_settings(&d, &orig2, &hk, &cur).overlay_show_original);
     }
 
     #[test]

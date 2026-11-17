@@ -158,6 +158,12 @@ struct EnumCtx<'a> {
     found: Vec<WindowInfo>,
 }
 
+/// Путь (в нижнем регистре) лежит в системной папке Windows (%WINDIR%), а не просто в папке с именем «windows».
+fn is_in_windows_dir(low_path: &str) -> bool {
+    let dir = std::env::var("SystemRoot").or_else(|_| std::env::var("windir")).unwrap_or_else(|_| "C:\\Windows".into());
+    low_path.starts_with(&format!("{}\\", dir.to_lowercase().trim_end_matches('\\')))
+}
+
 unsafe extern "system" fn enum_cb(h: HWND, lparam: LPARAM) -> BOOL {
     let ctx = &mut *(lparam.0 as *mut EnumCtx);
     consider_window(ctx, h.0 as isize);
@@ -200,7 +206,7 @@ fn consider_window(ctx: &mut EnumCtx, hwnd: isize) {
         if !own && HIDDEN_EXES.contains(&exe_basename(&exe).to_lowercase().as_str()) {
             return;
         }
-        if !own && low.contains("\\windows\\") {
+        if !own && is_in_windows_dir(&low) {
             return;
         }
         ctx.found.push(WindowInfo { hwnd, pid, title, exe_path: exe });
@@ -546,6 +552,13 @@ pub fn open_url(target: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_dir_filter_is_system_only() {
+        let dir = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into()).to_lowercase();
+        assert!(is_in_windows_dir(&format!("{dir}\\system32\\notepad.exe")));
+        assert!(!is_in_windows_dir("d:\\games\\vn\\windows\\game.exe"));
+    }
 
     #[test]
     fn list_windows_filters() {

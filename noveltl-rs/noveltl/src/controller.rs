@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -110,6 +110,19 @@ impl Http for DemoHttp {
     }
 }
 
+/// Сеть не собралась: любой запрос — ошибка (вместо молчаливой подмены демо-ответами).
+struct NoNet;
+
+impl Http for NoNet {
+    fn post_json(&self, _: &str, _: &[(&str, &str)], _: &serde_json::Value) -> Result<HttpResponse, HttpError> {
+        Err(HttpError::Other("NoNetwork".to_string()))
+    }
+
+    fn get(&self, _: &str, _: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+        Err(HttpError::Other("NoNetwork".to_string()))
+    }
+}
+
 // ---------- фоновый перевод ----------
 
 pub enum WorkerCmd {
@@ -136,6 +149,8 @@ pub enum WorkerCmd {
 pub enum WorkerMsg {
     Done { seq: u64, result: LineResult },
     Failed { seq: u64, message: String },
+    /// второй перевод пришёл позже основного
+    Alt { seq: u64, alt: String },
 }
 
 struct Worker {
@@ -250,8 +265,12 @@ fn worker_loop(
         publish(&status, pipeline.as_ref().map_or_else(|| idle.status_text(), |p| p.manager.status_text()));
         if let Some((seq, name, text, use_cache)) = job {
             if let Some(p) = pipeline.as_mut() {
+                let mut second = None;
                 let msg = match p.process(&name, &text, use_cache) {
-                    Ok(result) => WorkerMsg::Done { seq, result },
+                    Ok(result) => {
+                        second = Some(result.engine);
+                        WorkerMsg::Done { seq, result }
+                    }
                     Err(e) => {
                         let m = e.to_string();
                         WorkerMsg::Failed { seq, message: if m.is_empty() { "TranslateError".to_string() } else { m } }
@@ -259,6 +278,14 @@ fn worker_loop(
                 };
                 let _ = tx.send(msg);
                 waker();
+                // основной перевод уже ушёл на плашку; второй — отдельным сообщением
+                if let Some(engine) = second {
+                    let alt = p.translate_alt(&name, &text, use_cache, engine);
+                    if !alt.is_empty() {
+                        let _ = tx.send(WorkerMsg::Alt { seq, alt });
+                        waker();
+                    }
+                }
                 publish(&status, p.manager.status_text());
             }
         }
@@ -486,18 +513,53 @@ pub struct Controller {
     update_rx: Receiver<Result<Option<(String, String)>, String>>,
     /// результат последнего `vndb_search` для окна «Обложка и фон»
     pub vndb_results: Option<Result<Vec<VnHit>, String>>,
+    /// для какой игры открыто окно «Обложка и фон» (опоздавший ответ по другой игре отбрасывается)
+    vndb_for: String,
+    /// можно ли автопоиску ходить на VNDB (согласие); проверяется потоком перед каждым запросом
+    vndb_allowed: Arc<AtomicBool>,
     /// статус загрузки картинок для окна «Обложка» (пусто — нечего показать)
     pub art_status: String,
     /// сколько заданий загрузки картинок ещё идёт
     pub art_pending: usize,
     /// растёт при каждом изменении картинок: окнам — сбросить кэш текстур
     pub art_rev: u64,
+    /// `--theme` / `--lang` из командной строки: действуют в этом запуске, на диск не записываются
+    cli_override: Option<CliOverride>,
+    /// предупреждение «плашку не спрятать от снимков экрана» уже показано
+    capture_warned: bool,
+    /// ревизия картинок по играм (см. `art_rev_of`)
+    art_revs: HashMap<String, u64>,
     art_tx: Sender<ArtMsg>,
     art_rx: Receiver<ArtMsg>,
     /// профили, для которых автопоиск уже запускали в этот запуск программы
     art_tried: HashSet<String>,
     /// персонажи текущей игры из chars.json: (id профиля, список)
     chars_cache: Mutex<Option<(String, Vec<VnChar>)>>,
+}
+
+/// Значения из `settings.json`, которые перекрыты параметрами командной строки (чтобы не записывать перекрытие).
+struct CliOverride {
+    theme: Option<(String, String)>,
+    lang: Option<(Option<noveltl_core::i18n::UiLang>, Option<noveltl_core::i18n::UiLang>)>,
+}
+
+/// Настройки для записи на диск: перекрытое параметрами командной строки возвращается к значению из файла,
+/// если пользователь не успел поменять его сам.
+fn settings_for_disk(s: &AppSettings, ov: Option<&CliOverride>) -> AppSettings {
+    let mut out = s.clone();
+    if let Some(ov) = ov {
+        if let Some((disk, cli)) = &ov.theme {
+            if out.theme == *cli {
+                out.theme = disk.clone();
+            }
+        }
+        if let Some((disk, cli)) = &ov.lang {
+            if out.ui_lang == *cli {
+                out.ui_lang = *disk;
+            }
+        }
+    }
+    out
 }
 
 /// Сообщения фоновых задач режима изучения: скачивание словаря и Anki.
@@ -508,7 +570,9 @@ enum LearnMsg {
 }
 
 enum ArtMsg {
-    Results(Result<Vec<VnHit>, String>),
+    Results { profile_id: String, res: Result<Vec<VnHit>, String> },
+    /// «Кадр из игры» готов: имя файла фона или текст ошибки
+    Backdrop { profile_id: String, res: Result<String, String> },
     /// Ok(None) — подходящей игры на VNDB не нашли
     Done { profile_id: String, auto: bool, res: Result<Option<ArtDone>, String> },
 }
@@ -527,15 +591,36 @@ pub fn art_dir(profile_id: &str) -> PathBuf {
     p
 }
 
-/// Подходит ли найденная игра под запрос: название совпало или содержит запрос (без регистра и знаков).
+fn art_tmp_dir(profile_id: &str) -> PathBuf {
+    art_dir(profile_id).join(".tmp")
+}
+
+/// Переносит скачанное из `.tmp` в папку игры (старые портреты заменяются) и удаляет `.tmp`.
+fn commit_art(profile_id: &str) {
+    let (dir, tmp) = (art_dir(profile_id), art_tmp_dir(profile_id));
+    for f in ["cover.jpg", "backdrop.jpg", "chars.json"] {
+        if tmp.join(f).exists() {
+            let _ = std::fs::rename(tmp.join(f), dir.join(f));
+        }
+    }
+    if tmp.join("chars").exists() {
+        let _ = std::fs::remove_dir_all(dir.join("chars"));
+        let _ = std::fs::rename(tmp.join("chars"), dir.join("chars"));
+    }
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
 fn download(http: &dyn Http, url: &str, path: &Path) -> Result<(), String> {
     let bytes = http.get_bytes(url).map_err(|e| e.name())?;
     std::fs::write(path, bytes).map_err(|e| e.to_string())
 }
 
 /// Скачивает обложку, фон и портреты персонажей выбранной игры в art_dir.
+/// Качает во временную папку `.tmp`: на место файлы попадают только в `on_art_msg`, если результат принят
+/// (иначе автопоиск затёр бы картинки, которые пользователь выбрал сам).
 fn fetch_art(http: &dyn Http, profile_id: &str, hit: &VnHit) -> Result<ArtDone, String> {
-    let dir = art_dir(profile_id);
+    let dir = art_tmp_dir(profile_id);
+    let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::create_dir_all(dir.join("chars"));
     let mut cover = String::new();
     if let Some(url) = &hit.cover {
@@ -637,7 +722,11 @@ impl Controller {
             }
             match h {
                 Some(h) => h,
-                None => Arc::new(DemoHttp::new()), // сеть собрать не удалось совсем — переводить нечем
+                None => {
+                    // сеть собрать не удалось совсем — переводить нечем, говорим об этом прямо
+                    notices.push(t("Не удалось запустить сетевой клиент — перевод и поиск обложек недоступны.").to_string());
+                    Arc::new(NoNet)
+                }
             }
         };
         // локальный ИИ ходит мимо прокси; в демо — тот же DemoHttp
@@ -718,14 +807,20 @@ impl Controller {
             update_available: None,
             update_rx,
             vndb_results: None,
+            vndb_for: String::new(),
+            vndb_allowed: Arc::new(AtomicBool::new(false)),
             art_status: String::new(),
             art_pending: 0,
             art_rev: 0,
+            art_revs: HashMap::new(),
+            cli_override: None,
+            capture_warned: false,
             art_tx,
             art_rx,
             art_tried: HashSet::new(),
             chars_cache: Mutex::new(None),
         };
+        c.sync_vndb_flag();
         c.register_hotkeys();
         if !demo && crate::winutil::test_area().is_none() {
             c.auto_art_all();
@@ -737,6 +832,10 @@ impl Controller {
 
     /// Вызывается интерфейсом каждый кадр.
     pub fn poll(&mut self) {
+        // после shutdown новых подключений к игре быть не должно (движок мог ждать замок во время выхода)
+        if self.closed {
+            return;
+        }
         while let Ok(ev) = self.hook_rx.try_recv() {
             self.on_hook_event(ev);
         }
@@ -750,7 +849,7 @@ impl Controller {
             self.settings.last_update_check = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
-            let _ = self.settings.save_checked(&self.settings_path);
+            let _ = self.save_settings_file();
         }
         while let Ok(msg) = self.art_rx.try_recv() {
             self.on_art_msg(msg);
@@ -776,6 +875,7 @@ impl Controller {
             match msg {
                 WorkerMsg::Done { seq, result } => self.on_translated(seq, result),
                 WorkerMsg::Failed { seq, message } => self.on_translate_failed(seq, message),
+                WorkerMsg::Alt { seq, alt } => self.on_alt(seq, alt),
             }
         }
         while let Ok(ev) = self.overlay_rx.try_recv() {
@@ -787,6 +887,11 @@ impl Controller {
                 overlay::Event::Menu(crate::tray::ID_DIM) => self.toggle_toolbar_dim(),
                 overlay::Event::Menu(id) => self.menu_requests.push(id),
                 overlay::Event::Browse(d) => self.browse(d),
+                overlay::Event::CaptureUnsupported => {
+                    if !std::mem::replace(&mut self.capture_warned, true) {
+                        self.notice(t("Эта версия Windows не умеет прятать плашку от снимков экрана — OCR может читать перевод. Обновите Windows 10 до версии 2004 или новее."));
+                    }
+                }
             }
         }
         while let Ok(ev) = self.hotkey_rx.try_recv() {
@@ -881,32 +986,63 @@ impl Controller {
 
     fn on_art_msg(&mut self, msg: ArtMsg) {
         match msg {
-            ArtMsg::Results(r) => self.vndb_results = Some(r),
+            ArtMsg::Results { profile_id, res } => {
+                // ответ на поиск для другой игры (окно успели закрыть и открыть для новой) не показываем
+                if self.vndb_for == profile_id {
+                    self.vndb_results = Some(res);
+                }
+            }
+            ArtMsg::Backdrop { profile_id, res } => match res {
+                Ok(name) => self.apply_art_name(&profile_id, name, true),
+                Err(e) => self.art_status = e,
+            },
             ArtMsg::Done { profile_id, auto, res } => {
                 self.art_pending = self.art_pending.saturating_sub(1);
+                // выключили VNDB, пока шёл автопоиск, — результат не применяем
+                let allowed = !auto || self.settings.vndb == Some(true);
+                let mut applied = false;
                 match res {
-                    Ok(Some(d)) => {
-                        let applied = self.update_profile(&profile_id, |p| {
+                    Ok(Some(d)) if allowed => {
+                        let mut old = (String::new(), String::new());
+                        applied = self.update_profile(&profile_id, |p| {
                             if auto && !(p.vndb_id.is_empty() && p.cover.is_empty() && p.backdrop.is_empty()) {
                                 return false; // пока искали, пользователь выбрал сам
                             }
-                            (p.vndb_id, p.cover, p.backdrop, p.art_auto) = (d.vndb_id, d.cover, d.backdrop, auto);
+                            old = (p.cover.clone(), p.backdrop.clone());
+                            (p.vndb_id, p.cover, p.backdrop, p.art_auto) = (d.vndb_id, d.cover.clone(), d.backdrop.clone(), auto);
                             true
                         });
                         if applied {
+                            commit_art(&profile_id);
+                            // прежние свои файлы с другими именами больше не нужны
+                            for (o, n) in [(old.0, d.cover), (old.1, d.backdrop)] {
+                                if !o.is_empty() && o != n && !o.contains(['/', '\\']) {
+                                    let _ = std::fs::remove_file(art_dir(&profile_id).join(o));
+                                }
+                            }
                             self.art_status = t("Картинки загружены").to_string();
-                            self.art_changed();
+                            self.art_changed(&profile_id);
                         }
                     }
+                    Ok(Some(_)) => {}
                     Ok(None) => self.art_status = t("Не найдено на VNDB").to_string(),
                     Err(e) => self.art_status = e,
+                }
+                if !applied {
+                    let _ = std::fs::remove_dir_all(art_tmp_dir(&profile_id));
                 }
             }
         }
     }
 
-    fn art_changed(&mut self) {
+    /// Ревизия картинок одной игры: растёт при её изменении; окна сбрасывают кэш текстур только этой игры.
+    pub fn art_rev_of(&self, profile_id: &str) -> u64 {
+        self.art_revs.get(profile_id).copied().unwrap_or(0)
+    }
+
+    fn art_changed(&mut self, profile_id: &str) {
         self.art_rev += 1;
+        *self.art_revs.entry(profile_id.to_string()).or_insert(0) = self.art_rev;
         *self.chars_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
@@ -929,6 +1065,28 @@ impl Controller {
         }
     }
 
+    fn save_settings_file(&self) -> std::io::Result<bool> {
+        settings_for_disk(&self.settings, self.cli_override.as_ref()).save_checked(&self.settings_path)
+    }
+
+    /// `--theme` и `--lang`: применяются в этом запуске, но в settings.json не попадают.
+    pub fn set_cli_override(&mut self, theme: Option<String>, lang: Option<noveltl_core::i18n::UiLang>) {
+        let mut ov = CliOverride { theme: None, lang: None };
+        if let Some(t) = theme {
+            ov.theme = Some((self.settings.theme.clone(), t.clone()));
+            self.settings.theme = t;
+        }
+        if let Some(l) = lang {
+            ov.lang = Some((self.settings.ui_lang, Some(l)));
+            self.settings.ui_lang = Some(l);
+        }
+        self.cli_override = Some(ov);
+    }
+
+    fn sync_vndb_flag(&self) {
+        self.vndb_allowed.store(self.settings.vndb == Some(true), Ordering::SeqCst);
+    }
+
     /// Автопоиск обложек для всех игр библиотеки без картинок (если пользователь разрешил VNDB).
     pub fn auto_art_all(&mut self) {
         if self.demo || self.settings.vndb != Some(true) {
@@ -941,7 +1099,8 @@ impl Controller {
     /// Согласие на запросы к VNDB: сохраняет выбор; «да» сразу запускает автопоиск.
     pub fn set_vndb_consent(&mut self, on: bool) {
         self.settings.vndb = Some(on);
-        let _ = self.settings.save_checked(&self.settings_path);
+        self.sync_vndb_flag();
+        let _ = self.save_settings_file();
         if on {
             self.auto_art_all();
         }
@@ -967,17 +1126,25 @@ impl Controller {
         }
         self.art_pending += todo.len();
         self.art_status = t("Загружаю картинки с VNDB…").to_string();
-        let (http, tx) = (self.http.clone(), self.art_tx.clone());
+        let (http, tx, allowed) = (self.http.clone(), self.art_tx.clone(), self.vndb_allowed.clone());
         let _ = std::thread::Builder::new().name("art".into()).spawn(move || {
             for (i, (id, variants)) in todo.into_iter().enumerate() {
                 if i > 0 {
                     std::thread::sleep(Duration::from_millis(1500));
+                }
+                // согласие могли отозвать: дальше на vndb.org ничего не отправляем (оставшиеся задания закрываем)
+                if !allowed.load(Ordering::SeqCst) {
+                    let _ = tx.send(ArtMsg::Done { profile_id: id, auto: true, res: Ok(None) });
+                    continue;
                 }
                 // несколько вариантов названия по очереди (целиком, без подзаголовка), до первого совпадения
                 let res = (|| {
                     for (k, q) in variants.iter().take(3).enumerate() {
                         if k > 0 {
                             std::thread::sleep(Duration::from_millis(1000));
+                        }
+                        if !allowed.load(Ordering::SeqCst) {
+                            return Ok(None);
                         }
                         if let Some(h) = vndb::search(http.as_ref(), q)?.into_iter().find(|h| vndb::hit_matches(h, q)) {
                             return fetch_art(http.as_ref(), &id, &h).map(Some);
@@ -991,16 +1158,23 @@ impl Controller {
     }
 
     /// Поиск игры на VNDB по тексту (по просьбе пользователя); результат — в `vndb_results`.
-    pub fn vndb_search(&mut self, query: &str) {
+    pub fn vndb_search(&mut self, profile_id: &str, query: &str) {
         self.vndb_results = None;
+        self.vndb_for = profile_id.to_string();
         if self.demo || self.settings.vndb == Some(false) {
             self.vndb_results = Some(Ok(Vec::new()));
             return;
         }
-        let (http, tx, q) = (self.http.clone(), self.art_tx.clone(), query.trim().to_string());
+        let (http, tx, q, id) = (self.http.clone(), self.art_tx.clone(), query.trim().to_string(), profile_id.to_string());
         let _ = std::thread::Builder::new().name("vndb".into()).spawn(move || {
-            let _ = tx.send(ArtMsg::Results(vndb::search(http.as_ref(), &q)));
+            let _ = tx.send(ArtMsg::Results { profile_id: id, res: vndb::search(http.as_ref(), &q) });
         });
+    }
+
+    /// Открыто окно «Обложка и фон» игры: старые результаты поиска не показываем.
+    pub fn art_window_opened(&mut self, profile_id: &str) {
+        self.vndb_results = None;
+        self.vndb_for = profile_id.to_string();
     }
 
     /// Выбор найденной игры: скачать обложку, фон и портреты, привязать к профилю.
@@ -1040,7 +1214,7 @@ impl Controller {
         if !old.is_empty() && old != name && !old.contains(['/', '\\']) {
             let _ = std::fs::remove_file(dir.join(old));
         }
-        self.art_changed();
+        self.art_changed(profile_id);
     }
 
     /// Своя обложка из файла.
@@ -1060,22 +1234,28 @@ impl Controller {
             self.art_status = t("Запустите игру, чтобы сделать кадр").to_string();
             return;
         };
-        // плашку на время снимка прячем от захвата экрана, иначе она попадёт в кадр
-        self.overlay.send(Cmd::ExcludeFromCapture(true));
-        std::thread::sleep(Duration::from_millis(150));
-        let shot = winutil::client_rect_on_screen(hwnd).and_then(|(x, y, w, h)| crate::ocr::capture(x, y, w, h).map(|px| (w, h, px)));
-        if self.ocr.worker.is_none() {
-            self.overlay.send(Cmd::ExcludeFromCapture(false));
-        }
-        let Some((w, h, mut px)) = shot else {
-            self.art_status = t("Не удалось сделать снимок окна игры").to_string();
-            return;
-        };
-        px.chunks_exact_mut(4).for_each(|p| p.swap(0, 2)); // BGRA -> RGBA
-        match write_png_rgba(&art_dir(profile_id).join("backdrop.png"), w as u32, h as u32, &px) {
-            Ok(()) => self.apply_art_name(profile_id, "backdrop.png".to_string(), true),
-            Err(e) => self.art_status = tf("Не удалось сохранить картинку: {}", &[&e]),
-        }
+        // снимок и кодирование — в фоне (под замком контроллера окно и перевод стояли бы до секунды)
+        let (overlay, tx, id, ocr_on) = (self.overlay.clone(), self.art_tx.clone(), profile_id.to_string(), self.ocr.worker.is_some());
+        let dir = art_dir(profile_id);
+        let _ = std::thread::Builder::new().name("shot".into()).spawn(move || {
+            // плашку на время снимка прячем от захвата экрана, иначе она попадёт в кадр
+            overlay.send(Cmd::ExcludeFromCapture(true));
+            std::thread::sleep(Duration::from_millis(150));
+            let shot = winutil::client_rect_on_screen(hwnd).and_then(|(x, y, w, h)| crate::ocr::capture(x, y, w, h).map(|px| (w, h, px)));
+            if !ocr_on {
+                overlay.send(Cmd::ExcludeFromCapture(false));
+            }
+            let res = match shot {
+                None => Err(t("Не удалось сделать снимок окна игры").to_string()),
+                Some((w, h, mut px)) => {
+                    px.chunks_exact_mut(4).for_each(|p| p.swap(0, 2)); // BGRA -> RGBA
+                    write_png_rgba(&dir.join("backdrop.png"), w as u32, h as u32, &px)
+                        .map(|()| "backdrop.png".to_string())
+                        .map_err(|e| tf("Не удалось сохранить картинку: {}", &[&e]))
+                }
+            };
+            let _ = tx.send(ArtMsg::Backdrop { profile_id: id, res });
+        });
     }
 
     #[cfg(not(windows))]
@@ -1091,7 +1271,7 @@ impl Controller {
             (p.vndb_id, p.cover, p.backdrop, p.art_auto) = ("-".to_string(), String::new(), String::new(), false);
             true
         });
-        self.art_changed();
+        self.art_changed(profile_id);
     }
 
     /// Демо-режим (VNDB не вызывается).
@@ -1607,6 +1787,21 @@ impl Controller {
         self.overlay.send(Cmd::Line { name: r.name, text: r.text, alt: r.alt, orig: r.src_text, name_color: nc, segs, back, portrait });
     }
 
+    fn on_alt(&mut self, seq: u64, alt: String) {
+        let Some(s) = self.session.as_mut() else { return };
+        // реплику уже листают на плашке или пришла новая — второй перевод устарел
+        if seq != self.seq || s.back != 0 {
+            return;
+        }
+        if let Some(r) = s.last_result.as_mut() {
+            r.alt = alt.clone();
+        }
+        if let Some(r) = s.history.back_mut() {
+            r.alt = alt.clone();
+        }
+        self.overlay.send(Cmd::Alt(alt));
+    }
+
     fn on_translate_failed(&mut self, seq: u64, message: String) {
         if self.session.is_some() && seq == self.seq {
             self.overlay.send(Cmd::Note { note: tf("⚠ Не удалось перевести: {}", &[&message]), keep_text: false });
@@ -1655,6 +1850,10 @@ impl Controller {
     /// Повторная настройка для уже подключённой игры.
     pub fn resume_setup(&mut self) -> bool {
         let Some(s) = self.session.as_mut() else { return false };
+        // пока идёт мастер, статистика не пишется, а отмена вернёт профиль с диска — сохраняем накопленное
+        if s.saved && !s.setup {
+            let _ = self.store.save(&s.profile);
+        }
         s.setup = true;
         self.overlay.send(Cmd::Clear);
         true
@@ -1676,7 +1875,10 @@ impl Controller {
     }
 
     pub fn finish_setup(&mut self) {
-        let Some(s) = self.session.as_mut() else { return };
+        let Some(s) = self.session.as_mut() else {
+            self.notice(t("Игра закрыта — профиль не сохранён. Запустите игру и повторите."));
+            return;
+        };
         s.profile.overlay = self.overlay_frac;
         let _ = self.store.save(&s.profile);
         s.saved = true;
@@ -1713,6 +1915,26 @@ impl Controller {
         if let Some(s) = self.session.as_mut() {
             s.setup = false;
             s.selected = self.tracker.find_saved(s.profile.hook.as_ref());
+        }
+        self.restore_source();
+    }
+
+    /// После отмены мастера вернуть источник текста как в сохранённом профиле: OCR или перехват.
+    fn restore_source(&mut self) {
+        #[cfg(windows)]
+        {
+            let Some(s) = self.session.as_ref() else { return };
+            let (pid, hwnd, lang) = (s.pid, s.hwnd, s.profile.lang);
+            let ocr_profile = s.profile.hook.as_ref().is_some_and(|h| h.code == crate::ocr::OCR_CODE);
+            if ocr_profile && self.ocr.worker.is_some() {
+                self.detach_source(pid); // перехват подключали только ради мастера
+            } else if ocr_profile {
+                self.detach_source(pid);
+                self.start_ocr(pid, hwnd, lang);
+            } else if !ocr_profile && self.ocr.worker.is_some() {
+                self.stop_ocr();
+                self.source.attach(pid, lang.codepage());
+            }
         }
     }
 
@@ -1756,6 +1978,9 @@ impl Controller {
             self.end_session();
         }
         self.store.delete(id);
+        // картинки игры больше не нужны (журнал реплик остаётся — это история пользователя)
+        let _ = std::fs::remove_dir_all(art_dir(id));
+        self.art_changed(id);
         let path = sub_data_dir("cache").join(format!("{id}.sqlite"));
         let removed = !active
             && match std::fs::remove_file(&path) {
@@ -1843,6 +2068,13 @@ impl Controller {
             }
             return;
         }
+        // OCR-игра: распознавание идёт с языком старого профиля — перезапускаем с новым (кодовая страница та же у ja/en)
+        #[cfg(windows)]
+        if self.ocr.worker.is_some() {
+            if let Some(hwnd) = self.session.as_ref().map(|s| s.hwnd) {
+                self.start_ocr(win_pid, hwnd, lang);
+            }
+        }
         // кодовая страница та же: хватает нового pipeline
         let pipeline = self.make_pipeline(lang, profile.glossary.clone());
         self.worker.send(WorkerCmd::SetPipeline(Some(pipeline)));
@@ -1884,9 +2116,15 @@ impl Controller {
         msg
     }
 
+    /// Записать текущие настройки в файл как есть (после отката предпросмотра в окне настроек).
+    pub fn persist_settings(&mut self) {
+        let _ = self.save_settings_file();
+    }
+
     pub fn save_settings(&mut self, new: AppSettings) {
         let old = self.settings.clone();
         self.settings = new;
+        self.sync_vndb_flag();
         apply_ui_lang(&self.settings);
         self.register_hotkeys();
         // занятые другой программой сочетания откатываем на прежние, чтобы они продолжали работать
@@ -1910,7 +2148,7 @@ impl Controller {
             self.register_hotkeys();
         }
         self.hotkey_errors = attempted;
-        match self.settings.save_checked(&self.settings_path) {
+        match self.save_settings_file() {
             Ok(true) => self.notice(
                 t("Не удалось зашифровать ключ DeepL или пароль прокси — они сохранены открытым текстом в data\\settings.json."),
             ),
@@ -1957,7 +2195,7 @@ impl Controller {
     /// Глазик на панели плашки: приглушить панель кнопок или вернуть её (как настройка «Приглушённые кнопки»).
     fn toggle_toolbar_dim(&mut self) {
         self.settings.overlay_toolbar_dim = !self.settings.overlay_toolbar_dim;
-        if let Err(e) = self.settings.save_checked(&self.settings_path) {
+        if let Err(e) = self.save_settings_file() {
             self.notice(tf("Не удалось сохранить настройки: {}", &[&e]));
         }
         self.apply_overlay_style();
@@ -1965,7 +2203,7 @@ impl Controller {
 
     fn toggle_show_original(&mut self) {
         self.settings.overlay_show_original = !self.settings.overlay_show_original;
-        if let Err(e) = self.settings.save_checked(&self.settings_path) {
+        if let Err(e) = self.save_settings_file() {
             self.notice(tf("Не удалось сохранить настройки: {}", &[&e]));
         }
         self.apply_overlay_style();
@@ -1980,6 +2218,17 @@ impl Controller {
     /// Стиль плашки из `self.settings` (для предпросмотра без сохранения).
     pub fn apply_overlay_style(&mut self) {
         self.overlay.send(Cmd::Style(style_from(&self.settings)));
+    }
+
+    /// На время захвата сочетания в настройках глобальные клавиши снимаем (иначе занятое нами сочетание не дойдёт до окна).
+    pub fn set_hotkeys_suspended(&mut self, on: bool) {
+        if on {
+            let _ = self.hotkeys.set(&[]);
+        } else {
+            let keep = std::mem::take(&mut self.hotkey_errors);
+            self.register_hotkeys();
+            self.hotkey_errors = keep;
+        }
     }
 
     fn register_hotkeys(&mut self) {
@@ -2006,7 +2255,10 @@ impl Controller {
         if let Some(s) = &self.session {
             let mut profile = serde_json::to_value(&s.profile).unwrap_or(Value::Null);
             if let Value::Object(m) = &mut profile {
-                m.remove("exe_path"); // в пути может быть имя пользователя
+                // в путях может быть имя пользователя; картинки отчёту не нужны
+                for k in ["exe_path", "launch", "cover", "backdrop"] {
+                    m.remove(k);
+                }
                 m.insert("glossary".into(), json!(s.profile.glossary.len()));
             }
             report.insert(
@@ -2089,10 +2341,39 @@ impl Drop for Controller {
     }
 }
 
-/// Время по шаблону с %Y %m %d %H %M %S. В Linux — время UTC (без часового пояса; для имён отчётов хватает).
+/// Смещение местного времени от UTC (секунды); 0, если узнать не вышло.
+/// shortcut: прямой вызов localtime_r из libc (своё описание struct tm для 64-битного Linux), чтобы не тянуть крейт; на другой раскладке tm — взять крейт libc.
+#[cfg(target_os = "linux")]
+fn utc_offset_secs(utc: i64) -> i64 {
+    #[repr(C)]
+    struct Tm {
+        ints: [i32; 9],
+        gmtoff: std::ffi::c_long,
+        zone: *const std::ffi::c_char,
+    }
+    extern "C" {
+        fn localtime_r(t: *const std::ffi::c_long, out: *mut Tm) -> *mut Tm;
+    }
+    let t = utc as std::ffi::c_long;
+    let mut tm = Tm { ints: [0; 9], gmtoff: 0, zone: std::ptr::null() };
+    // SAFETY: localtime_r пишет только в переданную структуру нужной раскладки
+    if unsafe { localtime_r(&t, &mut tm) }.is_null() {
+        0
+    } else {
+        tm.gmtoff as i64
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "linux")))]
+fn utc_offset_secs(_utc: i64) -> i64 {
+    0
+}
+
+/// Время по шаблону с %Y %m %d %H %M %S. В Windows — местное, в Linux — местное через localtime_r.
 #[cfg(not(windows))]
 pub(crate) fn local_time_text(fmt: &str) -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let utc = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()) as i64;
+    let secs = utc + utc_offset_secs(utc);
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // дата по числу дней от 1970-01-01 (алгоритм civil_from_days Говарда Хиннанта)
     let z = days + 719_468;
@@ -2130,6 +2411,21 @@ mod tests {
     use super::*;
     use crate::demo::{demo_translations, DemoSource, DEMO_TITLE, SCRIPT};
     use crate::paths::set_data_dir_override;
+
+    #[test]
+    fn cli_override_is_not_written_to_disk() {
+        use noveltl_core::i18n::UiLang;
+        let mut s = AppSettings::default();
+        s.theme = "dark".into();
+        s.ui_lang = Some(UiLang::En);
+        let ov = CliOverride { theme: Some(("light".into(), "dark".into())), lang: Some((None, Some(UiLang::En))) };
+        let d = settings_for_disk(&s, Some(&ov));
+        assert_eq!((d.theme.as_str(), d.ui_lang), ("light", None));
+        // пользователь сам сменил тему в окне настроек — это сохраняется
+        s.theme = "auto".into();
+        assert_eq!(settings_for_disk(&s, Some(&ov)).theme, "auto");
+        assert_eq!(settings_for_disk(&s, None).ui_lang, Some(UiLang::En));
+    }
 
     #[test]
     fn filters_remove_fragments() {
@@ -2291,6 +2587,7 @@ mod tests {
         assert!(report["потоки"].as_array().is_some_and(|a| a.len() >= 3));
         assert!(report["игра"]["подключено"].as_bool() == Some(true));
         assert!(report["профиль"].get("exe_path").is_none());
+        assert!(report["профиль"].get("launch").is_none());
         assert!(c.translator_status().starts_with("Google"));
 
         // 4а. смена цели на английский: плашка переводится заново на английский (SetTarget + retranslate)

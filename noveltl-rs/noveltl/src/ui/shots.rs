@@ -643,7 +643,12 @@ impl Shots {
             Stage::GlossaryWait => match glossary.as_mut() {
                 Some(g) => {
                     if g.frames() > 4 {
-                        g.fill_for_shots(&[("灯里", "Акари"), ("悠斗", "Юто"), ("小春", "Кохару")]);
+                        // имена — на языке интерфейса (для не-русского — латиницей)
+                        if noveltl_core::i18n::lang() == noveltl_core::i18n::UiLang::Ru {
+                            g.fill_for_shots(&[("灯里", "Акари"), ("悠斗", "Юто"), ("小春", "Кохару")]);
+                        } else {
+                            g.fill_for_shots(&[("灯里", "Akari"), ("悠斗", "Yuto"), ("小春", "Koharu")]);
+                        }
                         self.go(Stage::GlossaryShot);
                     }
                 }

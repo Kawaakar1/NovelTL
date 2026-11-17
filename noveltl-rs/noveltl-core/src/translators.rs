@@ -310,12 +310,16 @@ impl GoogleTranslator {
             return self.translate_one(text, src_lang, target);
         }
         let mut out = String::new();
-        for (chunk, sep) in split_for_google(text, GOOGLE_MAX_CHARS) {
+        let chunks = split_for_google(text, GOOGLE_MAX_CHARS);
+        let last = chunks.len().saturating_sub(1);
+        for (i, (chunk, sep)) in chunks.into_iter().enumerate() {
             if chunk.trim().is_empty() {
                 out.push_str(&chunk);
             } else {
                 out.push_str(&self.translate_one(&chunk, src_lang, target)?);
             }
+            // куски одной строки без разделителя: в нецелевом CJK-языке нужен пробел («…он.Затем»)
+            let sep = if sep.is_empty() && i < last && !matches!(target, Lang::Ja | Lang::Zh) { " " } else { sep };
             out.push_str(sep);
         }
         Ok(out)
@@ -418,6 +422,10 @@ impl MicrosoftTranslator {
             .map_err(|e| TranslateError::Failed(tf("нет связи с Microsoft ({})", &[&e.name()])))?;
         match resp.status {
             200 => {}
+            // 403001 — исчерпан бесплатный лимит (ключ при этом верный)
+            403 if resp.body.contains("403001") => {
+                return Err(TranslateError::Failed(t("Microsoft: исчерпан лимит запросов").to_string()))
+            }
             401 | 403 => return Err(TranslateError::Failed(ms_key_error().to_string())),
             429 => return Err(TranslateError::Failed(t("Microsoft: исчерпан лимит запросов").to_string())),
             s => return Err(TranslateError::Failed(tf("Microsoft ответил кодом {}", &[&s]))),
@@ -470,6 +478,21 @@ fn strip_quotes(s: &str) -> String {
         }
     }
     s.to_string()
+}
+
+/// Оригинал в 「」/『』, а модель кавычки сняла: возвращаем их в стиле языка перевода.
+fn restore_quotes(src: &str, out: String, target: Lang) -> String {
+    let src = src.trim();
+    let quoted = (src.starts_with('「') && src.ends_with('」')) || (src.starts_with('『') && src.ends_with('』'));
+    if !quoted || out.starts_with(['«', '“', '"', '「', '『']) {
+        return out;
+    }
+    let (open, close) = match target {
+        Lang::Ru => ('«', '»'),
+        Lang::Ja => ('「', '」'),
+        _ => ('“', '”'),
+    };
+    format!("{open}{out}{close}")
 }
 
 /// Очистка ответа модели: рассуждения, пробелы, внешние кавычки.
@@ -556,7 +579,7 @@ impl LocalAiTranslator {
         if out.is_empty() {
             return Err(TranslateError::Failed(t("Локальный ИИ вернул пустой ответ").to_string()));
         }
-        Ok(out)
+        Ok(restore_quotes(text, out, target))
     }
 }
 
@@ -674,11 +697,13 @@ impl TranslatorManager {
             return None;
         }
         let res = match engine {
+            // ключ DeepL отвергнут/лимит исчерпан — не дёргаем его на каждой реплике до смены ключа
+            ENGINE_DEEPL if !self.deepl_disabled_reason.is_empty() => return None,
             ENGINE_DEEPL => self.translate_deepl_only(text, src_lang, context, use_cache),
-            ENGINE_GOOGLE => match self.cached(text, ENGINE_GOOGLE, use_cache) {
+            ENGINE_GOOGLE => match self.cached(text, ENGINE_GOOGLE, src_lang, use_cache) {
                 Some(hit) => Ok(TranslateResult { text: hit, engine, cached: true, notice: String::new() }),
                 None => self.google.translate(text, src_lang, self.target).map(|out| {
-                    self.store(text, ENGINE_GOOGLE, &out);
+                    self.store(text, ENGINE_GOOGLE, src_lang, &out);
                     TranslateResult { text: out, engine, cached: false, notice: String::new() }
                 }),
             },
@@ -781,18 +806,23 @@ impl TranslatorManager {
         }
     }
 
-    fn cached(&self, text: &str, engine: &str, use_cache: bool) -> Option<String> {
+    /// Ключ кэша: движок + язык оригинала (с неверным языком игры переводы получаются плохие, их нельзя отдавать после исправления).
+    fn cache_engine(engine: &str, src_lang: Option<Lang>) -> String {
+        format!("{engine}@{}", src_lang.map_or("auto", Lang::code))
+    }
+
+    fn cached(&self, text: &str, engine: &str, src_lang: Option<Lang>, use_cache: bool) -> Option<String> {
         if use_cache {
-            self.cache.as_ref().and_then(|c| c.get(text, engine, self.target.code()))
+            self.cache.as_ref().and_then(|c| c.get(text, &Self::cache_engine(engine, src_lang), self.target.code()))
         } else {
             None
         }
     }
 
-    fn store(&self, text: &str, engine: &str, result: &str) {
+    fn store(&self, text: &str, engine: &str, src_lang: Option<Lang>, result: &str) {
         if let Some(c) = &self.cache {
             if !result.is_empty() {
-                c.put(text, engine, self.target.code(), result);
+                c.put(text, &Self::cache_engine(engine, src_lang), self.target.code(), result);
             }
         }
     }
@@ -835,7 +865,7 @@ impl TranslatorManager {
             }
         }
         if self.mode == "auto" && self.active_engine() == ENGINE_DEEPL {
-            if let Some(hit) = self.cached(text, ENGINE_DEEPL, use_cache) {
+            if let Some(hit) = self.cached(text, ENGINE_DEEPL, src_lang, use_cache) {
                 return Ok(TranslateResult { text: hit, engine: ENGINE_DEEPL, cached: true, notice });
             }
             let attempt = match &self.deepl {
@@ -844,7 +874,7 @@ impl TranslatorManager {
             };
             match attempt {
                 Ok(out) => {
-                    self.store(text, ENGINE_DEEPL, &out);
+                    self.store(text, ENGINE_DEEPL, src_lang, &out);
                     return Ok(TranslateResult { text: out, engine: ENGINE_DEEPL, cached: false, notice });
                 }
                 Err(e @ TranslateError::Denied(_)) => {
@@ -855,11 +885,11 @@ impl TranslatorManager {
             }
         }
 
-        if let Some(hit) = self.cached(text, ENGINE_GOOGLE, use_cache) {
+        if let Some(hit) = self.cached(text, ENGINE_GOOGLE, src_lang, use_cache) {
             return Ok(TranslateResult { text: hit, engine: ENGINE_GOOGLE, cached: true, notice });
         }
         let out = self.google.translate(text, src_lang, self.target)?;
-        self.store(text, ENGINE_GOOGLE, &out);
+        self.store(text, ENGINE_GOOGLE, src_lang, &out);
         Ok(TranslateResult { text: out, engine: ENGINE_GOOGLE, cached: false, notice })
     }
 
@@ -875,7 +905,7 @@ impl TranslatorManager {
         // в ключ кэша для локального ИИ входит модель
         let cache_key =
             if engine == ENGINE_LOCAL_AI { format!("{ENGINE_LOCAL_AI}:{}", self.local_model) } else { engine.to_string() };
-        if let Some(hit) = self.cached(text, &cache_key, use_cache) {
+        if let Some(hit) = self.cached(text, &cache_key, src_lang, use_cache) {
             return Ok(TranslateResult { text: hit, engine, cached: true, notice: String::new() });
         }
         let out = if engine == ENGINE_MICROSOFT {
@@ -901,7 +931,7 @@ impl TranslatorManager {
                 context,
             )?
         };
-        self.store(text, &cache_key, &out);
+        self.store(text, &cache_key, src_lang, &out);
         Ok(TranslateResult { text: out, engine, cached: false, notice: String::new() })
     }
 
@@ -918,13 +948,13 @@ impl TranslatorManager {
                 t("Ключ DeepL не задан — укажите его в настройках или выберите другой переводчик.").to_string(),
             ));
         };
-        if let Some(hit) = self.cached(text, ENGINE_DEEPL, use_cache) {
+        if let Some(hit) = self.cached(text, ENGINE_DEEPL, src_lang, use_cache) {
             return Ok(TranslateResult { text: hit, engine: ENGINE_DEEPL, cached: true, notice: String::new() });
         }
         match d.translate(text, src_lang, self.target, context) {
             Ok(out) => {
                 self.deepl_disabled_reason.clear();
-                self.store(text, ENGINE_DEEPL, &out);
+                self.store(text, ENGINE_DEEPL, src_lang, &out);
                 Ok(TranslateResult { text: out, engine: ENGINE_DEEPL, cached: false, notice: String::new() })
             }
             Err(e) => {
@@ -1074,6 +1104,17 @@ mod tests {
         assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "deepl").as_deref(), Some("G:こんにちは"));
         m.set_second("неизвестный");
         assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "deepl"), None);
+    }
+
+    #[test]
+    fn second_deepl_not_called_after_denied() {
+        let s = FakeHttp::new(456);
+        let mut m = TranslatorManager::new("key", None, http(&s));
+        m.set_second("deepl");
+        assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "google"), None);
+        let n = s.posts().len();
+        assert_eq!(m.translate_alt("こんにちは", Some(Lang::Ja), "", true, "google"), None);
+        assert_eq!(s.posts().len(), n, "после отказа DeepL запросов нет");
     }
 
     #[test]
@@ -1473,6 +1514,59 @@ mod tests {
         let s = Script::new(Box::new(|_| resp(500, "")), no_get());
         let e = MicrosoftTranslator::new("k", "", s).translate("x", None, Lang::Ru).unwrap_err();
         assert_eq!(e.to_string(), "Microsoft ответил кодом 500");
+    }
+
+    #[test]
+    fn microsoft_quota_is_not_a_bad_key() {
+        let body = r#"{"error":{"code":403001,"message":"The operation is not allowed because the subscription has exceeded its free quota."}}"#;
+        let s = Script::new(Box::new(move |_| resp(403, body)), no_get());
+        let e = MicrosoftTranslator::new("k", "", s.clone()).translate("x", None, Lang::Ru).unwrap_err();
+        assert_eq!(e.to_string(), "Microsoft: исчерпан лимит запросов");
+        // не отключается: следующая реплика снова идёт в Microsoft
+        let mut m = TranslatorManager::new("", None, s.clone());
+        m.set_mode("microsoft");
+        m.set_microsoft("k", "");
+        m.translate("a", Some(Lang::Ja), "", true).unwrap();
+        m.translate("b", Some(Lang::Ja), "", true).unwrap();
+        assert_eq!(s.posts().len(), 3);
+        assert_eq!(m.status_text(), "Microsoft Translator");
+    }
+
+    #[test]
+    fn local_ai_restores_quotes() {
+        let s = Script::new(ai_reply("«Доброе утро»"), no_get());
+        let mut m = TranslatorManager::new("", None, s);
+        m.set_mode("local_ai");
+        m.set_local_ai("http://h:1", "m");
+        assert_eq!(m.translate("「おはよう」", Some(Lang::Ja), "", true).unwrap().text, "«Доброе утро»");
+        assert_eq!(m.translate("おはよう", Some(Lang::Ja), "", true).unwrap().text, "Доброе утро");
+        m.set_target(Lang::En);
+        assert_eq!(m.translate("『おはよう』", Some(Lang::Ja), "", true).unwrap().text, "“Доброе утро”");
+        m.set_target(Lang::Ja);
+        assert_eq!(m.translate("「おはよう」", Some(Lang::Ko), "", true).unwrap().text, "「Доброе утро」");
+    }
+
+    #[test]
+    fn cache_depends_on_source_language() {
+        let s = FakeHttp::new(200);
+        let cache = Arc::new(TranslationCache::in_memory().unwrap());
+        let mut m = TranslatorManager::new("key", Some(cache.clone()), http(&s));
+        assert!(!m.translate("テスト", Some(Lang::Ja), "", true).unwrap().cached);
+        assert!(!m.translate("テスト", Some(Lang::Zh), "", true).unwrap().cached);
+        assert!(m.translate("テスト", Some(Lang::Zh), "", true).unwrap().cached);
+        assert_eq!(cache.count(), 2);
+    }
+
+    #[test]
+    fn google_chunks_joined_with_space_unless_cjk_target() {
+        let long = "あ。".repeat(1200);
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("", None, http(&s));
+        let ru = m.translate(&long, Some(Lang::Ja), "", true).unwrap().text;
+        assert!(ru.contains(" G:") && !ru.ends_with(' '));
+        m.set_target(Lang::Zh);
+        let zh = m.translate(&long, Some(Lang::Ja), "", false).unwrap().text;
+        assert!(!zh.contains(" G:"));
     }
 
     #[test]

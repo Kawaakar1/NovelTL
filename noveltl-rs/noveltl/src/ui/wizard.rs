@@ -323,9 +323,15 @@ impl Wizard {
         self.best_key = snap.rows.first().map(|r| r.key.clone());
         self.target_title = lock_ctl(&shared.controller).settings.target_lang.title_in_text();
 
+        // высота не больше рабочей области (как у настроек): на ноутбуках кнопки внизу не уходят за край
+        let mut h = (super::settings::work_area_height_px() / ctx.pixels_per_point().max(0.5) - 60.0).clamp(420.0, 720.0);
+        if let Some([_, _, _, th]) = crate::winutil::test_area() {
+            h = h.min(th - 80.0).max(420.0);
+        }
         let mut builder = ViewportBuilder::default()
             .with_title(self.window_title())
-            .with_inner_size([580.0, 720.0])
+            .with_inner_size([580.0, h])
+            .with_min_inner_size([480.0, 420.0_f32.min(h)])
             .with_active(!crate::winutil::test_area().is_some())
             .with_always_on_top()
             .with_icon(self.icon.clone());
@@ -500,24 +506,28 @@ impl Wizard {
     // ---------- шаг 2: поиск текста ----------
     fn draw_step2(&mut self, ctx: &egui::Context, snap: &Snap, acts: &mut Vec<Act>) {
         egui::TopBottomPanel::bottom("wiz_foot2").show_separator_line(false).frame(footer_frame()).show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                if button(ui, t("←  Назад"), BtnKind::Normal, true, None).clicked() {
-                    acts.push(Act::BackFromSearch);
-                }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, t("Текст не находится? Сохранить отчёт"), BtnKind::Link, true, None).clicked() {
-                        acts.push(Act::Report);
-                    }
-                    // запасной путь, когда перехват не берёт игру: читать текст с экрана
-                    if cfg!(windows)
-                        && button(ui, t("Читать с экрана (OCR)"), BtnKind::Link, true, None)
-                            .on_hover_text(t("Для игр, где текст не находится: программа будет распознавать текст в области плашки."))
-                            .clicked()
-                    {
-                        acts.push(Act::Ocr);
+            // две ссылки и «Назад» в одну строку; не помещаются (например, по-японски) — ссылки строкой выше
+            let tw = |ui: &Ui, s: &str| ui.painter().layout_no_wrap(s.to_string(), FontId::proportional(14.0), Color32::WHITE).size().x;
+            let links_w = tw(ui, t("Текст не находится? Сохранить отчёт"))
+                + if cfg!(windows) { tw(ui, t("Читать с экрана (OCR)")) } else { 0.0 }
+                + 24.0;
+            let back_w = tw(ui, t("←  Назад")) + 32.0;
+            if back_w + links_w + 24.0 > ui.available_width() {
+                ui.horizontal(|ui| step2_links(ui, acts));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if button(ui, t("←  Назад"), BtnKind::Normal, true, None).clicked() {
+                        acts.push(Act::BackFromSearch);
                     }
                 });
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    if button(ui, t("←  Назад"), BtnKind::Normal, true, None).clicked() {
+                        acts.push(Act::BackFromSearch);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| step2_links(ui, acts));
+                });
+            }
         });
         egui::CentralPanel::default().frame(central_frame()).show(ctx, |ui| {
             // всё содержимое прокручивается: в маленьком окне иначе не добраться до «Других вариантов»
@@ -650,13 +660,14 @@ impl Wizard {
                     acts.push(Act::Cancel);
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if button(ui, t("Готово"), BtnKind::Big, true, None).clicked() {
+                    if button(ui, t("Готово"), BtnKind::Primary, true, None).clicked() {
                         acts.push(Act::Finish);
                     }
                 });
             });
         });
         egui::CentralPanel::default().frame(central_frame()).show(ctx, |ui| {
+          egui::ScrollArea::vertical().id_salt("wiz_step3").auto_shrink([false, false]).show(ui, |ui| {
             header(
                 ui,
                 3,
@@ -685,6 +696,22 @@ impl Wizard {
             if button(ui, t("Вернуть положение по умолчанию"), BtnKind::Link, true, None).clicked() {
                 acts.push(Act::ResetPosition);
             }
+          });
         });
+    }
+}
+
+/// Две ссылки в подвале шага 2 (справа налево: отчёт, затем OCR).
+fn step2_links(ui: &mut Ui, acts: &mut Vec<Act>) {
+    if button(ui, t("Текст не находится? Сохранить отчёт"), BtnKind::Link, true, None).clicked() {
+        acts.push(Act::Report);
+    }
+    // запасной путь, когда перехват не берёт игру: читать текст с экрана
+    if cfg!(windows)
+        && button(ui, t("Читать с экрана (OCR)"), BtnKind::Link, true, None)
+            .on_hover_text(t("Для игр, где текст не находится: программа будет распознавать текст в области плашки."))
+            .clicked()
+    {
+        acts.push(Act::Ocr);
     }
 }

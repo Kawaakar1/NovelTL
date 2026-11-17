@@ -179,7 +179,16 @@ fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
     let mut add = |key: &str, file: &str| -> bool {
         match font_paths(file).into_iter().find_map(|p| std::fs::read(p).ok()) {
             Some(bytes) => {
-                fonts.font_data.insert(key.to_string(), Arc::new(FontData::from_owned(bytes)));
+                // у Yu Gothic и Meiryo базовая линия выше, чем у Segoe UI (разные ascent и line gap), и в одной строке
+                // латиница оказывалась ниже каны — опускаем эти шрифты на разницу (доля размера шрифта)
+                let dy = match key {
+                    "yugothic" => 0.335,
+                    "meiryo" => 0.104,
+                    _ => 0.0,
+                };
+                let data = FontData::from_owned(bytes)
+                    .tweak(egui::FontTweak { y_offset_factor: dy, ..Default::default() });
+                fonts.font_data.insert(key.to_string(), Arc::new(data));
                 true
             }
             None => false,
@@ -300,14 +309,17 @@ fn main() {
 
     // один экземпляр: именованный мьютекс держим до конца работы (по нему установщик понимает, что программа запущена)
     #[cfg(windows)]
-    let _mutex = {
+    let _mutex = if demo {
+        // демо не должно мешать обычному запуску (и установщику)
+        None
+    } else {
         let mutex = unsafe { CreateMutexW(None, false, w!("NovelTL_Running")) };
         let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-        if already && !demo {
+        if already {
             message_box(t("NovelTL уже запущен — посмотрите значок в трее."));
             return;
         }
-        mutex
+        Some(mutex)
     };
 
     if args.selfcheck && !demo {
@@ -352,11 +364,8 @@ fn main() {
             // режим «Буфер обмена» работает поверх любого источника
             let source: Box<dyn HookSource> = Box::new(clipboard::WithClipboard::new(source, tx, waker.clone()));
             let mut controller = Controller::new(source, rx, cfg.demo, 0, waker);
-            if let Some(t) = &theme_arg {
-                controller.settings.theme = t.clone();
-            }
+            controller.set_cli_override(theme_arg.clone(), lang_arg);
             if let Some(l) = lang_arg {
-                controller.settings.ui_lang = Some(l);
                 noveltl_core::i18n::set_lang(l);
                 // демо переводит только на русский и английский: для других языков интерфейса — английский
                 if cfg.demo && l != noveltl_core::i18n::UiLang::Ru {
