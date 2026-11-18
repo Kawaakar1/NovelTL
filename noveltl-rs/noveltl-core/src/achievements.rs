@@ -13,6 +13,12 @@ pub struct Totals {
 pub struct Badge {
     /// русская строка-ключ для `t()`
     pub name: &'static str,
+    /// русская строка-ключ: за что даётся значок
+    pub hint: &'static str,
+    /// короткая метка на медальоне
+    pub short: &'static str,
+    /// значок за серию (его счётчик — рекорд, а не текущая серия)
+    pub streak: bool,
     pub have: u64,
     pub need: u64,
 }
@@ -24,15 +30,15 @@ impl Badge {
 }
 
 pub fn badges(t: Totals) -> Vec<Badge> {
-    let b = |name, have, need| Badge { name, have, need };
+    let b = |name, hint, short, streak, have, need| Badge { name, hint, short, streak, have, need };
     vec![
-        b("Первая игра", t.games, 1),
-        b("100 реплик", t.lines, 100),
-        b("1 000 реплик", t.lines, 1_000),
-        b("10 000 реплик", t.lines, 10_000),
-        b("7 дней подряд", t.best_streak, 7),
-        b("30 дней подряд", t.best_streak, 30),
-        b("100 слов в Anki", t.anki, 100),
+        b("Первая игра", "Прочитайте первую реплику в любой игре", "1", false, t.games, 1),
+        b("100 реплик", "Прочитайте 100 реплик во всех играх", "100", false, t.lines, 100),
+        b("1 000 реплик", "Прочитайте 1 000 реплик во всех играх", "1K", false, t.lines, 1_000),
+        b("10 000 реплик", "Прочитайте 10 000 реплик во всех играх", "10K", false, t.lines, 10_000),
+        b("7 дней подряд", "Читайте 7 дней подряд (лучшая серия)", "7", true, t.best_streak, 7),
+        b("30 дней подряд", "Читайте 30 дней подряд (лучшая серия)", "30", true, t.best_streak, 30),
+        b("100 слов в Anki", "Добавьте 100 слов в Anki из NovelTL", "100", false, t.anki, 100),
     ]
 }
 
@@ -58,5 +64,6 @@ mod tests {
         assert_eq!(next_badge(&bs).unwrap().name, "7 дней подряд");
         let all = badges(Totals { lines: 99_999, best_streak: 99, anki: 999, games: 9 });
         assert!(next_badge(&all).is_none());
+        assert!(bs.iter().all(|b| !b.hint.is_empty() && !b.short.is_empty()));
     }
 }

@@ -840,9 +840,8 @@ impl MainWindow {
                         ui.label(theme::small(tf("Дней подряд: {}", &[&all.streak(&snap.today)])));
                     });
                 });
-                ui.add_space(6.0);
-                Self::achievements(ui, profiles, &all, snap.anki_added);
             });
+            Self::achievements(ui, w, profiles, &all, snap.anki_added);
             let cols = (((w + GAP) / (170.0 + GAP)) as usize).max(1);
             let cw = ((w - GAP * (cols as f32 - 1.0)) / cols as f32).min(190.0);
             ui.spacing_mut().item_spacing = Vec2::new(GAP, GAP);
@@ -867,8 +866,8 @@ impl MainWindow {
         });
     }
 
-    /// Значки достижений (с переносом строк) и прогресс к ближайшему незаработанному.
-    fn achievements(ui: &mut egui::Ui, profiles: &[Profile], all: &ReadStats, anki: u64) {
+    /// Карточка достижений: сетка значков (по ширине, с переносом) и прогресс к ближайшему незаработанному.
+    fn achievements(ui: &mut egui::Ui, w: f32, profiles: &[Profile], all: &ReadStats, anki: u64) {
         let p = pal();
         let totals = achievements::Totals {
             lines: profiles.iter().map(|pr| pr.stats.lines).sum(),
@@ -877,29 +876,79 @@ impl MainWindow {
             games: profiles.iter().filter(|pr| pr.stats.lines > 0).count() as u64,
         };
         let badges = achievements::badges(totals);
-        ui.label(theme::small(t("Достижения")));
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
-            for b in &badges {
-                let (fill, stroke, text) = if b.earned() {
-                    (p.accent, p.accent, RichText::new(format!("✓ {}", t(b.name))).size(12.0).color(p.on_accent))
+        // глифы Segoe MDL2: игра, документ x3, календарь x2, закладки
+        const ICONS: [char; 7] = ['\u{E7FC}', '\u{E8A5}', '\u{E8A5}', '\u{E8A5}', '\u{E787}', '\u{E787}', '\u{E8A4}'];
+        const GAP: f32 = 10.0;
+        theme::card_frame().show(ui, |ui| {
+            ui.set_width(w - 34.0);
+            let avail = ui.available_width();
+            let got = badges.iter().filter(|b| b.earned()).count();
+            ui.horizontal(|ui| {
+                ui.label(theme::h2(t("Достижения")));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.label(theme::small(tf("{} из {}", &[&got, &badges.len()])));
+                });
+            });
+            ui.add_space(4.0);
+            let cols = (((avail + GAP) / (96.0 + GAP)) as usize).clamp(1, badges.len());
+            let tw = ((avail - GAP * (cols as f32 - 1.0)) / cols as f32).min(140.0);
+            ui.spacing_mut().item_spacing = Vec2::new(GAP, GAP);
+            for (row, chunk) in badges.chunks(cols).enumerate() {
+                let rw = chunk.len() as f32 * tw + (chunk.len() as f32 - 1.0) * GAP;
+                ui.horizontal(|ui| {
+                    ui.add_space(((avail - rw) / 2.0).max(0.0));
+                    for (i, b) in chunk.iter().enumerate() {
+                        let icon = ICONS[row * cols + i];
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(tw, 142.0), Sense::hover());
+                        let earned = b.earned();
+                        let pt = ui.painter();
+                        pt.rect(rect, 10.0, Color32::TRANSPARENT, egui::Stroke::new(1.0_f32, p.border), egui::StrokeKind::Inside);
+                        let c = egui::pos2(rect.center().x, rect.top() + 12.0 + 28.0);
+                        let (fill, ring, fg) = if earned { (p.accent, p.accent, p.on_accent) } else { (Color32::TRANSPARENT, p.border, p.dim) };
+                        pt.circle(c, 28.0, fill, egui::Stroke::new(2.0_f32, ring));
+                        if theme::has_icon_font() {
+                            pt.text(c - Vec2::new(0.0, 8.0), egui::Align2::CENTER_CENTER, icon, egui::FontId::new(22.0, theme::icon_family()), fg);
+                            pt.text(c + Vec2::new(0.0, 14.0), egui::Align2::CENTER_CENTER, b.short, egui::FontId::new(12.0, theme::bold_family()), fg);
+                        } else {
+                            pt.text(c, egui::Align2::CENTER_CENTER, b.short, egui::FontId::new(20.0, theme::bold_family()), fg);
+                        }
+                        let mut job = egui::text::LayoutJob::simple(
+                            t(b.name).to_string(),
+                            egui::FontId::proportional(12.0),
+                            if earned { p.text } else { p.dim },
+                            tw - 12.0,
+                        );
+                        job.halign = Align::Center;
+                        let g = pt.layout_job(job);
+                        pt.galley(egui::pos2(rect.center().x, rect.top() + 74.0), g, p.text);
+                        if !earned {
+                            let bar = egui::Rect::from_min_size(egui::pos2(rect.left() + 12.0, rect.bottom() - 30.0), Vec2::new(tw - 24.0, 4.0));
+                            pt.rect_filled(bar, 2.0, p.border);
+                            let f = (b.have as f32 / b.need as f32).clamp(0.0, 1.0);
+                            pt.rect_filled(egui::Rect::from_min_size(bar.min, Vec2::new(bar.width() * f, 4.0)), 2.0, p.accent);
+                            pt.text(
+                                egui::pos2(rect.center().x, rect.bottom() - 14.0),
+                                egui::Align2::CENTER_CENTER,
+                                format!("{} / {}", thousands(b.have), thousands(b.need)),
+                                egui::FontId::proportional(11.0),
+                                p.dim,
+                            );
+                        }
+                        resp.on_hover_text(t(b.hint));
+                    }
+                });
+            }
+            if let Some(b) = achievements::next_badge(&badges) {
+                ui.add_space(2.0);
+                let line = if b.streak {
+                    tf("Следующее: {} — рекорд: {} из {}", &[&t(b.name), &thousands(b.have), &thousands(b.need)])
                 } else {
-                    (Color32::TRANSPARENT, p.border, theme::small(t(b.name)))
+                    tf("Следующее: {} — осталось {}", &[&t(b.name), &thousands(b.need - b.have)])
                 };
-                // Button, а не Frame: только отдельные виджеты переносятся по строкам
-                ui.add(
-                    egui::Button::new(text)
-                        .fill(fill)
-                        .stroke(egui::Stroke::new(1.0_f32, stroke))
-                        .corner_radius(10)
-                        .sense(Sense::hover()),
-                );
+                ui.vertical_centered(|ui| ui.label(theme::small(line)));
+                ui.add(egui::ProgressBar::new(b.have as f32 / b.need as f32).desired_height(6.0));
             }
         });
-        if let Some(b) = achievements::next_badge(&badges) {
-            ui.label(theme::small(tf("Следующее: {} — {} / {}", &[&t(b.name), &thousands(b.have), &thousands(b.need)])));
-            ui.add(egui::ProgressBar::new(b.have as f32 / b.need as f32).desired_height(6.0));
-        }
     }
 
     /// Карточка игры: обложка 2:3; при наведении приподнимается и показывает «Играть».
