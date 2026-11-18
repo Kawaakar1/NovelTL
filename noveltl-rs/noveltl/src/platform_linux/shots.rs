@@ -16,7 +16,7 @@ pub struct Shots {
 }
 
 impl Shots {
-    pub fn new(_dir: PathBuf) -> Shots {
+    pub fn new(_dir: PathBuf, _only: Option<std::collections::HashSet<String>>) -> Shots {
         Shots { started: false }
     }
 

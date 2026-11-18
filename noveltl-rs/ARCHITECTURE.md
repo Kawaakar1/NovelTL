@@ -14,7 +14,7 @@ cargo build --release -p noveltl
 
 | Файл | Что делает | Аналог в Python |
 |---|---|---|
-| `main.rs` | разбор аргументов (`--demo`, `--shots ПАПКА`, `--selfcheck`, `--theme`), один экземпляр (мьютекс `NovelTL_Running`), шрифты egui, запуск `eframe` | `main.py` |
+| `main.rs` | разбор аргументов (`--demo`, `--shots ПАПКА` (с `--only кадр1,кадр2` снимает только эти кадры), `--selfcheck`, `--theme`), один экземпляр (мьютекс `NovelTL_Running`), шрифты egui, запуск `eframe` | `main.py` |
 | `paths.rs` | папка программы (рядом с exe), `data`, `files`, подпапки; в демо — `data\demo` | `paths.py` |
 | `overlay.rs` | **готово** — плашка: своё окно Windows + Direct2D/DirectWrite, свой поток; `Overlay::start()`, `send(Cmd)`, события `Event::Moved` | `ui/overlay.py` |
 | `winutil.rs` | окна, процессы, запуск скрытый/с правами, сетевые интерфейсы | `winutil.py` |

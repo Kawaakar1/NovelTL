@@ -1,5 +1,6 @@
 //! Снимки окон для проверки (`--shots ПАПКА`): главное окно средствами egui, окно игры с плашкой — с экрана.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
@@ -217,6 +218,9 @@ enum Stage {
     Step3Wait,
     EditShot,
     AfterFinish,
+    /// без мастера: подключить демо-игру, дождаться потока текста, выбрать его и завершить настройку
+    DirectSetup,
+    DirectPick(u32),
     Translate,
     Settle,
     InGame,
@@ -250,8 +254,34 @@ enum Stage {
     Done,
 }
 
+/// Все кадры сценария (для проверки имён в `--only`).
+const ALL_SHOTS: [&str; 24] = [
+    "01_main_empty", "02_wizard_step1", "03_wizard_step2_waiting", "04_wizard_step2_found",
+    "05_wizard_step2_others", "06_wizard_step3", "07_overlay_edit_mode", "08_overlay_in_game",
+    "08b_overlay_reading", "09_main_running", "10_settings_look", "11_settings_translate",
+    "12_settings_plate", "13_settings_network", "14_settings_hotkeys", "15_settings_japanese",
+    "16_settings_general", "17_settings_theme_custom", "12b_settings_plate_game", "18_settings_local_ai",
+    "19_glossary", "01_main_library", "01c_cover_window", "01b_launch_settings",
+];
+const WIZARD_SHOTS: [&str; 6] = [
+    "02_wizard_step1", "03_wizard_step2_waiting", "04_wizard_step2_found", "05_wizard_step2_others",
+    "06_wizard_step3", "07_overlay_edit_mode",
+];
+/// Кадры, для которых нужна идущая сессия с игрой (плашка, библиотека, глоссарий).
+const SESSION_SHOTS: [&str; 7] = [
+    "08_overlay_in_game", "08b_overlay_reading", "09_main_running", "19_glossary", "01_main_library",
+    "01c_cover_window", "01b_launch_settings",
+];
+const SETTINGS_SHOTS: [&str; 10] = [
+    "10_settings_look", "11_settings_translate", "12_settings_plate", "13_settings_network",
+    "14_settings_hotkeys", "15_settings_japanese", "16_settings_general", "17_settings_theme_custom",
+    "12b_settings_plate_game", "18_settings_local_ai",
+];
+
 pub struct Shots {
     dir: PathBuf,
+    /// `--only`: какие кадры снимать (None — все)
+    only: Option<HashSet<String>>,
     stage: Stage,
     after: Stage,
     since: Instant,
@@ -265,11 +295,12 @@ pub struct Shots {
 }
 
 impl Shots {
-    pub fn new(dir: PathBuf) -> Shots {
+    pub fn new(dir: PathBuf, only: Option<HashSet<String>>) -> Shots {
         let _ = std::fs::create_dir_all(&dir);
         let now = Instant::now();
         Shots {
             dir,
+            only,
             stage: Stage::Start,
             after: Stage::Done,
             since: now,
@@ -280,6 +311,15 @@ impl Shots {
             log: Vec::new(),
             lib_id: None,
         }
+    }
+
+    /// Нужен ли кадр (имя с `.png` или без).
+    fn wants(&self, name: &str) -> bool {
+        self.only.as_ref().is_none_or(|o| o.contains(name.trim_end_matches(".png")))
+    }
+
+    fn wants_any(&self, names: &[&str]) -> bool {
+        names.iter().any(|n| self.wants(n))
     }
 
     fn go(&mut self, stage: Stage) {
@@ -295,6 +335,10 @@ impl Shots {
 
     /// Снимок главного окна; после его прихода сценарий идёт в `after`.
     fn request(&mut self, ctx: &egui::Context, name: &str, after: Stage) {
+        if !self.wants(name) {
+            self.go(after);
+            return;
+        }
         self.awaiting = Some(name.to_string());
         self.after = after;
         ctx.send_viewport_cmd(ViewportCommand::Screenshot(UserData::default()));
@@ -317,6 +361,9 @@ impl Shots {
 
     /// Снимок области окна игры с экрана (вместе с плашкой).
     fn capture_game(&mut self, hwnd: isize, name: &str) {
+        if !self.wants(name) {
+            return;
+        }
         // снимается кусок экрана — если окно игры чем-то закрыто, в снимок попадут чужие окна
         if !game_window_visible(hwnd) {
             self.note(format!("окно игры закрыто другим окном — {name} не сохранён"));
@@ -356,6 +403,16 @@ impl Shots {
         if self.stage == Stage::Done {
             return;
         }
+        if self.frames == 1 {
+            let bad: Vec<String> =
+                self.only.iter().flatten().filter(|n| !ALL_SHOTS.contains(&n.as_str())).cloned().collect();
+            if !bad.is_empty() {
+                let msg = format!("--only: нет такого кадра в сценарии: {}", bad.join(", "));
+                eprintln!("{msg}");
+                self.finish(shared, &msg);
+                return;
+            }
+        }
         if self.started.elapsed() > Duration::from_secs(80) {
             self.finish(shared, "таймаут сценария");
             return;
@@ -386,7 +443,7 @@ impl Shots {
                 if self.frames == 1 {
                     demo_profile(shared);
                 }
-                if self.frames > 6 && waited > Duration::from_millis(1200) {
+                if self.frames > 6 && (waited > Duration::from_millis(1200) || !self.wants("01_main_empty")) {
                     self.request(ctx, "01_main_empty.png", Stage::OpenWizard);
                 }
             }
@@ -403,8 +460,14 @@ impl Shots {
                     }
                     return;
                 }
-                windows.open_wizard(WizardMode::New);
-                self.go(Stage::WizardWait);
+                if self.wants_any(&WIZARD_SHOTS) {
+                    windows.open_wizard(WizardMode::New);
+                    self.go(Stage::WizardWait);
+                } else if self.wants_any(&SESSION_SHOTS) {
+                    self.go(Stage::DirectSetup);
+                } else {
+                    self.go(Stage::SettingsOpen);
+                }
             }
             Stage::WizardWait => {
                 if let Some(w) = wizard.as_ref() {
@@ -494,11 +557,59 @@ impl Shots {
                     self.go(Stage::AfterFinish);
                 }
             }
+            Stage::DirectSetup => {
+                let win = lock_ctl(&shared.controller).windows().into_iter().find(|w| w.hwnd == game.hwnd);
+                if let Some(win) = win {
+                    let mut c = lock_ctl(&shared.controller);
+                    let lang = c.settings.default_source_lang;
+                    c.begin_setup(&win, lang, &win.title);
+                    drop(c);
+                    self.go(Stage::DirectPick(0));
+                } else if waited > Duration::from_secs(10) {
+                    self.finish(shared, "окно игры не найдено");
+                }
+            }
+            Stage::DirectPick(n) => {
+                let ready = lock_ctl(&shared.controller).session.as_ref().is_some_and(|s| s.connected);
+                if !ready {
+                    if waited > Duration::from_secs(10) {
+                        self.finish(shared, "нет подключения к демо-источнику");
+                    }
+                    return;
+                }
+                if waited > Duration::from_millis(250) {
+                    if n < 4 {
+                        game.advance();
+                        self.go(Stage::DirectPick(n + 1));
+                        return;
+                    }
+                    let mut c = lock_ctl(&shared.controller);
+                    match c.tracker.ranked().first().map(|r| r.key.clone()) {
+                        Some(key) => {
+                            c.choose_hook(&key);
+                            c.set_overlay_position(OverlayFrac { x: 0.14, y: 0.50, w: 0.72, h: 0.17 });
+                            c.finish_setup();
+                            drop(c);
+                            bring_to_front(game.hwnd);
+                            self.go(Stage::AfterFinish);
+                        }
+                        None if waited > Duration::from_secs(10) => {
+                            drop(c);
+                            self.finish(shared, "не нашли текст диалога");
+                        }
+                        None => {}
+                    }
+                }
+            }
             Stage::AfterFinish => {
                 if waited > Duration::from_millis(600) {
                     demo_art(shared);
-                    game.advance();
-                    self.go(Stage::Translate);
+                    if self.wants_any(&["08_overlay_in_game", "08b_overlay_reading", "09_main_running"]) {
+                        game.advance();
+                        self.go(Stage::Translate);
+                    } else {
+                        self.go(Stage::SettingsOpen);
+                    }
                 }
             }
             Stage::Translate => {
@@ -533,6 +644,10 @@ impl Shots {
                 }
             }
             Stage::SettingsOpen => {
+                if !self.wants_any(&SETTINGS_SHOTS) {
+                    self.go(Stage::GlossaryOpen);
+                    return;
+                }
                 // для кадра «Общие»: ручная проверка обновлений, в демо находит версию 0.8.0
                 lock_ctl(&shared.controller).check_updates_now();
                 windows.open_settings();
@@ -560,6 +675,10 @@ impl Shots {
                     "15_settings_japanese.png",
                     "16_settings_general.png",
                 ];
+                if !self.wants(NAMES[i]) {
+                    self.go(if i + 1 < NAMES.len() { Stage::SettingsSection(i + 1) } else { Stage::SettingsLocalAi });
+                    return;
+                }
                 if !self.fronted {
                     // выбрать раздел (для сети — ещё и подставить прокси-заглушки)
                     if let Some(w) = settings.as_mut() {
@@ -587,6 +706,10 @@ impl Shots {
                 }
             }
             Stage::SettingsCustom => {
+                if !self.wants("17_settings_theme_custom") {
+                    self.go(Stage::SettingsPlateGame);
+                    return;
+                }
                 if !self.fronted {
                     if let Some(w) = settings.as_mut() {
                         w.select_section_for_shots(0);
@@ -605,6 +728,10 @@ impl Shots {
                 }
             }
             Stage::SettingsPlateGame => {
+                if !self.wants("12b_settings_plate_game") {
+                    self.go(Stage::SettingsClose);
+                    return;
+                }
                 if !self.fronted {
                     if let Some(w) = settings.as_mut() {
                         w.select_section_for_shots(2);
@@ -621,6 +748,10 @@ impl Shots {
                 }
             }
             Stage::SettingsLocalAi => {
+                if !self.wants("18_settings_local_ai") {
+                    self.go(Stage::SettingsCustom);
+                    return;
+                }
                 if !self.fronted {
                     if let Some(w) = settings.as_mut() {
                         w.select_section_for_shots(1);
@@ -650,6 +781,10 @@ impl Shots {
                 }
             },
             Stage::GlossaryOpen => {
+                if !self.wants("19_glossary") {
+                    self.go(Stage::LibraryEnd);
+                    return;
+                }
                 let id = lock_ctl(&shared.controller).session.as_ref().map(|s| s.profile.id.clone());
                 match id {
                     Some(id) => {

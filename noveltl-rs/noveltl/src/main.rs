@@ -4,6 +4,7 @@
 //!   noveltl.exe --demo          демо-режим: имитация игры, настоящая игра не нужна
 //!   noveltl.exe --shots ПАПКА   (для разработки) снять снимки окон и выйти
 //!   noveltl.exe --selfcheck     проверить загрузку LunaHook и выйти
+//!   noveltl.exe --shots ПАПКА --only имя1,имя2   снять только перечисленные кадры
 //!   noveltl.exe --theme system|dark|light
 #![windows_subsystem = "windows"]
 
@@ -84,6 +85,8 @@ use ui::{theme, App, Config, Shared};
 struct Args {
     demo: bool,
     shots: Option<PathBuf>,
+    /// `--only`: снимать только эти кадры (имена без `.png`)
+    only: Option<std::collections::HashSet<String>>,
     selfcheck: bool,
     theme: Option<String>,
     /// язык интерфейса для этого запуска (проверки и снимки): ru / en / ja / zh / ko
@@ -91,17 +94,20 @@ struct Args {
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { demo: false, shots: None, selfcheck: false, theme: None, lang: None };
+    let mut a = Args { demo: false, shots: None, only: None, selfcheck: false, theme: None, lang: None };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--demo" => a.demo = true,
             "--selfcheck" => a.selfcheck = true,
             "--shots" => a.shots = it.next().map(PathBuf::from),
+            "--only" => a.only = it.next().map(|v| parse_only(&v)),
             "--theme" => a.theme = it.next().filter(|t| matches!(t.as_str(), "system" | "dark" | "light")),
             "--lang" => a.lang = it.next().and_then(|l| serde_json::from_value(serde_json::Value::String(l)).ok()),
             other => {
-                if let Some(v) = other.strip_prefix("--shots=") {
+                if let Some(v) = other.strip_prefix("--only=") {
+                    a.only = Some(parse_only(v));
+                } else if let Some(v) = other.strip_prefix("--shots=") {
                     a.shots = Some(PathBuf::from(v));
                 } else if let Some(v) = other.strip_prefix("--theme=") {
                     a.theme = Some(v.to_string()).filter(|t| matches!(t.as_str(), "system" | "dark" | "light"));
@@ -110,6 +116,14 @@ fn parse_args() -> Args {
         }
     }
     a
+}
+
+/// Список кадров для `--only`: через запятую или `;`, пробелы и `.png` не важны, пустые элементы пропускаются.
+fn parse_only(list: &str) -> std::collections::HashSet<String> {
+    list.split([',', ';'])
+        .map(|n| n.trim().trim_end_matches(".png").to_string())
+        .filter(|n| !n.is_empty())
+        .collect()
 }
 
 #[cfg(windows)]
@@ -339,7 +353,7 @@ fn main() {
         viewport = viewport.with_position([x + 20.0, y + 20.0]).with_active(false);
     }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
-    let cfg = Config { demo, shots: args.shots.clone() };
+    let cfg = Config { demo, shots: args.shots.clone(), only: args.only.clone() };
     let theme_arg = args.theme.clone();
     let lang_arg = args.lang;
     let result = eframe::run_native(
@@ -380,5 +394,16 @@ fn main() {
     );
     if let Err(e) = result {
         message_box(&tf("Не удалось запустить окно: {}", &[&e]));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn parse_only_splits_and_cleans() {
+        let got = super::parse_only(" 01_main_library.png, 08_overlay_in_game ;;,16_settings_general ");
+        let mut v: Vec<_> = got.into_iter().collect();
+        v.sort();
+        assert_eq!(v, ["01_main_library", "08_overlay_in_game", "16_settings_general"]);
     }
 }

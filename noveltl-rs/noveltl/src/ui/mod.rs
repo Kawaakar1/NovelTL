@@ -170,6 +170,8 @@ impl Windows {
 pub struct Config {
     pub demo: bool,
     pub shots: Option<PathBuf>,
+    /// `--only`: какие кадры снимать (None — все)
+    pub only: Option<std::collections::HashSet<String>>,
 }
 
 pub struct App {
@@ -218,7 +220,7 @@ impl App {
             crate::paths::data_dir().join("reports"),
         );
         let game = demo_source.map(demo_game::DemoGame::new);
-        let shots = cfg.shots.map(shots::Shots::new);
+        let shots = cfg.shots.map(|d| shots::Shots::new(d, cfg.only));
         App {
             shared,
             // только для проверок разработчиком: NOVELTL_TEST_OPEN=settings|wizard открывает окно сразу
