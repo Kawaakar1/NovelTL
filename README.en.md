@@ -18,7 +18,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 
 💡 [Suggest an idea](https://github.com/Kawaakar1/NovelTL/issues/new?template=idea.yml) — tell us what to add to NovelTL
 
-<img src="shots_en/08_overlay_in_game.png" width="760" alt="Translation box over the game">
+<img src="docs/img/en/demo.gif" width="760" alt="Game lines translated on a box over the game (demo)">
 
 </div>
 

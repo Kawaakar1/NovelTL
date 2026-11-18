@@ -18,7 +18,7 @@
 
 💡 [Предложить идею](https://github.com/Kawaakar1/NovelTL/issues/new?template=idea.yml) — расскажите, что добавить в NovelTL
 
-<img src="shots/08_overlay_in_game.png" width="760" alt="Плашка с переводом поверх игры">
+<img src="docs/img/ru/demo.gif" width="760" alt="Реплики игры переводятся на плашке поверх игры (демо)">
 
 </div>
 
