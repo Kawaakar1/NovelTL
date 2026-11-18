@@ -16,6 +16,8 @@
 ![Rust](https://img.shields.io/badge/Rust-egui-CE422B?style=for-the-badge&logo=rust)
 ![Лицензия GPL-3.0](https://img.shields.io/badge/%D0%BB%D0%B8%D1%86%D0%B5%D0%BD%D0%B7%D0%B8%D1%8F-GPL--3.0-blue?style=for-the-badge)
 
+💡 [Предложить идею](https://github.com/Kawaakar1/NovelTL/issues/new?template=idea.yml) — расскажите, что добавить в NovelTL
+
 <img src="shots/08_overlay_in_game.png" width="760" alt="Плашка с переводом поверх игры">
 
 </div>

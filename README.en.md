@@ -16,6 +16,8 @@ No manual hook codes, no command line — three wizard steps and you are playing
 ![Rust](https://img.shields.io/badge/Rust-egui-CE422B?style=for-the-badge&logo=rust)
 ![License GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue?style=for-the-badge)
 
+💡 [Suggest an idea](https://github.com/Kawaakar1/NovelTL/issues/new?template=idea.yml) — tell us what to add to NovelTL
+
 <img src="shots_en/08_overlay_in_game.png" width="760" alt="Translation box over the game">
 
 </div>

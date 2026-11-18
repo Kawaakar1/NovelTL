@@ -1,0 +1,30 @@
+name: "💡 Идея / Idea"
+description: "Предложите, что добавить в NovelTL · Suggest something for NovelTL"
+title: "Идея: "
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что помогаете сделать NovelTL лучше! Опишите идею своими словами — можно коротко.
+        Thanks for helping make NovelTL better! Describe your idea in your own words — short is fine.
+  - type: textarea
+    id: idea
+    attributes:
+      label: "Что добавить или изменить? · What should be added or changed?"
+      placeholder: "Например: кнопка, чтобы сохранить реплику в избранное"
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: "Зачем это вам? · Why do you need it?"
+      placeholder: "Например: хочу потом повторять понравившиеся фразы"
+    validations:
+      required: false
+  - type: input
+    id: game
+    attributes:
+      label: "Игра, если идея про конкретную игру · Game, if it is about a specific game"
+    validations:
+      required: false
