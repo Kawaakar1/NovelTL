@@ -30,6 +30,8 @@ pub struct Style {
     pub bg_opacity: u8, // проценты
     /// показывать исходную реплику мелко под переводом
     pub show_original: bool,
+    /// режим чтения: оригинал с фуриганой крупно, перевод скрыт «спойлером»
+    pub reading: bool,
     /// панель кнопок приглушена (почти прозрачная, ярче под курсором)
     pub toolbar_dim: bool,
     /// скругление углов, px
@@ -57,6 +59,7 @@ impl Default for Style {
             bg_color: 0x0E0F1A,
             bg_opacity: 85,
             show_original: false,
+            reading: false,
             toolbar_dim: false,
             radius: 12,
             border: false,
@@ -102,6 +105,8 @@ pub enum Cmd {
     Note { note: String, keep_text: bool },
     /// второй перевод пришёл позже основного: дописать его под текущей репликой
     Alt(String),
+    /// режим чтения: показать/спрятать перевод (до следующей реплики)
+    Peek,
     Clear,
     EditMode(bool),
     UserHidden(bool),
@@ -135,6 +140,7 @@ pub fn menu_label(id: &str) -> &'static str {
         crate::tray::ID_RETR => t("Перевести заново без кэша"),
         crate::tray::ID_COPY => t("Копировать перевод"),
         crate::tray::ID_ORIGINAL => t("Показать оригинал"),
+        crate::tray::ID_READING => t("Режим чтения"),
         crate::tray::ID_DIM => t("Приглушить кнопки"),
         crate::tray::ID_SETTINGS => t("Настройки"),
         crate::tray::ID_QUIT => t("Выход"),
@@ -208,5 +214,6 @@ mod tests {
         assert!(!menu_label(crate::tray::ID_COPY).is_empty());
         assert!(!menu_label(crate::tray::ID_ORIGINAL).is_empty());
         assert!(!menu_label(crate::tray::ID_DIM).is_empty());
+        assert!(!menu_label(crate::tray::ID_READING).is_empty());
     }
 }

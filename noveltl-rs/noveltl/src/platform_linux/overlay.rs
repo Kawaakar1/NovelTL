@@ -26,8 +26,14 @@ const MIN_H: f32 = 70.0;
 const PAD: f32 = 18.0;
 const MIN_FONT: f32 = 11.0;
 const EDGE: f32 = 10.0;
-const MENU_IDS: [&str; 5] =
-    [crate::tray::ID_OPEN, crate::tray::ID_TOGGLE, crate::tray::ID_RETR, crate::tray::ID_SETTINGS, crate::tray::ID_QUIT];
+const MENU_IDS: [&str; 6] = [
+    crate::tray::ID_OPEN,
+    crate::tray::ID_TOGGLE,
+    crate::tray::ID_RETR,
+    crate::tray::ID_READING,
+    crate::tray::ID_SETTINGS,
+    crate::tray::ID_QUIT,
+];
 const MENU_ROW: f32 = 30.0;
 const MENU_W: f32 = 250.0;
 
@@ -51,6 +57,9 @@ struct State {
     menu_open: bool,
     /// курсор был над плашкой или панелью кнопок в прошлом кадре
     hover: bool,
+    /// режим чтения: перевод показан до следующей реплики / мышь над переводом
+    peek: bool,
+    tl_hover: bool,
     /// последнее положение окна плашки, о котором сообщили контроллеру
     reported: Option<Rect>,
 }
@@ -79,9 +88,11 @@ impl State {
                 self.text = text;
                 self.alt = alt;
                 self.orig = orig;
+                self.peek = false;
                 self.note.clear();
             }
             Cmd::Alt(alt) => self.alt = alt,
+            Cmd::Peek => self.peek = !self.peek,
             Cmd::Note { note, keep_text } => {
                 self.note = note;
                 if !keep_text {
@@ -145,6 +156,8 @@ impl Overlay {
             user_hidden: false,
             menu_open: false,
             hover: false,
+            peek: false,
+            tl_hover: false,
             reported: None,
         }));
         *lock(&CURRENT) = Some(state.clone());
@@ -208,13 +221,15 @@ pub fn show(ctx: &egui::Context) {
         .with_taskbar(false)
         .with_resizable(false)
         .with_active(false)
+        // на Linux в режиме чтения перевод — по горячей клавише (peek); плашка не перехватывает клики игры
         .with_mouse_passthrough(!movable)
         .with_position(plate.min)
         .with_inner_size(plate.size());
     ctx.show_viewport_immediate(ViewportId::from_hash_of("noveltl_overlay_plate"), builder, |ctx, _| {
         egui::CentralPanel::default().frame(Frame::NONE).show(ctx, |ui| {
             let rect = ui.max_rect();
-            draw_plate(ui.painter(), rect, &s);
+            let tl = draw_plate(ui.painter(), rect, &s);
+            s.tl_hover = tl.is_some_and(|r| ctx.pointer_hover_pos().is_some_and(|p| r.contains(p)));
             if movable {
                 let resp = ui.interact(rect, Id::new("overlay_plate"), Sense::click_and_drag());
                 let dir = ctx.pointer_hover_pos().and_then(|p| edge_dir(rect, p));
@@ -372,7 +387,9 @@ fn edge_cursor(d: ResizeDirection) -> CursorIcon {
 }
 
 /// Фон, текст с контуром, заметка и рамка режима перемещения.
-fn draw_plate(p: &Painter, rect: Rect, s: &State) {
+/// Возвращает прямоугольник перевода в режиме чтения (для наведения мыши).
+fn draw_plate(p: &Painter, rect: Rect, s: &State) -> Option<Rect> {
+    let mut tl_rect = None;
     let st = &s.style;
     let full = rect.shrink(1.0);
     let rad = CornerRadius::same(st.radius.min(24) as u8);
@@ -410,14 +427,18 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
             let name_size = (size * 0.8).max(MIN_FONT);
             let font = |sz: f32| FontId::new(sz, FontFamily::Proportional);
             let name_g = (!name.is_empty()).then(|| p.layout(name.to_string(), font(name_size), rgba(name_rgb, 1.0), inner_w));
-            let body_g = p.layout(text.to_string(), font(size), rgba(st.text_color, 1.0), inner_w);
+            // режим чтения: оригинал крупно сверху, перевод мельче под ним
+            let reading = st.reading && !s.edit && !s.orig.is_empty();
+            let body_size = if reading { (size * 0.7).max(MIN_FONT) } else { size };
+            let body_g = p.layout(text.to_string(), font(body_size), rgba(st.text_color, 1.0), inner_w);
             // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
-            let alt_size = (size * 0.7).max(MIN_FONT);
+            let alt_size = (size * if reading { 0.55 } else { 0.7 }).max(MIN_FONT);
             let alt_g = (!s.alt.is_empty() && !s.edit).then(|| p.layout(s.alt.clone(), font(alt_size), rgba(0xC9CBE0, 1.0), inner_w));
             // оригинал — ещё мельче и бледнее, под переводом (по настройке; в режиме настройки — нет)
-            let orig_size = (size * 0.62).max(MIN_FONT);
-            let orig_g = (!s.orig.is_empty() && !s.edit && st.show_original)
-                .then(|| p.layout(s.orig.clone(), font(orig_size), rgba(0xA2A4B8, 1.0), inner_w));
+            let orig_size = (size * if reading { 0.95 } else { 0.62 }).max(MIN_FONT);
+            let orig_rgb = if reading { st.text_color } else { 0xA2A4B8 };
+            let orig_g = (!s.orig.is_empty() && !s.edit && (st.show_original || reading))
+                .then(|| p.layout(s.orig.clone(), font(orig_size), rgba(orig_rgb, 1.0), inner_w));
             let name_h = name_g.as_ref().map_or(0.0, |g| g.size().y + 2.0);
             let alt_h = alt_g.as_ref().map_or(0.0, |g| g.size().y + 4.0);
             let orig_h = orig_g.as_ref().map_or(0.0, |g| g.size().y + 4.0);
@@ -430,12 +451,33 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
                     y += name_h;
                 }
                 let body_h = body_g.size().y;
-                outlined(p, pos2(x(&body_g), y), body_g, st, size);
-                if let Some(g) = alt_g {
-                    outlined(p, pos2(x(&g), y + body_h + 4.0), g, st, alt_size);
-                }
-                if let Some(g) = orig_g {
-                    outlined(p, pos2(x(&g), y + body_h + alt_h + 4.0), g, st, orig_size);
+                if reading {
+                    if let Some(g) = orig_g {
+                        let gh = g.size().y;
+                        outlined(p, pos2(x(&g), y), g, st, orig_size);
+                        y += gh + 4.0;
+                    }
+                    let r = Rect::from_min_size(pos2(left, y), vec2(inner_w, body_h + alt_h));
+                    tl_rect = Some(r);
+                    if s.peek || s.tl_hover {
+                        outlined(p, pos2(x(&body_g), y), body_g, st, body_size);
+                        if let Some(g) = alt_g {
+                            outlined(p, pos2(x(&g), y + body_h + 4.0), g, st, alt_size);
+                        }
+                    } else {
+                        // «спойлер» вместо перевода
+                        p.rect_filled(r, CornerRadius::same(6), rgba(st.text_color, 0.18));
+                        let cap_size = (size * 0.45).max(MIN_FONT);
+                        p.text(r.center(), egui::Align2::CENTER_CENTER, t("Наведите мышь, чтобы увидеть перевод"), font(cap_size), rgba(0xC9CBE0, 1.0));
+                    }
+                } else {
+                    outlined(p, pos2(x(&body_g), y), body_g, st, size);
+                    if let Some(g) = alt_g {
+                        outlined(p, pos2(x(&g), y + body_h + 4.0), g, st, alt_size);
+                    }
+                    if let Some(g) = orig_g {
+                        outlined(p, pos2(x(&g), y + body_h + alt_h + 4.0), g, st, orig_size);
+                    }
                 }
                 break;
             }
@@ -473,6 +515,7 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) {
         }
     }
     let _ = StrokeKind::Inside;
+    tl_rect
 }
 
 /// Текст с контуром: контур — тот же текст, нарисованный со сдвигами по кругу.

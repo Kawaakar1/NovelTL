@@ -31,6 +31,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🖼️ **Covers, screenshots and portraits from VNDB.** Only with your consent, no explicit scenes; set your own cover and background if you like.
 - 🌫️ **Game page.** Blurred background from a screenshot or the cover; the page accent color matches the cover.
 - 🗓️ **Reading calendar.** A GitHub-style grid: lines read per day, “Today”, a streak — per game and overall.
+- 🏆 **Achievements.** Reading badges in the Library: first game, 100 / 1,000 / 10,000 lines, 7- and 30-day streaks, 100 words in Anki — plus a progress bar to the next one.
 - ▶️ **One-button launch.** From the game folder, via Steam or a “Custom launch command” (DMM, Locale Emulator); NovelTL connects by itself.
 
 ### 🌐 Translation
@@ -60,6 +61,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🈷️ **Furigana on the overlay.** Over the original, if “Show original under translation” is on; word meaning on hover.
 - 📚 **Word meanings on hover.** Verbs are shown in dictionary form; the [JMdict](https://www.edrdg.org/jmdict/j_jmdict.html) dictionary (© EDRDG, CC BY-SA 4.0) downloads with one button.
 - 🗂️ **“Add to Anki”** on right click, via AnkiConnect.
+- 📖 **Reading mode.** The overlay shows the Japanese original large, with furigana, and hides the translation: hover over it or press Ctrl+Alt+Space to peek. Turn it on in “Overlay” or in the ☰ menu on the overlay (on Linux, peeking works by hotkey only).
 
 ### 🎯 Text capture
 - 🎯 **Automatic hook detection.** Click through 3–4 lines; it finds the dialogue thread and a separate names thread.
@@ -76,7 +78,7 @@ No manual hook codes, no command line — three wizard steps and you are playing
 - 🌍 **Interface in 5 languages.** Русский, English, 日本語, 中文, 한국어.
 - ⌨️ **Hotkeys in the game.** Ctrl+Alt+S settings, Ctrl+Alt+H overlay, Ctrl+Alt+R translate again.
 - 🟢 **Tray icon with a dot.** Green — game connected, yellow — looking for text.
-- 🔔 **Update check.** Once a day; a “Version … is out” banner in the main window; can be turned off in Settings → General.
+- 🔔 **Update check.** Once a day and with the “Check for updates” button in Settings → General; if a new version is out, “Update” opens the release page.
 - 📜 **History, log, statistics.** Last 50 lines, a text log per game and a reading counter.
 - 🛡️ **Network.** SOCKS5 / HTTP proxy with login, network interface choice, for when Google limits requests over a VPN.
 - 👤 **Profile.** Your own nickname and avatar in the main window.
@@ -88,7 +90,7 @@ Made first of all for YUZUSOFT games on the KiriKiri engine (Senren\*Banka and o
 
 <table>
 <tr>
-<td width="50%"><img src="shots_en/01_main_library.png" alt="Game library"><br><sub>Game library: covers, reading calendar, a Play button</sub></td>
+<td width="50%"><img src="shots_en/01_main_library.png" alt="Game library"><br><sub>Game library: covers, reading calendar, achievements</sub></td>
 <td width="50%"><img src="shots_en/12b_settings_plate_game.png" alt="Overlay styles"><br><sub>“Overlay”: the “Like in the game” style and style cards</sub></td>
 </tr>
 <tr>
@@ -124,6 +126,7 @@ Made first of all for YUZUSOFT games on the KiriKiri engine (Senren\*Banka and o
 <img src="shots_en/13_settings_network.png" width="400" alt="Network">
 <img src="shots_en/14_settings_hotkeys.png" width="400" alt="Hotkeys">
 <img src="shots_en/16_settings_general.png" width="400" alt="General">
+<img src="shots_en/08b_overlay_reading.png" width="400" alt="Reading mode">
 </p>
 </details>
 

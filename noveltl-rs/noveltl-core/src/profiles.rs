@@ -97,6 +97,18 @@ impl ReadStats {
         n
     }
 
+    /// Самая длинная серия дней подряд с репликами за всю историю.
+    pub fn best_streak(&self) -> u32 {
+        let (mut best, mut run, mut prev) = (0, 0, i64::MIN);
+        for (day, &c) in &self.daily {
+            let Some(d) = day_number(day).filter(|_| c > 0) else { continue };
+            run = if d == prev + 1 { run + 1 } else { 1 };
+            prev = d;
+            best = best.max(run);
+        }
+        best
+    }
+
     /// Последние `n` дней по возрастанию, заканчивая `today`; дни без реплик — 0.
     pub fn last_days(&self, today: &str, n: usize) -> Vec<(String, u32)> {
         let Some(end) = day_number(today) else { return Vec::new() };
@@ -415,6 +427,8 @@ pub struct AppSettings {
     pub accent: String,
     /// Показывать оригинал мелко под переводом на плашке.
     pub overlay_show_original: bool,
+    /// Режим чтения: крупно оригинал с фуриганой, перевод скрыт, пока мышь не над ним или не нажата клавиша.
+    pub overlay_reading: bool,
     /// Панель кнопок на плашке приглушена: почти прозрачная, ярче только под курсором.
     pub overlay_toolbar_dim: bool,
     /// Сочетание клавиш «Открыть настройки».
@@ -422,6 +436,8 @@ pub struct AppSettings {
     /// Листание реплик на плашке: назад и вперёд.
     pub hotkey_prev: String,
     pub hotkey_next: String,
+    /// Сочетание клавиш «Показать перевод» в режиме чтения.
+    pub hotkey_peek: String,
     /// Выбранный готовый стиль плашки: classic / subtitles / game / minimal (только для подсветки).
     pub overlay_preset: String,
     /// Скругление плашки, px.
@@ -439,6 +455,8 @@ pub struct AppSettings {
     pub check_updates: bool,
     /// unix-секунды последней проверки обновлений.
     pub last_update_check: u64,
+    /// сколько слов добавлено в Anki (для достижений)
+    pub anki_added: u64,
     /// Согласие на запросы к VNDB (обложки, картинки, портреты); None — ещё не спрашивали.
     pub vndb: Option<bool>,
 }
@@ -480,10 +498,12 @@ impl Default for AppSettings {
             ui_lang: None,
             accent: String::new(),
             overlay_show_original: false,
+            overlay_reading: false,
             overlay_toolbar_dim: false,
             hotkey_settings: "Ctrl+Alt+S".into(),
             hotkey_prev: "Ctrl+Alt+Left".into(),
             hotkey_next: "Ctrl+Alt+Right".into(),
+            hotkey_peek: "Ctrl+Alt+Space".into(),
             overlay_preset: "classic".into(),
             overlay_radius: 12,
             overlay_border: false,
@@ -494,6 +514,7 @@ impl Default for AppSettings {
             overlay_portraits: true,
             check_updates: true,
             last_update_check: 0,
+            anki_added: 0,
             vndb: None,
         }
     }
@@ -594,6 +615,13 @@ mod stats_tests {
         assert_eq!(s.streak("2025-01-04"), 0);
         let m = st(&[("2024-02-28", 1), ("2024-02-29", 1), ("2024-03-01", 1)]);
         assert_eq!(m.streak("2024-03-01"), 3, "високосный февраль");
+    }
+
+    #[test]
+    fn best_streak_whole_history() {
+        assert_eq!(ReadStats::default().best_streak(), 0);
+        let s = st(&[("2024-12-30", 1), ("2024-12-31", 1), ("2025-01-01", 1), ("2025-01-05", 1), ("2025-01-06", 0)]);
+        assert_eq!(s.best_streak(), 3);
     }
 
     #[test]
@@ -886,6 +914,8 @@ mod tests {
         assert_eq!(s.hotkey_settings, "Ctrl+Alt+S");
         assert_eq!(s.hotkey_prev, "Ctrl+Alt+Left");
         assert_eq!(s.hotkey_next, "Ctrl+Alt+Right");
+        assert_eq!(s.hotkey_peek, "Ctrl+Alt+Space");
+        assert!(!s.overlay_reading);
         assert_eq!(s.accent, "");
         assert!(!s.overlay_show_original);
         assert!(!s.overlay_toolbar_dim);

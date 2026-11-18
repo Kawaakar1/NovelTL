@@ -40,6 +40,21 @@ fn now_secs() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
 }
 
+/// Состояние ручной проверки обновлений (для настроек).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum UpdateStatus {
+    Idle,
+    Checking,
+    Latest,
+    Failed,
+}
+
+fn spawn_update_check(http: Arc<dyn Http>, tx: Sender<Result<Option<(String, String)>, String>>) {
+    std::thread::spawn(move || {
+        let _ = tx.send(noveltl_core::updates::check(http.as_ref(), env!("CARGO_PKG_VERSION")));
+    });
+}
+
 // ---------- демо без интернета ----------
 
 /// Подменяет сеть в демо: Google отвечает готовыми переводами сценария, DeepL — отказом.
@@ -100,7 +115,11 @@ impl Http for DemoHttp {
         Ok(HttpResponse { status: 403, body: "{}".to_string() })
     }
 
-    fn get(&self, _url: &str, query: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+    fn get(&self, url: &str, query: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+        if url == noveltl_core::updates::RELEASES_API {
+            let body = r#"{"tag_name":"v0.8.0","html_url":"https://github.com/Kawaakar1/NovelTL/releases/latest"}"#;
+            return Ok(HttpResponse { status: 200, body: body.to_string() });
+        }
         let q = query.iter().find(|(k, _)| *k == "q").map(|(_, v)| *v).unwrap_or("");
         // язык ответа — по параметру tl: русский для "ru", иначе английский
         let tl = query.iter().find(|(k, _)| *k == "tl").map(|(_, v)| *v).unwrap_or("ru");
@@ -431,6 +450,7 @@ fn style_from(s: &AppSettings) -> Style {
         bg_color: parse_color(&s.bg_color, d.bg_color),
         bg_opacity: s.bg_opacity.min(100) as u8,
         show_original: s.overlay_show_original,
+        reading: s.overlay_reading,
         toolbar_dim: s.overlay_toolbar_dim,
         radius: s.overlay_radius.min(24),
         border: s.overlay_border,
@@ -510,7 +530,10 @@ pub struct Controller {
     learn_rx: Receiver<LearnMsg>,
     /// новая версия: (версия, ссылка на релиз); None — нет или скрыта
     pub update_available: Option<(String, String)>,
+    update_tx: Sender<Result<Option<(String, String)>, String>>,
     update_rx: Receiver<Result<Option<(String, String)>, String>>,
+    /// итог ручной проверки («Проверить обновления» в настройках)
+    pub update_status: UpdateStatus,
     /// результат последнего `vndb_search` для окна «Обложка и фон»
     pub vndb_results: Option<Result<Vec<VnHit>, String>>,
     /// для какой игры открыто окно «Обложка и фон» (опоздавший ответ по другой игре отбрасывается)
@@ -760,10 +783,7 @@ impl Controller {
             && crate::winutil::test_area().is_none()
             && now_secs.saturating_sub(settings.last_update_check) > 24 * 3600
         {
-            let h = http.clone();
-            std::thread::spawn(move || {
-                let _ = update_tx.send(noveltl_core::updates::check(h.as_ref(), env!("CARGO_PKG_VERSION")));
-            });
+            spawn_update_check(http.clone(), update_tx.clone());
         }
         let hotkeys = Hotkeys::start(hk_tx, waker);
         let mut c = Controller {
@@ -805,7 +825,9 @@ impl Controller {
             learn_tx,
             learn_rx,
             update_available: None,
+            update_tx,
             update_rx,
+            update_status: UpdateStatus::Idle,
             vndb_results: None,
             vndb_for: String::new(),
             vndb_allowed: Arc::new(AtomicBool::new(false)),
@@ -843,8 +865,18 @@ impl Controller {
         while let Ok(ev) = self.ocr.rx.try_recv() {
             self.on_hook_event(ev);
         }
-        // ошибки сети молча игнорируем; повторим при следующем запуске
-        while let Ok(Ok(found)) = self.update_rx.try_recv() {
+        while let Ok(res) = self.update_rx.try_recv() {
+            let manual = self.update_status == UpdateStatus::Checking;
+            // ошибку автопроверки молча игнорируем; повторим при следующем запуске
+            let Ok(found) = res else {
+                if manual {
+                    self.update_status = UpdateStatus::Failed;
+                }
+                continue;
+            };
+            if manual {
+                self.update_status = if found.is_some() { UpdateStatus::Idle } else { UpdateStatus::Latest };
+            }
             self.update_available = found;
             self.settings.last_update_check = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -867,7 +899,11 @@ impl Controller {
                     self.dict_status = tf("Не удалось скачать словарь: {}", &[&e]);
                     self.notice(self.dict_status.clone());
                 }
-                LearnMsg::Anki(Ok(())) => self.notice(t("Карточка добавлена в Anki.")),
+                LearnMsg::Anki(Ok(())) => {
+                    self.settings.anki_added += 1;
+                    let _ = self.save_settings_file();
+                    self.notice(t("Карточка добавлена в Anki."));
+                }
                 LearnMsg::Anki(Err(e)) => self.notice(e),
             }
         }
@@ -884,6 +920,7 @@ impl Controller {
                 overlay::Event::Failed(msg) => self.notice(tf("Не удалось создать плашку перевода: {}", &[&msg])),
                 overlay::Event::Menu(crate::tray::ID_COPY) => self.copy_last_translation(),
                 overlay::Event::Menu(crate::tray::ID_ORIGINAL) => self.toggle_show_original(),
+                overlay::Event::Menu(crate::tray::ID_READING) => self.toggle_reading(),
                 overlay::Event::Menu(crate::tray::ID_DIM) => self.toggle_toolbar_dim(),
                 overlay::Event::Menu(id) => self.menu_requests.push(id),
                 overlay::Event::Browse(d) => self.browse(d),
@@ -901,6 +938,7 @@ impl Controller {
                 HotkeyEvent::Fired(2) => self.menu_requests.push(crate::tray::ID_SETTINGS),
                 HotkeyEvent::Fired(3) => self.browse(1),
                 HotkeyEvent::Fired(4) => self.browse(-1),
+                HotkeyEvent::Fired(5) => self.overlay.send(Cmd::Peek),
                 HotkeyEvent::Fired(_) => {}
             }
         }
@@ -917,6 +955,14 @@ impl Controller {
             None => (0, "NovelTL".to_string()),
             Some(s) if s.setup || !s.connected => (1, t("NovelTL — ищу текст…").to_string()),
             Some(s) => (2, tf("NovelTL — {}", &[&s.profile.name])),
+        }
+    }
+
+    /// Кнопка «Проверить обновления»: та же проверка, что при запуске, но с видимым итогом.
+    pub fn check_updates_now(&mut self) {
+        if self.update_status != UpdateStatus::Checking {
+            self.update_status = UpdateStatus::Checking;
+            spawn_update_check(self.http.clone(), self.update_tx.clone());
         }
     }
 
@@ -2145,6 +2191,9 @@ impl Controller {
             if attempted.contains(&self.settings.hotkey_next) {
                 self.settings.hotkey_next = old.hotkey_next.clone();
             }
+            if attempted.contains(&self.settings.hotkey_peek) {
+                self.settings.hotkey_peek = old.hotkey_peek.clone();
+            }
             self.register_hotkeys();
         }
         self.hotkey_errors = attempted;
@@ -2209,6 +2258,14 @@ impl Controller {
         self.apply_overlay_style();
     }
 
+    pub fn toggle_reading(&mut self) {
+        self.settings.overlay_reading = !self.settings.overlay_reading;
+        if let Err(e) = self.save_settings_file() {
+            self.notice(tf("Не удалось сохранить настройки: {}", &[&e]));
+        }
+        self.apply_overlay_style();
+    }
+
     /// Язык перевода в демо по `--lang` (без записи в файл настроек).
     pub fn set_demo_target(&mut self, l: Lang) {
         self.settings.target_lang = l;
@@ -2238,6 +2295,7 @@ impl Controller {
             self.settings.hotkey_settings.clone(),
             self.settings.hotkey_prev.clone(),
             self.settings.hotkey_next.clone(),
+            self.settings.hotkey_peek.clone(),
         ];
         let failed = self.hotkeys.set(&combos);
         // пустое сочетание — «не задано», это не ошибка

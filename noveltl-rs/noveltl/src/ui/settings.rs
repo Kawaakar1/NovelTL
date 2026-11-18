@@ -18,6 +18,7 @@ use noveltl_core::translators::ENGINE_MODES;
 
 use super::theme::{self, button, pal, BtnKind};
 use super::{avatar, lock_ctl, Shared};
+use crate::controller::UpdateStatus;
 use crate::hotkeys::parse_hotkey;
 use crate::overlay::parse_color;
 
@@ -227,7 +228,7 @@ fn rollback_key(orig: &AppSettings, saved: Option<&PreviewKey>) -> PreviewKey {
 
 /// Переносит правки из `d` и сочетания клавиш `hk` в копию `base` (текущие настройки приложения).
 /// Поля, которые меняются и вне окна (кнопки плашки), берутся из черновика, только если их правили в окне (`d` != `orig`).
-fn draft_to_settings(d: &AppSettings, orig: &AppSettings, hk: &[String; 5], base: &AppSettings) -> AppSettings {
+fn draft_to_settings(d: &AppSettings, orig: &AppSettings, hk: &[String; 6], base: &AppSettings) -> AppSettings {
     let mut new = base.clone();
     PreviewKey::of(d).put(&mut new);
     new.nickname = d.nickname.trim().to_string();
@@ -242,6 +243,7 @@ fn draft_to_settings(d: &AppSettings, orig: &AppSettings, hk: &[String; 5], base
     new.hotkey_settings = hk[2].trim().to_string();
     new.hotkey_prev = hk[3].trim().to_string();
     new.hotkey_next = hk[4].trim().to_string();
+    new.hotkey_peek = hk[5].trim().to_string();
     new.engine_mode = d.engine_mode.clone();
     new.second_engine = d.second_engine.clone();
     if d.learn_mode != orig.learn_mode {
@@ -252,6 +254,9 @@ fn draft_to_settings(d: &AppSettings, orig: &AppSettings, hk: &[String; 5], base
     new.ui_lang = d.ui_lang;
     if d.overlay_show_original != orig.overlay_show_original {
         new.overlay_show_original = d.overlay_show_original;
+    }
+    if d.overlay_reading != orig.overlay_reading {
+        new.overlay_reading = d.overlay_reading;
     }
     if d.overlay_toolbar_dim != orig.overlay_toolbar_dim {
         new.overlay_toolbar_dim = d.overlay_toolbar_dim;
@@ -265,11 +270,14 @@ enum Act {
     Cancel,
     Check,
     DownloadDict,
+    CheckUpdates,
 }
 
 pub struct SettingsWindow {
     /// состояние словаря: (есть, идёт скачивание, текст) — обновляется перед отрисовкой
     dict_info: (bool, bool, String),
+    /// итог проверки обновлений и найденная версия (номер, ссылка) — обновляется перед отрисовкой
+    update_info: (UpdateStatus, Option<(String, String)>),
     id: ViewportId,
     icon: Arc<egui::IconData>,
     pos: Option<[f32; 2]>,
@@ -293,7 +301,7 @@ pub struct SettingsWindow {
     bind_ip: String,
     ifaces: Vec<(String, String)>,
     fonts: Vec<String>,
-    hk: [String; 5],
+    hk: [String; 6],
     capturing: Option<usize>,
     picking: Option<(usize, Color32)>,
     /// текст в поле HEX окна выбора цвета
@@ -368,6 +376,7 @@ impl SettingsWindow {
         }
         SettingsWindow {
             dict_info: (false, false, String::new()),
+            update_info: (UpdateStatus::Idle, None),
             id: ViewportId::from_hash_of("noveltl_settings"),
             icon: Arc::new(theme::icon_data(64)),
             pos,
@@ -379,6 +388,7 @@ impl SettingsWindow {
                 orig.hotkey_settings.clone(),
                 orig.hotkey_prev.clone(),
                 orig.hotkey_next.clone(),
+                orig.hotkey_peek.clone(),
             ],
             net_mode: orig.net_mode.clone(),
             bind_ip: orig.bind_ip.clone(),
@@ -553,6 +563,7 @@ impl SettingsWindow {
         {
             let c = lock_ctl(&shared.controller);
             self.dict_info = (c.dict.is_some(), c.dict_busy, c.dict_status.clone());
+            self.update_info = (c.update_status, c.update_available.clone());
         }
         let mut acts: Vec<Act> = Vec::new();
         let id = self.id;
@@ -565,6 +576,7 @@ impl SettingsWindow {
                 Act::Cancel => self.closed = true,
                 Act::Check => self.start_check(ctx),
                 Act::DownloadDict => lock_ctl(&shared.controller).download_dictionary(),
+                Act::CheckUpdates => lock_ctl(&shared.controller).check_updates_now(),
             }
         }
         let want = self.capturing.is_some();
@@ -1004,7 +1016,7 @@ impl SettingsWindow {
             3 => self.draw_network(ui, acts),
             4 => self.draw_hotkeys(ui),
             5 => self.draw_japanese(ui, acts),
-            _ => self.draw_general(ui),
+            _ => self.draw_general(ui, acts),
         }
     }
 
@@ -1499,6 +1511,15 @@ impl SettingsWindow {
             });
             theme::row_w(
                 ui,
+                t("Режим чтения"),
+                Some(t("Крупно оригинал с фуриганой, перевод скрыт. Наведите мышь на перевод или нажмите клавишу, чтобы подсмотреть.")),
+                36.0,
+                |ui| {
+                    theme::toggle(ui, &mut self.d.overlay_reading);
+                },
+            );
+            theme::row_w(
+                ui,
                 t("Приглушённые кнопки на плашке"),
                 Some(t("Панель кнопок почти прозрачная и становится яркой, только когда наводишь на неё курсор")),
                 36.0,
@@ -1518,6 +1539,7 @@ impl SettingsWindow {
                 t("Открыть настройки"),
                 t("Предыдущая реплика на плашке"),
                 t("Следующая реплика на плашке"),
+                t("Показать перевод (режим чтения)"),
             ];
             for (i, title) in titles.into_iter().enumerate() {
                 theme::row_w(ui, title, None, 200.0, |ui| {
@@ -1566,7 +1588,7 @@ impl SettingsWindow {
         });
     }
 
-    fn draw_general(&mut self, ui: &mut Ui) {
+    fn draw_general(&mut self, ui: &mut Ui, acts: &mut Vec<Act>) {
         theme::section_label(ui, t("Данные"));
         theme::card(ui, |ui| {
             theme::row_w(ui, t("Папка с данными"), Some(t("Настройки, профили игр и кэш перевода")), 230.0, |ui| {
@@ -1586,6 +1608,25 @@ impl SettingsWindow {
                     theme::toggle(ui, &mut self.d.check_updates);
                 },
             );
+            let (status, found) = self.update_info.clone();
+            let version = env!("CARGO_PKG_VERSION");
+            let line = match (&found, status) {
+                (_, UpdateStatus::Checking) => t("Проверяю…").to_string(),
+                (Some((v, _)), _) => tf("Вышла версия {}", &[v]),
+                (None, UpdateStatus::Latest) => tf("У вас последняя версия ({})", &[&version]),
+                (None, UpdateStatus::Failed) => t("Не удалось проверить обновления").to_string(),
+                (None, UpdateStatus::Idle) => format!("NovelTL {version}"),
+            };
+            theme::row_w(ui, &line, None, 330.0, |ui| {
+                if button(ui, t("Проверить обновления"), BtnKind::Normal, status != UpdateStatus::Checking, None).clicked() {
+                    acts.push(Act::CheckUpdates);
+                }
+                if let Some((_, url)) = &found {
+                    if button(ui, t("Обновить"), BtnKind::Primary, true, None).clicked() {
+                        let _ = crate::winutil::open_url(url);
+                    }
+                }
+            });
         });
         theme::section_label(ui, "VNDB");
         theme::card(ui, |ui| {
@@ -2041,6 +2082,7 @@ mod tests {
             " Ctrl+Alt+O ".to_string(),
             "Ctrl+Alt+Left".to_string(),
             "Ctrl+Alt+Right".to_string(),
+            " Ctrl+Alt+Space ".to_string(),
         ];
         let new = draft_to_settings(&d, &base, &hk, &base);
         assert_eq!(new.ui_lang, Some(UiLang::En));
@@ -2049,6 +2091,7 @@ mod tests {
         assert!(new.overlay_toolbar_dim);
         assert_eq!(new.hotkey_settings, "Ctrl+Alt+O");
         assert_eq!(new.hotkey_next, "Ctrl+Alt+Right");
+        assert_eq!(new.hotkey_peek, "Ctrl+Alt+Space");
     }
 
     #[test]
@@ -2060,11 +2103,12 @@ mod tests {
         let mut cur = orig.clone();
         cur.overlay_show_original = true;
         cur.overlay_toolbar_dim = true;
+        cur.overlay_reading = true;
         cur.vndb = Some(true);
-        let hk = [String::new(), String::new(), String::new(), String::new(), String::new()];
+        let hk: [String; 6] = Default::default();
         let new = draft_to_settings(&d, &orig, &hk, &cur);
         assert_eq!(new.font_size, 33);
-        assert!(new.overlay_show_original && new.overlay_toolbar_dim);
+        assert!(new.overlay_show_original && new.overlay_toolbar_dim && new.overlay_reading);
         assert_eq!(new.vndb, Some(true));
         // а если правили в окне — побеждает окно
         d.overlay_show_original = false;

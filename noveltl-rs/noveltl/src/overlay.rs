@@ -8,7 +8,7 @@
 //! заново, копировать, показать оригинал, замочек, настройки, скрыть и меню (те же пункты, что у значка в трее).
 
 use noveltl_core::i18n::{t, tf};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
@@ -95,11 +95,12 @@ const MIN_FONT: f32 = 11.0;
 /// размер запасного замочка, нарисованного фигурами (когда нет шрифта значков)
 const LOCK: i32 = 22;
 /// пункты меню плашки: (команда, id пункта меню трея, не используется); 0 — разделитель
-const MENU: [(u32, &str, &str); 6] = [
+const MENU: [(u32, &str, &str); 7] = [
     (1, crate::tray::ID_OPEN, ""),
     (0, "", ""),
     (2, crate::tray::ID_TOGGLE, ""),
     (3, crate::tray::ID_RETR, ""),
+    (6, crate::tray::ID_READING, ""),
     (4, crate::tray::ID_SETTINGS, ""),
     (5, crate::tray::ID_QUIT, ""),
 ];
@@ -140,6 +141,12 @@ struct State {
     hover_seg: Option<usize>,
     /// где слова оригинала нарисованы (DIP): left, top, right, bottom, номер слова
     seg_rects: RefCell<Vec<(f32, f32, f32, f32, usize)>>,
+    /// режим чтения: перевод показан до следующей реплики (горячая клавиша)
+    peek: bool,
+    /// режим чтения: мышь над областью перевода
+    hover_tl: bool,
+    /// где нарисован перевод в режиме чтения (DIP): left, top, right, bottom
+    tl_rect: Cell<(f32, f32, f32, f32)>,
     /// шрифт значков панели кнопок (нет в системе — рисуем запасные формы)
     icon_font: Option<String>,
     note: String,
@@ -278,6 +285,9 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
                 back: 0,
                 hover_seg: None,
                 seg_rects: RefCell::new(Vec::new()),
+                peek: false,
+                hover_tl: false,
+                tl_rect: Cell::new((0.0, 0.0, 0.0, 0.0)),
                 icon_font,
                 note: String::new(),
                 edit: false,
@@ -472,6 +482,7 @@ impl State {
                     self.segs = segs;
                     self.back = back;
                     self.hover_seg = None;
+                    self.peek = false;
                     self.name = name;
                     self.name_color = name_color;
                     self.portrait = portrait;
@@ -481,6 +492,7 @@ impl State {
                     self.note.clear();
                 }
                 Cmd::Alt(alt) => self.alt = alt,
+                Cmd::Peek => self.peek = !self.peek,
                 Cmd::Note { note, keep_text } => {
                     self.note = note;
                     if !keep_text {
@@ -604,6 +616,12 @@ impl State {
             None
         };
         self.hover_seg = hover_seg;
+        let t = self.tl_rect.get();
+        let hover_tl = hover && cx >= t.0 && cx < t.2 && cy >= t.1 && cy < t.3;
+        if hover_tl != self.hover_tl {
+            self.hover_tl = hover_tl;
+            self.drawn = None;
+        }
         if (hover, hover_btn) != (self.hover, self.hover_btn) {
             self.hover = hover;
             self.hover_btn = hover_btn;
@@ -740,7 +758,7 @@ impl State {
         self.anim_secs().map(|e| (e * 100.0) as u32).hash(&mut h);
         (self.style.show_original, self.style.toolbar_dim).hash(&mut h);
         (self.unlocked, self.hover, self.hover_btn).hash(&mut h);
-        (self.segs.len(), self.back, self.hover_seg).hash(&mut h);
+        (self.segs.len(), self.back, self.hover_seg, self.style.reading, self.peek, self.hover_tl).hash(&mut h);
         dpi_scale(self.hwnd).to_bits().hash(&mut h);
         (self.style.font_size as u32, self.style.text_color, self.style.name_color).hash(&mut h);
         (self.style.outline_color, self.style.bg_color, self.style.bg_opacity).hash(&mut h);
@@ -857,21 +875,24 @@ impl State {
                 loop {
                     let name_size = (size * 0.8).max(MIN_FONT);
                     let name_layout = if name.is_empty() { None } else { Some(self.layout(name, name_size, true, tw, inner_h)?) };
-                    let body = self.layout(text, size, false, tw, inner_h)?;
+                    // режим чтения: оригинал крупно сверху, перевод мельче под ним
+                    let reading = s.reading && !self.edit && !self.orig.is_empty();
+                    let body_size = if reading { (size * 0.7).max(MIN_FONT) } else { size };
+                    let body = self.layout(text, body_size, false, tw, inner_h)?;
                     // эффект печати: (видимых, всего) UTF-16-символов
                     let vis = typed.map(|n| {
                         let v: usize = text.chars().take(n).map(char::len_utf16).sum();
                         (v as u32, text.encode_utf16().count() as u32)
                     });
                     // второй перевод — мельче и бледнее, под основным (в режиме настройки — нет)
-                    let alt_size = (size * 0.7).max(MIN_FONT);
+                    let alt_size = (size * if reading { 0.55 } else { 0.7 }).max(MIN_FONT);
                     let alt = if self.alt.is_empty() || self.edit { None } else { Some(self.layout(&self.alt, alt_size, false, tw, inner_h)?) };
                     // оригинал — ещё мельче и бледнее, под переводом (по настройке; в режиме настройки — нет)
-                    let show_orig = !(self.orig.is_empty() || self.edit || !s.show_original);
+                    let show_orig = !(self.orig.is_empty() || self.edit || !(s.show_original || reading));
                     // фуригана: в каждой строке оригинала над иероглифами оставляем место под чтение
                     let ruby = show_orig && self.segs_usable() && self.segs.iter().any(|g| g.reading.is_some());
                     // с фуриганой оригинал крупнее, иначе чтения над ним не прочитать
-                    let orig_size = (size * if ruby { 0.8 } else { 0.62 }).max(MIN_FONT);
+                    let orig_size = (size * if reading { 0.95 } else if ruby { 0.8 } else { 0.62 }).max(MIN_FONT);
                     let orig = if show_orig { Some(self.layout(&self.orig, orig_size, false, tw, inner_h)?) } else { None };
                     let ruby_size = (orig_size * 0.5).max(10.0);
                     if let (Some(l), true) = (&orig, ruby) {
@@ -893,17 +914,39 @@ impl State {
                             self.outlined(rt, l, tx, y, name_rgb, name_size, alpha, None)?;
                             y += name_h;
                         }
-                        self.outlined(rt, &body, tx, y, s.text_color, size, alpha, vis)?;
-                        if let Some(l) = &alt {
-                            self.outlined(rt, l, tx, y + body_h + 4.0, 0xC9CBE0, alt_size, alpha, None)?;
-                        }
                         self.seg_rects.borrow_mut().clear();
-                        if let Some(l) = &orig {
-                            let oy = y + body_h + alt_h + 4.0;
-                            self.outlined(rt, l, tx, oy, 0xA2A4B8, orig_size, alpha, None)?;
-                            if self.segs_usable() {
-                                self.draw_segs(rt, l, tx, oy, ruby_size, orig_size, alpha, w as f32)?;
+                        let draw_orig = |y: f32| -> windows::core::Result<()> {
+                            if let Some(l) = &orig {
+                                self.outlined(rt, l, tx, y, if reading { s.text_color } else { 0xA2A4B8 }, orig_size, alpha, None)?;
+                                if self.segs_usable() {
+                                    self.draw_segs(rt, l, tx, y, ruby_size, orig_size, alpha, w as f32)?;
+                                }
                             }
+                            Ok(())
+                        };
+                        if reading {
+                            draw_orig(y)?;
+                            y += orig_h;
+                        }
+                        let ty = y;
+                        if reading && !(self.peek || self.hover_tl) {
+                            // «спойлер» вместо перевода: размытия в DC render target нет
+                            let rect = D2D_RECT_F { left: tx, top: ty, right: tx + tw, bottom: ty + body_h + alt_h };
+                            rt.FillRoundedRectangle(&D2D1_ROUNDED_RECT { rect, radiusX: 6.0, radiusY: 6.0 }, &rt.CreateSolidColorBrush(&color(s.text_color, 0.18 * alpha), None)?);
+                            let cap_size = (size * 0.45).max(MIN_FONT);
+                            let cap = self.layout(t("Наведите мышь, чтобы увидеть перевод"), cap_size, false, tw, inner_h)?;
+                            cap.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+                            let ch = metrics(&cap)?.height;
+                            self.outlined(rt, &cap, tx, ty + (body_h + alt_h - ch) / 2.0, 0xC9CBE0, cap_size, alpha, None)?;
+                        } else {
+                            self.outlined(rt, &body, tx, y, s.text_color, body_size, alpha, vis)?;
+                            if let Some(l) = &alt {
+                                self.outlined(rt, l, tx, y + body_h + 4.0, 0xC9CBE0, alt_size, alpha, None)?;
+                            }
+                        }
+                        self.tl_rect.set(if reading { (tx, ty, tx + tw, ty + body_h + alt_h) } else { (0.0, 0.0, 0.0, 0.0) });
+                        if !reading {
+                            draw_orig(y + body_h + alt_h + 4.0)?;
                         }
                         break;
                     }

@@ -8,6 +8,7 @@ use eframe::egui::{
     self, text::LayoutJob, Align, Color32, ColorImage, CornerRadius, FontId, Frame, Layout, Margin, RichText,
     Sense, TextureHandle, TextureOptions, Vec2,
 };
+use noveltl_core::achievements;
 use noveltl_core::dict::{Dictionary, Segment};
 use noveltl_core::i18n::{t, tf};
 use noveltl_core::langdetect::Lang;
@@ -61,6 +62,8 @@ struct Snap {
     vndb_results: Option<Result<Vec<VnHit>, String>>,
     /// сегодняшний день "YYYY-MM-DD" по местному времени
     today: String,
+    /// слов добавлено в Anki (для достижений)
+    anki_added: u64,
 }
 
 enum Action {
@@ -421,6 +424,7 @@ impl MainWindow {
             art_pending: c.art_pending,
             vndb_results: c.vndb_results.clone(),
             today: crate::controller::local_time_text("%Y-%m-%d"),
+            anki_added: c.settings.anki_added,
         }
     }
 
@@ -827,6 +831,7 @@ impl MainWindow {
                 }
             }
             theme::card_frame().show(ui, |ui| {
+                ui.set_width(w - 34.0); // иначе перенос значков растягивает карточку за окно
                 ui.horizontal(|ui| {
                     theme::reading_calendar(ui, &all, &snap.today, 12, p.accent, false, false);
                     ui.add_space(12.0);
@@ -835,6 +840,8 @@ impl MainWindow {
                         ui.label(theme::small(tf("Дней подряд: {}", &[&all.streak(&snap.today)])));
                     });
                 });
+                ui.add_space(6.0);
+                Self::achievements(ui, profiles, &all, snap.anki_added);
             });
             let cols = (((w + GAP) / (170.0 + GAP)) as usize).max(1);
             let cw = ((w - GAP * (cols as f32 - 1.0)) / cols as f32).min(190.0);
@@ -858,6 +865,41 @@ impl MainWindow {
                 });
             }
         });
+    }
+
+    /// Значки достижений (с переносом строк) и прогресс к ближайшему незаработанному.
+    fn achievements(ui: &mut egui::Ui, profiles: &[Profile], all: &ReadStats, anki: u64) {
+        let p = pal();
+        let totals = achievements::Totals {
+            lines: profiles.iter().map(|pr| pr.stats.lines).sum(),
+            best_streak: u64::from(all.best_streak()),
+            anki,
+            games: profiles.iter().filter(|pr| pr.stats.lines > 0).count() as u64,
+        };
+        let badges = achievements::badges(totals);
+        ui.label(theme::small(t("Достижения")));
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(6.0, 6.0);
+            for b in &badges {
+                let (fill, stroke, text) = if b.earned() {
+                    (p.accent, p.accent, RichText::new(format!("✓ {}", t(b.name))).size(12.0).color(p.on_accent))
+                } else {
+                    (Color32::TRANSPARENT, p.border, theme::small(t(b.name)))
+                };
+                // Button, а не Frame: только отдельные виджеты переносятся по строкам
+                ui.add(
+                    egui::Button::new(text)
+                        .fill(fill)
+                        .stroke(egui::Stroke::new(1.0_f32, stroke))
+                        .corner_radius(10)
+                        .sense(Sense::hover()),
+                );
+            }
+        });
+        if let Some(b) = achievements::next_badge(&badges) {
+            ui.label(theme::small(tf("Следующее: {} — {} / {}", &[&t(b.name), &thousands(b.have), &thousands(b.need)])));
+            ui.add(egui::ProgressBar::new(b.have as f32 / b.need as f32).desired_height(6.0));
+        }
     }
 
     /// Карточка игры: обложка 2:3; при наведении приподнимается и показывает «Играть».

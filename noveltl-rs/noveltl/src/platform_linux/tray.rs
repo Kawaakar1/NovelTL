@@ -11,6 +11,8 @@ pub const ID_TOGGLE: &str = "toggle";
 pub const ID_RETR: &str = "retr";
 pub const ID_COPY: &str = "copy";
 pub const ID_ORIGINAL: &str = "original";
+/// «Режим чтения»: оригинал крупно, перевод под «спойлером»
+pub const ID_READING: &str = "reading";
 /// глазик на панели плашки: приглушить/вернуть саму панель кнопок (перевод остаётся)
 pub const ID_DIM: &str = "dim";
 pub const ID_SETTINGS: &str = "settings";

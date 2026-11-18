@@ -95,6 +95,9 @@ fn demo_art(shared: &Shared) {
             }
         }
     }
+    if let Some(s) = c.session.as_mut() {
+        s.profile.stats.lines = s.profile.stats.daily.values().map(|&n| u64::from(n)).sum();
+    }
     // set_*_file сохраняют профиль на диск вместе со статистикой
     c.set_cover_file(&id, &cover);
     c.set_backdrop_file(&id, &back);
@@ -217,6 +220,8 @@ enum Stage {
     Translate,
     Settle,
     InGame,
+    /// режим чтения включён: снимок плашки, потом выключаем
+    Reading,
     SettingsOpen,
     SettingsWait,
     /// снимок раздела настроек с этим номером
@@ -516,10 +521,20 @@ impl Shots {
                 }
                 if waited > Duration::from_millis(1500) {
                     self.capture_game(game.hwnd, "08_overlay_in_game.png");
+                    lock_ctl(&shared.controller).toggle_reading();
+                    self.go(Stage::Reading);
+                }
+            }
+            Stage::Reading => {
+                if waited > Duration::from_millis(1200) {
+                    self.capture_game(game.hwnd, "08b_overlay_reading.png");
+                    lock_ctl(&shared.controller).toggle_reading();
                     self.request(ctx, "09_main_running.png", Stage::SettingsOpen);
                 }
             }
             Stage::SettingsOpen => {
+                // для кадра «Общие»: ручная проверка обновлений, в демо находит версию 0.8.0
+                lock_ctl(&shared.controller).check_updates_now();
                 windows.open_settings();
                 self.go(Stage::SettingsWait);
             }
@@ -628,7 +643,11 @@ impl Shots {
                         self.finish(shared, "окно настроек не закрылось");
                     }
                 }
-                None => self.go(Stage::GlossaryOpen),
+                None => {
+                    // баннер «вышла версия» нужен только на кадре настроек
+                    lock_ctl(&shared.controller).dismiss_update();
+                    self.go(Stage::GlossaryOpen)
+                }
             },
             Stage::GlossaryOpen => {
                 let id = lock_ctl(&shared.controller).session.as_ref().map(|s| s.profile.id.clone());

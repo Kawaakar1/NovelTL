@@ -1,6 +1,7 @@
 //! Ядро NovelTL: всё, что не зависит от окон и Windows.
 //! Перенесено с Python-версии (см. PORTING.md).
 
+pub mod achievements;
 pub mod anki;
 pub mod cache;
 pub mod cleaner;
