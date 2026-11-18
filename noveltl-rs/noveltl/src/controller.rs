@@ -18,7 +18,7 @@ use noveltl_core::profiles::{
 };
 use noveltl_core::i18n::{t, tf};
 use noveltl_core::langdetect::Lang;
-use noveltl_core::scorer::{find_name_thread, HookKey, HookRef, ThreadTracker, NAME_PAIR_WINDOW};
+use noveltl_core::scorer::{find_name_thread, HookKey, HookRef, ThreadTracker, CONFIDENT_DISTINCT, CONFIDENT_SCORE, NAME_PAIR_WINDOW};
 use noveltl_core::translators::{Http, HttpError, HttpResponse, TranslatorManager};
 use noveltl_core::vndb::{self, VnChar, VnHit};
 
@@ -32,6 +32,8 @@ use crate::winutil::{self, WindowInfo};
 const APP_NAME: &str = "NovelTL";
 /// Пауза перед обработкой реплики: имя говорящего может прийти из соседнего потока чуть позже.
 const LINE_DELAY: Duration = Duration::from_millis(120);
+/// Сколько секунд ждём сохранённый хук, прежде чем временно взять другой поток.
+const SAVED_HOOK_WAIT: f64 = 90.0;
 const SCAN_INTERVAL: Duration = Duration::from_millis(1500);
 /// сколько ждём запоздалый `Disconnected` после собственного снятия хука
 const DETACH_GRACE: Duration = Duration::from_secs(5);
@@ -370,6 +372,8 @@ pub struct Session {
     pub setup: bool,
     pub connected: bool,
     pub selected: Option<HookKey>,
+    /// выбранный поток временный: сохранённый хук не найден (профиль не меняем)
+    pub fallback: bool,
     /// поток с именами говорящих
     pub name_key: Option<HookKey>,
     /// время последнего использованного имени
@@ -388,6 +392,21 @@ pub struct Session {
 
 /// Сколько реплик хранит история диалога.
 pub const HISTORY_LEN: usize = 50;
+
+/// Какой поток брать при сохранённом хуке: (ключ, временный ли). None — ждать дальше.
+fn choose_hook_key(tracker: &ThreadTracker, saved: &HookRef, waited: bool) -> Option<(HookKey, bool)> {
+    if let Some(k) = tracker.find_saved(Some(saved)) {
+        return Some((k, false));
+    }
+    if !waited {
+        return None;
+    }
+    let sibling = tracker.ranked().into_iter().find(|r| r.key.0 == saved.code && r.key.1 == saved.ctx_lo);
+    match sibling {
+        Some(r) if r.score >= CONFIDENT_SCORE && r.distinct >= CONFIDENT_DISTINCT => Some((r.key, true)),
+        _ => tracker.auto_pick().map(|r| (r.key, true)),
+    }
+}
 
 /// Убирает из текста фрагменты-фильтры игры (точное совпадение) и лишние пробелы по краям.
 fn apply_filters(text: &str, filters: &[String]) -> String {
@@ -1476,6 +1495,7 @@ impl Controller {
             setup,
             connected: false,
             selected: None,
+            fallback: false,
             name_key: None,
             name_used: 0.0,
             engine: String::new(),
@@ -1652,7 +1672,7 @@ impl Controller {
         if s.setup {
             return;
         }
-        if s.selected.is_none() {
+        if s.selected.is_none() || s.fallback {
             self.select_hook();
         }
         let selected = self.session.as_ref().and_then(|s| s.selected.clone());
@@ -1664,8 +1684,17 @@ impl Controller {
 
     fn select_hook(&mut self) {
         let Some(s) = self.session.as_mut() else { return };
-        if let Some(key) = self.tracker.find_saved(s.profile.hook.as_ref()) {
+        if let Some(saved) = s.profile.hook.clone() {
+            let waited = now_secs() - s.started >= SAVED_HOOK_WAIT;
+            let Some((key, fb)) = choose_hook_key(&self.tracker, &saved, waited) else { return };
+            if s.fallback && !fb {
+                s.name_key = None;
+            }
+            if fb && !s.fallback {
+                self.notices.push(t("Сохранённый источник текста не нашёлся — NovelTL временно выбрал другой. Если текст неверный, нажмите «Найти текст заново».").to_string());
+            }
             s.selected = Some(key);
+            s.fallback = fb;
             return;
         }
         let Some(pick) = self.tracker.auto_pick() else { return };
@@ -1706,11 +1735,13 @@ impl Controller {
             let Some(selected) = s.selected.clone() else { return String::new() };
             let Some(key) = find_name_thread(&self.tracker, &selected) else { return String::new() };
             let Some(st) = self.tracker.get(&key) else { return String::new() };
-            s.profile.name_hook = Some(HookRef { code: st.hookcode.clone(), name: st.hookname.clone(), ctx_lo: key.1, ctx2_lo: key.2 });
-            s.name_key = Some(key);
-            if s.saved {
-                let _ = self.store.save(&s.profile);
+            if s.profile.name_hook.is_none() && !s.fallback {
+                s.profile.name_hook = Some(HookRef { code: st.hookcode.clone(), name: st.hookname.clone(), ctx_lo: key.1, ctx2_lo: key.2 });
+                if s.saved {
+                    let _ = self.store.save(&s.profile);
+                }
             }
+            s.name_key = Some(key);
         }
         let Some(name_key) = s.name_key.clone() else { return String::new() };
         let Some(st) = self.tracker.get(&name_key) else { return String::new() };
@@ -2590,6 +2621,46 @@ mod tests {
         let r = h.get("x", &[("q", "灯里"), ("sl", "ja"), ("tl", "en")]).unwrap();
         let v: serde_json::Value = serde_json::from_str(&r.body).unwrap();
         assert_eq!(v[0][0][0], "Akari");
+    }
+
+    #[test]
+    fn saved_hook_is_not_overwritten_by_menu_thread() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        set_data_dir_override(std::env::temp_dir().join(format!("noveltl_ctl2_{}_{}", std::process::id(), nanos)));
+        let waker: Waker = Arc::new(|| {});
+        let (tx, rx) = channel();
+        let src = DemoSource::new(tx, waker.clone());
+        let mut c = Controller::new(Box::new(src), rx, true, 0, waker);
+        let win = WindowInfo { hwnd: 0, pid: std::process::id(), title: DEMO_TITLE.to_string(), exe_path: String::new() };
+        c.begin_setup(&win, Lang::Ja, "Демо");
+        let pid = std::process::id();
+        let saved = HookRef { code: "HQ-1C*0@0:kirikiri.exe".into(), name: "n".into(), ctx_lo: 5, ctx2_lo: 1 };
+        {
+            let s = c.session.as_mut().unwrap();
+            s.setup = false;
+            s.saved = false;
+            s.profile.hook = Some(saved.clone());
+        }
+        let menu = ["「クイックセーブ」", "「クイックロード」", "「タイトル画面に戻ります。」", "「未読のテキストもスキップします。」", "「自動で読み進めます。」", "「バックログを開きます。」"];
+        for (i, m) in menu.iter().enumerate() {
+            c.tracker.add_text(&saved.code, "kirikiri", 1, 5, 2, m, Some(100.0 + i as f64 * 5.0));
+            c.select_hook();
+        }
+        let s = c.session.as_ref().unwrap();
+        assert!(s.selected.is_none(), "до ожидания ничего не выбираем");
+        assert_eq!(s.profile.hook.as_ref().map(|h| h.key()), Some(saved.key()));
+        // ждали достаточно: временный поток, профиль не тронут
+        c.session.as_mut().unwrap().started = now_secs() - 100.0;
+        c.select_hook();
+        let s = c.session.as_ref().unwrap();
+        assert!(s.fallback && s.selected.is_some(), "{:?}", c.tracker.ranked().iter().map(|r| (r.key.clone(), r.score, r.distinct)).collect::<Vec<_>>());
+        assert_eq!(s.profile.hook.as_ref().map(|h| h.key()), Some(saved.key()));
+        // пришла строка сохранённого потока: переключаемся на него
+        c.on_text(&saved.code, "n", pid, 1, 5, 1, "「おはようございます、有地さん」".to_string());
+        let s = c.session.as_ref().unwrap();
+        assert!(!s.fallback);
+        assert_eq!(s.selected, Some(saved.key()));
+        c.shutdown();
     }
 
     #[test]
