@@ -635,11 +635,16 @@ impl AppSettings {
         copy.deepl_key = secret::protect(&self.deepl_key);
         copy.proxy_pass = secret::protect(&self.proxy_pass);
         copy.ms_key = secret::protect(&self.ms_key);
-        let plain = |v: &str| !v.is_empty() && !secret::is_protected(v);
+        let plain = |v: &str| plain_after_failure(v, secret::AVAILABLE);
         let fallback = plain(&copy.deepl_key) || plain(&copy.proxy_pass) || plain(&copy.ms_key);
         save_json(path, &copy)?;
         Ok(fallback)
     }
+}
+
+/// Значение осталось открытым из-за сбоя шифрования (там, где оно вообще есть).
+fn plain_after_failure(stored: &str, encryption_available: bool) -> bool {
+    encryption_available && !stored.is_empty() && !secret::is_protected(stored)
 }
 
 #[cfg(test)]
@@ -652,6 +657,15 @@ mod stats_tests {
             s.daily.insert(d.to_string(), *n);
         }
         s
+    }
+
+    #[test]
+    fn plain_secret_warns_only_where_encryption_exists() {
+        assert!(plain_after_failure("key", true));
+        assert!(!plain_after_failure("", true));
+        assert!(!plain_after_failure("dpapi:abc", true));
+        // Linux: шифрования нет, предупреждать о «сбое» нечего
+        assert!(!plain_after_failure("key", false));
     }
 
     #[test]

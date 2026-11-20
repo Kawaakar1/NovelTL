@@ -152,6 +152,9 @@ pub fn unprotect(stored: &str) -> String {
     imp::unprotect(stored)
 }
 
+/// Шифрование есть только в Windows (DPAPI); на других ОС «не зашифровано» — штатное состояние, а не сбой.
+pub const AVAILABLE: bool = cfg!(windows);
+
 /// Значение зашифровано (а не сохранено открытым текстом из-за сбоя DPAPI).
 pub fn is_protected(stored: &str) -> bool {
     stored.starts_with(PREFIX)
