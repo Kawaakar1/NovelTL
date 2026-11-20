@@ -113,6 +113,7 @@ fn run(
     waker();
 
     let (mut prev_hash, mut done_hash, mut last_text) = (None::<u64>, None::<u64>, String::new());
+    let mut fails = 0u32;
     while !stop.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_millis(400));
         let Some((x, y, w, h)) = region() else { continue };
@@ -127,8 +128,12 @@ fn run(
         if !stable || done_hash == Some(hash) {
             continue;
         }
-        done_hash = Some(hash);
-        let Ok(raw) = recognize(&engine, &pixels, w, h) else { continue };
+        let res = recognize(&engine, &pixels, w, h);
+        // при сбое кадр распознаётся заново (первый вызов после старта движка бывает неудачным)
+        if frame_done(res.is_ok(), &mut fails) {
+            done_hash = Some(hash);
+        }
+        let Ok(raw) = res else { continue };
         let text = tidy(&raw);
         if !text.is_empty() && text != last_text {
             last_text = text.clone();
@@ -192,6 +197,22 @@ fn recognize(engine: &OcrEngine, pixels: &[u8], w: i32, h: i32) -> windows::core
     Ok(lines.join("\n"))
 }
 
+/// Кадр считается обработанным после успеха или после `MAX_OCR_FAILS` неудач подряд.
+const MAX_OCR_FAILS: u32 = 3;
+
+fn frame_done(ok: bool, fails: &mut u32) -> bool {
+    if ok {
+        *fails = 0;
+        return true;
+    }
+    *fails += 1;
+    if *fails >= MAX_OCR_FAILS {
+        *fails = 0;
+        return true;
+    }
+    false
+}
+
 /// Windows OCR для японского/китайского вставляет пробелы между знаками и рвёт реплику на строки.
 fn tidy(text: &str) -> String {
     let mut out = String::new();
@@ -238,6 +259,15 @@ mod tests {
         );
         assert_eq!(tidy("Hello  world\nagain"), "Hello world again");
         assert_eq!(tidy("  "), "");
+    }
+
+    #[test]
+    fn failed_frame_is_retried_a_few_times() {
+        let mut f = 0;
+        assert!(!frame_done(false, &mut f));
+        assert!(!frame_done(false, &mut f));
+        assert!(frame_done(false, &mut f));
+        assert!(frame_done(true, &mut f));
     }
 
     #[test]
