@@ -292,6 +292,23 @@ impl Http for ReqwestHttp {
     }
 }
 
+/// Редиректы скачивания: только на https и не больше пяти (иначе сервер увёл бы на http или в петлю).
+const MAX_REDIRECTS: usize = 5;
+
+fn redirect_allowed(scheme: &str, redirect_number: usize) -> bool {
+    scheme == "https" && redirect_number <= MAX_REDIRECTS
+}
+
+fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|a| {
+        if redirect_allowed(a.url().scheme(), a.previous().len()) {
+            a.follow()
+        } else {
+            a.stop()
+        }
+    })
+}
+
 pub fn make_http(
     mode: &str,
     proxy_url: &str,
@@ -299,7 +316,7 @@ pub fn make_http(
     proxy_user: &str,
     proxy_pass: &str,
 ) -> Result<ReqwestHttp, String> {
-    let mut b = reqwest::blocking::Client::builder().timeout(TIMEOUT).user_agent(USER_AGENT);
+    let mut b = reqwest::blocking::Client::builder().timeout(TIMEOUT).user_agent(USER_AGENT).redirect(redirect_policy());
     let mut uses_proxy = false;
     if mode == NET_DIRECT {
         b = b.no_proxy();
@@ -426,6 +443,15 @@ mod tests {
         assert!(make_http(NET_PROXY, "bad", "", "", "").is_err());
         assert!(make_http(NET_DIRECT, "", "127.0.0.1", "", "").is_ok());
         assert!(make_http(NET_DIRECT, "", "не-адрес", "", "").is_err());
+    }
+
+    #[test]
+    fn redirects_only_https_and_at_most_five() {
+        assert!(redirect_allowed("https", 1));
+        assert!(redirect_allowed("https", MAX_REDIRECTS));
+        assert!(!redirect_allowed("https", MAX_REDIRECTS + 1));
+        assert!(!redirect_allowed("http", 1));
+        assert!(!redirect_allowed("ftp", 1));
     }
 
     #[test]
