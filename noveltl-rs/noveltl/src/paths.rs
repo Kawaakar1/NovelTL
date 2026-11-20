@@ -17,10 +17,12 @@ pub fn app_dir() -> PathBuf {
 /// `app_dir()\files`; при разработке (запуск из `target\`) — папка files Python-версии.
 pub fn files_dir() -> PathBuf {
     let near = app_dir().join("files");
-    if near.is_dir() {
-        return near;
+    // путь машины сборки — только в отладочной сборке, в релиз он не попадает
+    #[cfg(debug_assertions)]
+    if !near.is_dir() {
+        return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("files");
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..").join("..").join("files")
+    near
 }
 
 /// Переопределить папку данных (для демо). Глобально.
