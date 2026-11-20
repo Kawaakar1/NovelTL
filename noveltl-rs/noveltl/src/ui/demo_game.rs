@@ -19,6 +19,8 @@ pub struct DemoGame {
     pub hwnd: isize,
     /// только для проверок разработчиком: NOVELTL_TEST_AUTOPLAY — листать реплики самим раз в 4 с
     autoplay: Option<std::time::Instant>,
+    /// окно закрыли крестиком: больше его не создаём
+    closed: bool,
 }
 
 fn hex(h: u32) -> Color32 {
@@ -43,7 +45,7 @@ fn vgradient(painter: &Painter, rect: Rect, stops: &[(f32, Color32)]) {
 impl DemoGame {
     pub fn new(source: DemoSource) -> Self {
         let autoplay = std::env::var_os("NOVELTL_TEST_AUTOPLAY").map(|_| std::time::Instant::now());
-        DemoGame { source, index: -1, hwnd: 0, autoplay }
+        DemoGame { source, index: -1, hwnd: 0, autoplay, closed: false }
     }
 
     /// «Игра» показала следующую реплику: хуки шлют её контроллеру.
@@ -53,6 +55,9 @@ impl DemoGame {
     }
 
     pub fn show(&mut self, ctx: &egui::Context) {
+        if self.closed {
+            return;
+        }
         if self.autoplay.is_some_and(|t| t.elapsed().as_secs() >= 4) {
             self.autoplay = Some(std::time::Instant::now());
             self.advance();
@@ -85,6 +90,9 @@ impl DemoGame {
             });
             if ctx.input(|i| i.key_pressed(egui::Key::Space) || i.key_pressed(egui::Key::Enter)) {
                 clicked = true;
+            }
+            if ctx.input(|i| i.viewport().close_requested()) {
+                self.closed = true;
             }
             if clicked {
                 self.advance();
