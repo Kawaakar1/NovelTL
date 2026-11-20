@@ -483,10 +483,13 @@ fn strip_quotes(s: &str) -> String {
     s.to_string()
 }
 
-/// Оригинал в 「」/『』, а модель кавычки сняла: возвращаем их в стиле языка перевода.
+/// Оригинал в кавычках («»/"…"/“”/「」/『』), а модель их сняла: возвращаем в стиле языка перевода.
 fn restore_quotes(src: &str, out: String, target: Lang) -> String {
     let src = src.trim();
-    let quoted = (src.starts_with('「') && src.ends_with('」')) || (src.starts_with('『') && src.ends_with('』'));
+    let quoted = src.chars().count() >= 2
+        && [('«', '»'), ('"', '"'), ('「', '」'), ('『', '』'), ('“', '”')]
+            .iter()
+            .any(|&(o, c)| src.starts_with(o) && src.ends_with(c));
     if !quoted || out.starts_with(['«', '“', '"', '「', '『']) {
         return out;
     }
@@ -1670,6 +1673,15 @@ mod tests {
         assert_eq!(body["messages"][1]["content"], "你好");
         assert!(body["messages"][0]["content"].as_str().unwrap().contains("from the original language"));
         assert_eq!(m.status_text(), "Локальный ИИ (qwen2.5)");
+    }
+
+    #[test]
+    fn restore_quotes_for_all_styles() {
+        assert_eq!(restore_quotes("\"Hello\"", "Привет".into(), Lang::Ru), "«Привет»");
+        assert_eq!(restore_quotes("“Hello”", "こんにちは".into(), Lang::Ja), "「こんにちは」");
+        assert_eq!(restore_quotes("「やあ」", "Hi".into(), Lang::En), "“Hi”");
+        assert_eq!(restore_quotes("Hello", "Привет".into(), Lang::Ru), "Привет");
+        assert_eq!(restore_quotes("\"", "x".into(), Lang::Ru), "x");
     }
 
     #[test]
