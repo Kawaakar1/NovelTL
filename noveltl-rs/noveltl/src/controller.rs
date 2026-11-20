@@ -586,6 +586,8 @@ pub struct Controller {
     window_lost_since: Option<Instant>,
     /// файлы кэша, которые не удалось удалить сразу
     stale_caches: Vec<PathBuf>,
+    /// почему не открылся кэш переводов текущей игры (для строки статуса в настройках)
+    cache_error: Option<String>,
     /// pid, которые мы сами отсоединили: их запоздалый `Disconnected` не должен убивать новую сессию
     detached: Vec<(u32, Instant)>,
     /// (pid, число сбоев внедрения подряд)
@@ -892,6 +894,7 @@ impl Controller {
             closed: false,
             window_lost_since: None,
             stale_caches: Vec::new(),
+            cache_error: None,
             detached: Vec::new(),
             attach_failures: (0, 0),
             menu_requests: Vec::new(),
@@ -1439,6 +1442,16 @@ impl Controller {
         std::mem::take(&mut self.menu_requests)
     }
 
+    /// Строка статуса кэша переводов для настроек; None — игры нет, кэш не открыт.
+    /// Считает записи в базе, поэтому зовётся при открытии окна настроек, а не на каждом кадре.
+    pub fn cache_status(&self) -> Option<String> {
+        match (&self.cache_error, &self.cache) {
+            (Some(e), _) => Some(cache_status_text(Err(e))),
+            (None, Some(c)) => Some(cache_status_text(Ok(c.count()))),
+            (None, None) => None,
+        }
+    }
+
     pub fn translator_status(&self) -> String {
         self.worker.status.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -1538,9 +1551,10 @@ impl Controller {
             self.spawn_art(vec![(profile.id.clone(), profile.name.clone())]);
         }
         let cache_path = sub_data_dir("cache").join(format!("{}.sqlite", profile.id));
-        let (cache, cache_notice) = open_cache(&cache_path);
+        let (cache, cache_error) = open_cache(&cache_path);
         self.cache = cache;
-        self.notices.extend(cache_notice);
+        self.notices.extend(cache_error.as_deref().map(cache_notice));
+        self.cache_error = cache_error;
         let pipeline = self.make_pipeline(profile.lang, profile.glossary.clone());
         self.worker.send(WorkerCmd::SetPipeline(Some(pipeline)));
         let lang = profile.lang;
@@ -1656,6 +1670,7 @@ impl Controller {
         }
         self.worker.send(WorkerCmd::SetPipeline(None));
         self.cache = None;
+        self.cache_error = None;
         self.overlay.send(Cmd::EditMode(false));
         self.overlay.send(Cmd::Clear);
         self.overlay.send(Cmd::Target(0, None));
@@ -2682,11 +2697,22 @@ fn report_save(notices: &mut Vec<String>, res: std::io::Result<()>) {
     }
 }
 
-/// Открывает кэш переводов; если не вышло — вместе с текстом уведомления (иначе каждая реплика молча уходит в платный переводчик).
+/// Открывает кэш переводов; если не вышло — вместе с текстом ошибки (иначе каждая реплика молча уходит в платный переводчик).
 fn open_cache(path: &Path) -> (Option<Arc<TranslationCache>>, Option<String>) {
     match TranslationCache::open(path) {
         Ok(c) => (Some(Arc::new(c)), None),
-        Err(e) => (None, Some(tf("Кэш переводов недоступен ({}) — переводы этой игры не сохраняются.", &[&e]))),
+        Err(e) => (None, Some(e.to_string())),
+    }
+}
+
+fn cache_notice(error: &str) -> String {
+    tf("Кэш переводов недоступен ({}) — переводы этой игры не сохраняются.", &[&error])
+}
+
+fn cache_status_text(state: Result<usize, &str>) -> String {
+    match state {
+        Ok(n) => tf("В кэше: {} переводов", &[&n]),
+        Err(e) => tf("Кэш недоступен: {}", &[&e]),
     }
 }
 
@@ -2760,10 +2786,16 @@ mod tests {
     #[test]
     fn unopenable_cache_gives_notice() {
         // каталог вместо файла базы — SQLite открыть его не может
-        let (cache, notice) = open_cache(&std::env::temp_dir());
+        let (cache, error) = open_cache(&std::env::temp_dir());
         assert!(cache.is_none());
-        assert!(notice.is_some_and(|n| n.contains("не сохраняются") || n.contains("not saved")));
+        assert!(error.is_some_and(|e| cache_notice(&e).contains("не сохраняются")));
         assert!(open_cache(Path::new(":memory:")).1.is_none());
+    }
+
+    #[test]
+    fn cache_status_line() {
+        assert_eq!(cache_status_text(Ok(5)), "В кэше: 5 переводов");
+        assert_eq!(cache_status_text(Err("disk I/O error")), "Кэш недоступен: disk I/O error");
     }
 
     #[test]

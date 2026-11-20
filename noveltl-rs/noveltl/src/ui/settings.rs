@@ -300,6 +300,8 @@ pub struct SettingsWindow {
     /// что уже отправлено в плашку и тему
     applied: PreviewKey,
     status: String,
+    /// состояние кэша переводов (снимок на момент открытия окна); None — игры нет
+    cache_status: Option<String>,
     /// выбранный раздел (индекс в SECTIONS)
     section: usize,
     /// автозапуск с Windows (состояние в окне)
@@ -353,9 +355,9 @@ pub struct SettingsWindow {
 
 impl SettingsWindow {
     pub fn new(shared: &Shared, pos: Option<[f32; 2]>) -> SettingsWindow {
-        let (orig, status) = {
+        let (orig, status, cache_status) = {
             let c = lock_ctl(&shared.controller);
-            (c.settings.clone(), c.translator_status())
+            (c.settings.clone(), c.translator_status(), c.cache_status())
         };
         let mut proxy_addr = orig.proxy_url.clone();
         let mut proxy_user = orig.proxy_user.clone();
@@ -406,6 +408,7 @@ impl SettingsWindow {
             bind_ip: orig.bind_ip.clone(),
             orig,
             status,
+            cache_status,
             section: 0,
             autostart: crate::winutil::autostart_enabled(),
             key_show: false,
@@ -1354,6 +1357,9 @@ impl SettingsWindow {
                         });
                 },
             );
+            if let Some(line) = &self.cache_status {
+                theme::row_w(ui, t("Кэш переводов"), Some(line), 0.0, |_| {});
+            }
         });
         theme::section_label(ui, t("Языки"));
         theme::card(ui, |ui| {
