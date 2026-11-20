@@ -136,9 +136,20 @@ fn luma(c: Color32) -> f32 {
     (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
 }
 
-/// Цвет текста на заливке `accent`: тёмный на светлом акценте (в тёмной теме он белый), иначе белый.
+/// Относительная яркость по WCAG (с линеаризацией sRGB), 0..1.
+fn rel_luminance(c: Color32) -> f32 {
+    let lin = |x: u8| {
+        let s = x as f32 / 255.0;
+        if s <= 0.04045 { s / 12.92 } else { ((s + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * lin(c.r()) + 0.7152 * lin(c.g()) + 0.0722 * lin(c.b())
+}
+
+/// Цвет текста на заливке `accent`: тот из двух (тёмный или белый), у которого контраст по WCAG выше.
 fn on_color(accent: Color32) -> Color32 {
-    if luma(accent) > 0.55 { rgb(0x0B0B0C) } else { Color32::WHITE }
+    let dark = rgb(0x0B0B0C);
+    let l = rel_luminance(accent) + 0.05;
+    if l / (rel_luminance(dark) + 0.05) > 1.05 / l { dark } else { Color32::WHITE }
 }
 
 /// Заливка кнопки под курсором: светлый акцент темнеет, тёмный светлеет.
@@ -996,6 +1007,8 @@ mod tests {
     fn text_on_accent_contrasts() {
         assert_eq!(on_color(Color32::WHITE), rgb(0x0B0B0C));
         assert_eq!(on_color(rgb(0x202020)), Color32::WHITE);
+        // сине-фиолетовый: у белого контраст 4.1:1, у тёмного выше
+        assert_eq!(on_color(rgb(0x7A68F0)), rgb(0x0B0B0C));
     }
 
     #[test]
