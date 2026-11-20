@@ -34,6 +34,11 @@ static RE_COLON_NAME: LazyLock<Regex> = LazyLock::new(|| {
 
 const SENTENCE_END: &str = "。！？!?…」』）)\"”.~〜♪—―";
 const OPEN_QUOTES: &str = "「『（(“\"";
+/// Служебные слова и связки, которые не бывают именами говорящего.
+const NOT_NAMES: [&str; 14] = [
+    "重要", "注意", "警告", "お知らせ", "通知", "ヒント", "だから", "でも", "しかし", "そして",
+    "すると", "それから", "つまり", "けど",
+];
 const NAME_FORBIDDEN: &str = "。、！？!?…「」『』（）()【】,.:;：；\"“”";
 
 /// Служебные слова перед двоеточием, которые не являются именами.
@@ -127,29 +132,39 @@ fn looks_like_name(name: &str, limit: usize) -> bool {
         return false;
     }
     // имя должно содержать букву/цифру/иероглифа: «—», «~», «♪» именем не считаем
-    name.chars().any(char::is_alphanumeric) && !name.chars().any(|c| NAME_FORBIDDEN.contains(c))
+    name.chars().any(char::is_alphanumeric)
+        && !name.chars().any(|c| NAME_FORBIDDEN.contains(c))
+        && !NOT_NAMES.contains(&name)
+}
+
+/// «母は», «彼は言った» — оборот с частицей, то есть повествование, а не имя.
+fn is_narration(name: &str) -> bool {
+    let chars: Vec<char> = name.trim().chars().collect();
+    let kanji = |c: char| ('\u{4E00}'..='\u{9FFF}').contains(&c);
+    chars.last().is_some_and(|c| "はがをにでとものへ".contains(*c))
+        || chars.windows(2).any(|w| kanji(w[0]) && "はがを".contains(w[1]))
 }
 
 /// Отделяет имя говорящего. Возвращает (имя, текст); имя может быть пустым.
 pub fn split_name(text: &str) -> (String, String) {
     let s = text.trim();
     if let Some(m) = RE_BRACKET_NAME.captures(s) {
-        return (m[1].trim().to_string(), m[2].trim().to_string());
+        if looks_like_name(&m[1], 24) {
+            return (m[1].trim().to_string(), m[2].trim().to_string());
+        }
     }
 
     if let Some((first, rest)) = s.split_once('\n') {
         let rest = rest.trim();
         if let Some(c0) = rest.chars().next() {
-            if OPEN_QUOTES.contains(c0) && looks_like_name(first, 16) {
+            if OPEN_QUOTES.contains(c0) && looks_like_name(first, 16) && !is_narration(first) {
                 return (first.trim().to_string(), rest.to_string());
             }
         }
     }
 
     if let Some(m) = RE_QUOTE_NAME.captures(s) {
-        // «母は「おかえり」» — оканчивается частицей, значит это повествование, а не имя
-        let ends_with_particle = m[1].chars().last().is_some_and(|c| "はがをにでとものへ".contains(c));
-        if looks_like_name(&m[1], 12) && !ends_with_particle {
+        if looks_like_name(&m[1], 12) && !is_narration(&m[1]) {
             return (m[1].trim().to_string(), m[2].trim().to_string());
         }
     }
@@ -162,6 +177,7 @@ pub fn split_name(text: &str) -> (String, String) {
             && (m[2].chars().next().is_some_and(|c| c.is_ascii_lowercase())
                 || COLON_STOP_WORDS.contains(&name.trim().to_lowercase().as_str()));
         if looks_like_name(name, 25)
+            && !is_narration(name)
             && !latin_reject
             && !name.chars().all(|c| c.is_numeric())
             && !m[2].starts_with("//")
@@ -265,6 +281,19 @@ mod tests {
         ];
         for (src, name, text) in cases {
             assert_eq!(split_name(src), (name.to_string(), text.to_string()), "{src}");
+        }
+    }
+
+    #[test]
+    fn test_narration_is_not_a_name() {
+        for src in [
+            "母は：「おかえり」",
+            "母は\n「おかえり」",
+            "彼は言った：「そうだ」",
+            "【重要】この先セーブできません",
+            "だから「そうだよ」",
+        ] {
+            assert_eq!(split_name(src).0, "", "{src}");
         }
     }
 
