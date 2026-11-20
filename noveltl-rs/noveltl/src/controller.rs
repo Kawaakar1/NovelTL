@@ -812,6 +812,7 @@ impl Controller {
         if settings.load_problem {
             notices.push(t("Не удалось прочитать часть настроек — копия старого файла сохранена как settings.json.broken.").to_string());
         }
+        plain_keys_notice(&settings, &mut notices);
         let http: Arc<dyn Http> = if demo {
             Arc::new(DemoHttp::new())
         } else {
@@ -2362,6 +2363,7 @@ impl Controller {
         };
         self.sync_vndb_flag();
         apply_ui_lang(&self.settings);
+        plain_keys_notice(&self.settings, &mut self.notices);
         if plain_keys {
             self.notice(
                 t("Не удалось зашифровать ключ DeepL или пароль прокси — они сохранены открытым текстом в data\\settings.json."),
@@ -2649,6 +2651,14 @@ fn rollback_hotkeys(new: &mut AppSettings, mut old: AppSettings, failed: &[Strin
         for (n, o) in hotkey_slots(new).into_iter().zip(hotkey_slots(&mut old)) {
             *n = o.clone();
         }
+    }
+}
+
+/// Linux: ключи лежат в settings.json без шифрования — честно говорим об этом один раз за запуск.
+fn plain_keys_notice(settings: &AppSettings, notices: &mut Vec<String>) {
+    static SHOWN: AtomicBool = AtomicBool::new(false);
+    if settings.keys_stored_plain() && !SHOWN.swap(true, Ordering::SeqCst) {
+        notices.push(t("На Linux ключи хранятся без шифрования (файл доступен только вам).").to_string());
     }
 }
 

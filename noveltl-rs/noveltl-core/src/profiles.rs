@@ -251,12 +251,24 @@ fn keep_broken(path: &Path) {
 
 /// Атомарная запись: во .tmp (с sync_all) и rename. Кириллица не экранируется.
 fn save_json<T: Serialize>(path: &Path, data: &T) -> std::io::Result<()> {
+    save_json_mode(path, data, false)
+}
+
+/// `private`: на unix файл доступен только владельцу (права 0600 ставятся до записи содержимого).
+fn save_json_mode<T: Serialize>(path: &Path, data: &T, private: bool) -> std::io::Result<()> {
     use std::io::Write;
     let text = serde_json::to_string_pretty(data).map_err(std::io::Error::other)?;
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
     let mut f = fs::File::create(&tmp)?;
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = private;
     f.write_all(text.as_bytes())?;
     f.sync_all()?;
     drop(f);
@@ -648,9 +660,18 @@ impl AppSettings {
         copy.ms_key = secret::protect(&self.ms_key);
         let plain = |v: &str| plain_after_failure(v, secret::AVAILABLE);
         let fallback = plain(&copy.deepl_key) || plain(&copy.proxy_pass) || plain(&copy.ms_key);
-        save_json(path, &copy)?;
+        save_json_mode(path, &copy, true)?;
         Ok(fallback)
     }
+
+    /// Ключ DeepL/Microsoft или пароль прокси лежат в файле без шифрования (на Linux шифрования нет) — об этом надо сказать.
+    pub fn keys_stored_plain(&self) -> bool {
+        keys_plain(self, secret::AVAILABLE)
+    }
+}
+
+fn keys_plain(s: &AppSettings, encryption_available: bool) -> bool {
+    !encryption_available && [&s.deepl_key, &s.ms_key, &s.proxy_pass].iter().any(|k| !k.is_empty())
 }
 
 /// Значение осталось открытым из-за сбоя шифрования (там, где оно вообще есть).
@@ -668,6 +689,30 @@ mod stats_tests {
             s.daily.insert(d.to_string(), *n);
         }
         s
+    }
+
+    #[test]
+    fn plain_keys_notice_only_without_encryption_and_with_a_key() {
+        let mut s = AppSettings::default();
+        assert!(!keys_plain(&s, false), "ключей нет");
+        s.ms_key = "k".into();
+        assert!(keys_plain(&s, false));
+        assert!(!keys_plain(&s, true), "шифрование есть — предупреждать не о чем");
+        s.ms_key.clear();
+        s.proxy_pass = "p".into();
+        assert!(keys_plain(&s, false));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn settings_file_is_private_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("noveltl_perm_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        AppSettings { deepl_key: "k".into(), ..Default::default() }.save_checked(&path).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
