@@ -228,6 +228,15 @@ fn enc_len_str(s: &str) -> usize {
     s.chars().map(enc_len).sum()
 }
 
+/// ASCII-точка в `chars[i]` кончает предложение: за ней пробел или конец, и это не «Mr.», не «3.5».
+fn is_sentence_dot(chars: &[char], i: usize) -> bool {
+    if chars.get(i + 1).is_some_and(|n| !n.is_whitespace()) {
+        return false;
+    }
+    let word: String = chars[..i].iter().rev().take_while(|c| c.is_alphabetic()).collect::<Vec<_>>().into_iter().rev().collect();
+    !["mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "prof"].contains(&word.to_lowercase().as_str())
+}
+
 /// Делит текст на куски не длиннее `limit` байт после URL-кодирования. Возвращает (кусок, разделитель после него).
 /// Режем по `\n`, слишком длинную строку — по концу предложения, в крайнем случае жёстко.
 fn split_for_google(text: &str, limit: usize) -> Vec<(String, &'static str)> {
@@ -242,14 +251,15 @@ fn split_for_google(text: &str, limit: usize) -> Vec<(String, &'static str)> {
         }
         let mut cur = String::new();
         let mut cur_len = 0;
-        for c in line.chars() {
+        let chars: Vec<char> = line.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
             if cur_len + enc_len(c) > limit {
                 units.push((std::mem::take(&mut cur), ""));
                 cur_len = 0;
             }
             cur.push(c);
             cur_len += enc_len(c);
-            if "。！？!?.".contains(c) {
+            if "。！？!?".contains(c) || (c == '.' && is_sentence_dot(&chars, i)) {
                 units.push((std::mem::take(&mut cur), ""));
                 cur_len = 0;
             }
@@ -1263,6 +1273,13 @@ mod tests {
         for q in &g {
             assert!(url::form_urlencoded::byte_serialize(param(q, "q").as_bytes()).count() <= GOOGLE_MAX_CHARS);
         }
+    }
+
+    #[test]
+    fn google_split_ignores_decimal_point_and_abbreviation() {
+        let first = |text: &str, limit| split_for_google(text, limit)[0].0.clone();
+        assert_eq!(first("Costly. It costs 3.5 dollars.", 30), "Costly.");
+        assert_eq!(first("Hello there. Mr. Smith agreed.", 24), "Hello there.");
     }
 
     #[test]
