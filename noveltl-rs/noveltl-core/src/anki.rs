@@ -18,7 +18,11 @@ fn call(http: &dyn Http, action: &str, params: Value) -> Result<Value, String> {
     match v.get("error").and_then(Value::as_str) {
         Some(err) if err.to_lowercase().contains("duplicate") => Err(t("Эта карточка уже есть в Anki.").to_string()),
         Some(err) => Err(tf("Anki: {}", &[&err])),
-        None => Ok(v.get("result").cloned().unwrap_or(Value::Null)),
+        // успех — только настоящий result: на порту может отвечать не AnkiConnect (`{}`, `{"result": null}`)
+        None => match v.get("result") {
+            Some(r) if !r.is_null() => Ok(r.clone()),
+            _ => Err(t("Anki: неожиданный ответ — на порту 8765 отвечает не AnkiConnect.").to_string()),
+        },
     }
 }
 
@@ -105,6 +109,14 @@ mod tests {
         assert_eq!(note["fields"]["Лицевая сторона"], "言葉");
         assert_eq!(note["fields"]["Оборотная сторона"], "word");
         assert!(note["tags"].as_array().unwrap().iter().any(|t| t == "NovelTL"));
+    }
+
+    #[test]
+    fn empty_result_is_not_success() {
+        for reply in [json!({}), json!({"result": null, "error": null})] {
+            let h = Fake::new(vec![ok(json!(1)), ok(json!(["Basic"])), ok(json!(["Front", "Back"])), Ok(reply)]);
+            assert!(add_note(&h, "a", "b").is_err(), "чужой ответ на порту — не добавленная карточка");
+        }
     }
 
     #[test]
