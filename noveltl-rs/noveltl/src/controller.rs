@@ -400,6 +400,8 @@ pub struct Session {
     pub name_key: Option<HookKey>,
     /// время последнего использованного имени
     pub name_used: f64,
+    /// когда в последний раз искали поток имён (поиск перебирает все потоки — не на каждой реплике)
+    pub name_scan: f64,
     pub engine: String,
     pub warnings: Vec<String>,
     pub error: String,
@@ -1529,6 +1531,7 @@ impl Controller {
             fallback: false,
             name_key: None,
             name_used: 0.0,
+            name_scan: 0.0,
             engine: String::new(),
             warnings: Vec::new(),
             error: String::new(),
@@ -1790,6 +1793,11 @@ impl Controller {
         }
         if s.name_key.is_none() {
             let Some(selected) = s.selected.clone() else { return String::new() };
+            // поиск перебирает все потоки: без результата повторяем не чаще раза в 2 с
+            if now_secs() - s.name_scan < 2.0 {
+                return String::new();
+            }
+            s.name_scan = now_secs();
             let Some(key) = find_name_thread(&self.tracker, &selected) else { return String::new() };
             let Some(st) = self.tracker.get(&key) else { return String::new() };
             if s.profile.name_hook.is_none() && !s.fallback {
@@ -1801,7 +1809,10 @@ impl Controller {
             s.name_key = Some(key);
         }
         let Some(name_key) = s.name_key.clone() else { return String::new() };
-        let Some(st) = self.tracker.get(&name_key) else { return String::new() };
+        let Some(st) = self.tracker.get(&name_key) else {
+            s.name_key = None; // поток имён исчез: на следующей реплике ищем заново
+            return String::new();
+        };
         let Some((t_name, raw)) = st.lines.back() else { return String::new() };
         if *t_name <= s.name_used || (*t_name - t_line).abs() > NAME_PAIR_WINDOW {
             return String::new();
@@ -2872,6 +2883,34 @@ mod tests {
         // игра удалила поток: следующая реплика другого потока выбирает новый источник
         c.on_text("HB", "n", pid, 1, 2, 0, "「おはようございます」".to_string());
         assert_eq!(c.session.as_ref().unwrap().selected, Some(b.key()));
+        c.shutdown();
+    }
+
+    #[test]
+    fn name_thread_is_rechecked_and_scan_is_throttled() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        set_data_dir_override(std::env::temp_dir().join(format!("noveltl_ctl3_{}_{}", std::process::id(), nanos)));
+        let waker: Waker = Arc::new(|| {});
+        let (tx, rx) = channel();
+        let src = DemoSource::new(tx, waker.clone());
+        let mut c = Controller::new(Box::new(src), rx, true, 0, waker);
+        let win = WindowInfo { hwnd: 0, pid: std::process::id(), title: DEMO_TITLE.to_string(), exe_path: String::new() };
+        c.begin_setup(&win, Lang::Ja, "Демо");
+        {
+            let s = c.session.as_mut().unwrap();
+            s.setup = false;
+            s.selected = Some(noveltl_core::scorer::make_key("D", 1, 1));
+            // поток имён исчез (игра пересоздала поток): догадка не должна висеть до конца сессии
+            s.name_key = Some(noveltl_core::scorer::make_key("N", 2, 2));
+        }
+        assert_eq!(c.companion_name(1.0), "");
+        assert!(c.session.as_ref().unwrap().name_key.is_none());
+        // поиск, не давший результата, не повторяется на каждой реплике
+        assert_eq!(c.companion_name(2.0), "");
+        let first = c.session.as_ref().unwrap().name_scan;
+        assert!(first > 0.0);
+        assert_eq!(c.companion_name(3.0), "");
+        assert_eq!(c.session.as_ref().unwrap().name_scan, first);
         c.shutdown();
     }
 
