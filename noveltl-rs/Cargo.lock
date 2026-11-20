@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "noveltl"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arboard",
  "eframe",
@@ -2149,7 +2149,7 @@ dependencies = [
 
 [[package]]
 name = "noveltl-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
