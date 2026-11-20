@@ -198,6 +198,21 @@ fn can_play(has_session: bool, other_setup: bool) -> bool {
     !has_session && !other_setup
 }
 
+/// Сколько уведомлений видно на плашке одновременно.
+const MAX_NOTICE_LINES: usize = 4;
+
+/// Новое уведомление добавляется к ещё не погасшему, а не заменяет его: ни одно не должно потеряться.
+fn merge_notice(current: Option<&str>, new: &str) -> String {
+    let Some(cur) = current.filter(|c| !c.is_empty()) else { return new.to_string() };
+    let mut lines: Vec<&str> = cur.lines().collect();
+    if !lines.contains(&new) {
+        lines.push(new);
+    }
+    let skip = lines.len().saturating_sub(MAX_NOTICE_LINES);
+    lines[skip..].join("
+")
+}
+
 /// «Играли: вчера» и подобное.
 fn played_text(last: u64, now: u64) -> String {
     let when = if last == 0 {
@@ -401,7 +416,8 @@ impl MainWindow {
 
     /// Жёлтая плашка уведомления на 15 секунд.
     pub fn show_notice(&mut self, text: &str) {
-        self.notice = Some((text.to_string(), Instant::now() + Duration::from_secs(NOTICE_SECS)));
+        let shown = merge_notice(self.notice.as_ref().map(|n| n.0.as_str()), text);
+        self.notice = Some((shown, Instant::now() + Duration::from_secs(NOTICE_SECS)));
         self.profiles_at = None;
     }
 
@@ -1825,6 +1841,15 @@ mod tests {
         assert!(!next_open_game(open, false, true));
         // игра закрылась — библиотека
         assert!(!next_open_game(true, true, false));
+    }
+
+    #[test]
+    fn notices_do_not_replace_each_other() {
+        assert_eq!(merge_notice(None, "a"), "a");
+        assert_eq!(merge_notice(Some("a"), "b"), "a\nb");
+        assert_eq!(merge_notice(Some("a\nb"), "b"), "a\nb", "повтор не дублируется");
+        let long = merge_notice(Some("1\n2\n3\n4"), "5");
+        assert_eq!(long, "2\n3\n4\n5", "старые вытесняются, плашка не растёт бесконечно");
     }
 
     #[test]
