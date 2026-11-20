@@ -503,9 +503,10 @@ fn clean_ai_reply(s: &str) -> String {
     strip_quotes(strip_think(s).trim())
 }
 
-/// Адрес сервера без хвостовых `/` и `/v1` (путь `/v1/...` добавляется сам).
+/// Адрес сервера без хвостовых `/`, `/v1` и `/v1/chat/completions` (путь `/v1/...` добавляется сам).
 fn normalize_base_url(url: &str) -> String {
     let u = url.trim().trim_end_matches('/');
+    let u = u.strip_suffix("/chat/completions").unwrap_or(u).trim_end_matches('/');
     u.strip_suffix("/v1").unwrap_or(u).trim_end_matches('/').to_string()
 }
 
@@ -1261,7 +1262,7 @@ mod tests {
 
     #[test]
     fn local_ai_base_url_drops_v1() {
-        for u in ["http://h:1/v1", "http://h:1/v1/", " http://h:1/ "] {
+        for u in ["http://h:1/v1", "http://h:1/v1/", " http://h:1/ ", "http://h:1/v1/chat/completions"] {
             assert_eq!(LocalAiTranslator::new(u, "m", http(&FakeHttp::new(200))).base_url, "http://h:1", "{u}");
         }
     }
