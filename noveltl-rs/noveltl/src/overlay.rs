@@ -315,6 +315,9 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
         });
         out.store(hwnd.0 as isize, Ordering::Release);
         SetTimer(hwnd, 1, 50, None);
+        // не удался — остаётся таймер
+        HOOK_HWND.store(hwnd.0 as isize, Ordering::Release);
+        let hook = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_hook), None, 0).ok();
         // команды, отправленные до появления окна, ждут в канале — забираем их сразу
         let _ = PostMessageW(hwnd, WM_APP, WPARAM(0), LPARAM(0));
 
@@ -323,6 +326,10 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
+        if let Some(h) = hook {
+            let _ = UnhookWindowsHookEx(h);
+        }
+        HOOK_HWND.store(0, Ordering::Release);
         STATE.with(|s| *s.borrow_mut() = None);
     }
 }
@@ -333,6 +340,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if with_state(|st| st.drain()) == Some(true) {
                 let _ = DestroyWindow(hwnd);
             }
+            LRESULT(0)
+        }
+        WM_MOUSE_AT => {
+            let p = *(lp.0 as *const POINT);
+            with_state(|st| st.track_mouse_at(p));
             LRESULT(0)
         }
         WM_TIMER if wp.0 == 2 => {
@@ -611,14 +623,20 @@ impl State {
     /// Следит за курсором: подсветка замочка и кликабельность только над ним.
     fn track_mouse(&mut self) {
         let mut p = POINT::default();
-        let mut r = RECT::default();
         unsafe {
             let _ = GetCursorPos(&mut p);
+        }
+        self.track_mouse_at(p);
+    }
+
+    /// Та же логика для заданной точки (хук мыши знает точку раньше, чем GetCursorPos).
+    fn track_mouse_at(&mut self, p: POINT) {
+        let mut r = RECT::default();
+        unsafe {
             let _ = GetWindowRect(self.hwnd, &mut r);
         }
-        let hover = self.visible && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
         let k = dpi_scale(self.hwnd);
-        let hover_btn = if hover { tb_button_at(dip(r.right - r.left, k), dip(p.x - r.left, k), dip(p.y - r.top, k)) } else { None };
+        let (hover, hover_btn) = hover_at(self.visible, &r, k, p);
         let (cx, cy) = ((p.x - r.left) as f32 / k, (p.y - r.top) as f32 / k);
         let hover_seg = if hover {
             self.seg_rects.borrow().iter().find(|(l, t, rr, b, _)| cx >= *l && cx < *rr && cy >= *t && cy < *b).map(|s| s.4)
@@ -1364,6 +1382,30 @@ fn dip(v: i32, k: f32) -> i32 {
     (v as f32 / k).round() as i32
 }
 
+/// Наведение для точки экрана: (курсор над плашкой, кнопка панели под ним).
+fn hover_at(visible: bool, r: &RECT, k: f32, p: POINT) -> (bool, Option<usize>) {
+    let hover = visible && p.x >= r.left && p.x < r.right && p.y >= r.top && p.y < r.bottom;
+    let btn = if hover { tb_button_at(dip(r.right - r.left, k), dip(p.x - r.left, k), dip(p.y - r.top, k)) } else { None };
+    (hover, btn)
+}
+
+/// Окно плашки для хука мыши (хук вызывается в потоке плашки).
+static HOOK_HWND: AtomicIsize = AtomicIsize::new(0);
+const WM_MOUSE_AT: u32 = WM_APP + 1;
+
+/// Низкоуровневый хук мыши: вызывается до выбора окна под курсором, поэтому стиль
+/// «прозрачна для мыши» успевает смениться раньше клика. Только пересчёт наведения.
+unsafe extern "system" fn mouse_hook(code: i32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+    if code >= 0 && matches!(wp.0 as u32, WM_MOUSEMOVE | WM_LBUTTONDOWN | WM_RBUTTONDOWN) {
+        let h = HOOK_HWND.load(Ordering::Acquire);
+        if h != 0 {
+            let ms = &*(lp.0 as *const MSLLHOOKSTRUCT);
+            let _ = SendMessageW(hwnd_of(h), WM_MOUSE_AT, WPARAM(0), LPARAM(&ms.pt as *const POINT as isize));
+        }
+    }
+    CallNextHookEx(None, code, wp, lp)
+}
+
 fn metrics(l: &IDWriteTextLayout) -> windows::core::Result<DWRITE_TEXT_METRICS> {
     let mut m = DWRITE_TEXT_METRICS::default();
     unsafe { l.GetMetrics(&mut m)? };
@@ -1384,7 +1426,19 @@ fn _unused(_: PCWSTR, _: BOOL) {}
 
 #[cfg(test)]
 mod tests {
-    use super::initial;
+    use super::{hover_at, initial};
+    use crate::overlay_common::tb_button;
+    use windows::Win32::Foundation::{POINT, RECT};
+
+    #[test]
+    fn hover_over_toolbar_button_is_clickable_outside_is_not() {
+        let r = RECT { left: 100, top: 50, right: 900, bottom: 250 };
+        let (l, t, rr, b) = tb_button(800, 0);
+        let p = POINT { x: 100 + (l + rr) / 2, y: 50 + (t + b) / 2 };
+        assert_eq!(hover_at(true, &r, 1.0, p), (true, Some(0)));
+        assert_eq!(hover_at(true, &r, 1.0, POINT { x: 50, y: 20 }), (false, None));
+        assert_eq!(hover_at(false, &r, 1.0, p), (false, None));
+    }
 
     #[test]
     fn initial_is_empty_for_blank_names() {
