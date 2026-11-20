@@ -224,6 +224,15 @@ mod tests {
     }
 
     #[test]
+    fn failed_engine_is_not_retried_for_name() {
+        let s = FakeHttp::new(500);
+        let mut p = TranslationPipeline::new(TranslatorManager::new("key", None, s.clone()), Lang::Ja, vec![]);
+        let r = p.process("将臣", "「おはよう」", true).unwrap();
+        assert_eq!(r.name, "G:将臣", "имя идёт мимо упавшего DeepL");
+        assert_eq!(s.posts().len(), 1, "упавший движок для имени не дёргаем");
+    }
+
+    #[test]
     fn pipeline_context_is_limited() {
         let s = FakeHttp::new(200);
         let mut p = TranslationPipeline::new(TranslatorManager::new("key", None, s.clone()), Lang::Ja, vec![]);

@@ -3,6 +3,7 @@
 use crate::i18n::{t, tf};
 use std::fmt;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -446,6 +447,8 @@ impl MicrosoftTranslator {
 
 /// Таймаут ответа локальной модели, секунды.
 const LOCAL_AI_TIMEOUT: u64 = 120;
+/// Сколько не трогаем движок после его сбоя (таймаут, 5xx).
+const ENGINE_FAILURE_PAUSE: Duration = Duration::from_secs(30);
 
 /// Убирает блоки рассуждений `<think>…</think>` (у «думающих» моделей).
 fn strip_think(s: &str) -> String {
@@ -618,6 +621,9 @@ pub struct TranslatorManager {
     google: GoogleTranslator,
     deepl: Option<DeepLTranslator>,
     deepl_disabled_reason: String,
+    /// Движок, который только что не ответил (таймаут, 5xx): до конца паузы к нему не ходим,
+    /// иначе имя после реплики платит тот же таймаут второй раз.
+    engine_failure: Option<(&'static str, Instant, String)>,
     /// последняя ошибка Microsoft / локального ИИ: сообщение о переходе на Google показываем один раз
     selected_failure: String,
     microsoft: Option<MicrosoftTranslator>,
@@ -641,6 +647,7 @@ impl TranslatorManager {
             cache,
             deepl: None,
             deepl_disabled_reason: String::new(),
+            engine_failure: None,
             selected_failure: String::new(),
             microsoft: None,
             microsoft_denied: false,
@@ -716,6 +723,15 @@ impl TranslatorManager {
         let key = key.trim();
         self.deepl = if key.is_empty() { None } else { Some(DeepLTranslator::new(key, self.http.clone())) };
         self.deepl_disabled_reason.clear();
+        self.engine_failure = None;
+    }
+
+    /// Сообщение о недавней неудаче движка, если пауза ещё идёт.
+    fn recent_failure(&self, engine: &str) -> Option<String> {
+        match &self.engine_failure {
+            Some((e, at, msg)) if *e == engine && at.elapsed() < ENGINE_FAILURE_PAUSE => Some(msg.clone()),
+            _ => None,
+        }
     }
 
     /// Ключ и регион Microsoft Translator (пустой ключ — выключен).
@@ -725,6 +741,7 @@ impl TranslatorManager {
             if key.is_empty() { None } else { Some(MicrosoftTranslator::new(key, region, self.http.clone())) };
         self.microsoft_denied = false;
         self.selected_failure.clear();
+        self.engine_failure = None;
     }
 
     /// Адрес сервера и модель локального ИИ.
@@ -732,6 +749,7 @@ impl TranslatorManager {
         self.local_url = base_url.trim().to_string();
         self.local_model = model.trim().to_string();
         self.selected_failure.clear();
+        self.engine_failure = None;
     }
 
     /// Отдельный клиент для локального ИИ (без прокси и привязки к интерфейсу).
@@ -871,9 +889,10 @@ impl TranslatorManager {
             }
         }
         if self.mode == "auto" && self.active_engine() == ENGINE_DEEPL {
-            let attempt = match &self.deepl {
-                Some(d) => d.translate(text, src_lang, self.target, context),
-                None => Err(TranslateError::Failed(String::new())),
+            let attempt = match (&self.deepl, self.recent_failure(ENGINE_DEEPL)) {
+                (_, Some(msg)) => Err(TranslateError::Failed(msg)),
+                (Some(d), None) => d.translate(text, src_lang, self.target, context),
+                (None, None) => Err(TranslateError::Failed(String::new())),
             };
             match attempt {
                 Ok(out) => {
@@ -884,7 +903,10 @@ impl TranslatorManager {
                     self.deepl_disabled_reason = e.to_string();
                     notice = tf("DeepL недоступен ({}). Переключился на Google.", &[&e]);
                 }
-                Err(e) => notice = tf("DeepL: {}. Эта реплика переведена через Google.", &[&e]),
+                Err(e) => {
+                    self.engine_failure = Some((ENGINE_DEEPL, Instant::now(), e.to_string()));
+                    notice = tf("DeepL: {}. Эта реплика переведена через Google.", &[&e]);
+                }
             }
         }
 
@@ -911,6 +933,10 @@ impl TranslatorManager {
         if let Some(hit) = self.cached(text, &cache_key, src_lang, use_cache) {
             return Ok(TranslateResult { text: hit, engine, cached: true, notice: String::new() });
         }
+        // паузу получает только локальный ИИ: ошибка лимита Microsoft не должна его выключать
+        if let Some(msg) = self.recent_failure(engine) {
+            return Err(TranslateError::Failed(msg));
+        }
         let out = if engine == ENGINE_MICROSOFT {
             if self.microsoft_denied {
                 return Err(TranslateError::Failed(ms_key_error().to_string()));
@@ -927,12 +953,9 @@ impl TranslatorManager {
             res?
         } else {
             let http = self.local_http.clone().unwrap_or_else(|| self.http.clone());
-            LocalAiTranslator::new(&self.local_url, &self.local_model, http).translate(
-                text,
-                src_lang,
-                self.target,
-                context,
-            )?
+            LocalAiTranslator::new(&self.local_url, &self.local_model, http)
+                .translate(text, src_lang, self.target, context)
+                .inspect_err(|e| self.engine_failure = Some((engine, Instant::now(), e.to_string())))?
         };
         self.store(text, &cache_key, src_lang, &out);
         Ok(TranslateResult { text: out, engine, cached: false, notice: String::new() })
@@ -954,6 +977,9 @@ impl TranslatorManager {
         if let Some(hit) = self.cached(text, ENGINE_DEEPL, src_lang, use_cache) {
             return Ok(TranslateResult { text: hit, engine: ENGINE_DEEPL, cached: true, notice: String::new() });
         }
+        if let Some(msg) = self.recent_failure(ENGINE_DEEPL) {
+            return Err(TranslateError::Failed(msg));
+        }
         match d.translate(text, src_lang, self.target, context) {
             Ok(out) => {
                 self.deepl_disabled_reason.clear();
@@ -963,6 +989,8 @@ impl TranslatorManager {
             Err(e) => {
                 if matches!(e, TranslateError::Denied(_)) {
                     self.deepl_disabled_reason = e.to_string();
+                } else {
+                    self.engine_failure = Some((ENGINE_DEEPL, Instant::now(), e.to_string()));
                 }
                 Err(e)
             }
