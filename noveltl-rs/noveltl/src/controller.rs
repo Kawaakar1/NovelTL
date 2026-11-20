@@ -2217,7 +2217,8 @@ impl Controller {
         let _ = self.save_settings_file();
     }
 
-    pub fn save_settings(&mut self, new: AppSettings) {
+    /// Возвращает текст ошибки, если настройки не удалось записать в файл (в памяти они всё равно применены).
+    pub fn save_settings(&mut self, new: AppSettings) -> Option<String> {
         let old = self.settings.clone();
         self.settings = new;
         self.sync_vndb_flag();
@@ -2236,12 +2237,13 @@ impl Controller {
             }
         }
         self.hotkey_errors = attempted;
+        let mut write_err = None;
         match self.save_settings_file() {
             Ok(true) => self.notice(
                 t("Не удалось зашифровать ключ DeepL или пароль прокси — они сохранены открытым текстом в data\\settings.json."),
             ),
             Ok(false) => {}
-            Err(e) => self.notice(tf("Не удалось сохранить настройки: {}", &[&e])),
+            Err(e) => write_err = Some(e.to_string()), // окно настроек покажет сообщение и останется открытым
         }
         self.worker.send(WorkerCmd::SetDeeplKey(self.settings.deepl_key.clone()));
         self.worker.send(WorkerCmd::SetTarget(self.settings.target_lang));
@@ -2269,6 +2271,7 @@ impl Controller {
         {
             self.retranslate();
         }
+        write_err
     }
 
     /// Кнопка «копировать» на плашке: последний перевод — в буфер обмена (и не переводится заново).
@@ -2562,6 +2565,23 @@ mod tests {
         new.hotkey_peek = "Ctrl+Alt+P".into();
         rollback_hotkeys(&mut new, old.clone(), &["Ctrl+Alt+J".to_string()]);
         assert_eq!((new.hotkey_toggle.as_str(), new.hotkey_peek.as_str()), ("Ctrl+Alt+H", "Ctrl+Alt+P"));
+    }
+
+    #[test]
+    fn save_settings_reports_write_error() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("noveltl_ctl4_{}_{}", std::process::id(), nanos));
+        set_data_dir_override(dir.clone());
+        let waker: Waker = Arc::new(|| {});
+        let (tx, rx) = channel();
+        let src = DemoSource::new(tx, waker.clone());
+        let mut c = Controller::new(Box::new(src), rx, true, 0, waker);
+        let st = c.settings.clone();
+        assert_eq!(c.save_settings(st.clone()), None);
+        // папки нет — записать нельзя: окно настроек должно узнать об этом и не закрываться
+        c.settings_path = dir.join("нет такой папки").join("settings.json");
+        assert!(c.save_settings(st).is_some());
+        c.shutdown();
     }
 
     #[test]

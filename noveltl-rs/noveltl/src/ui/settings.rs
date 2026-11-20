@@ -766,20 +766,26 @@ impl SettingsWindow {
         new.proxy_user = user;
         new.proxy_pass = pass;
         new.bind_ip = self.bind_ip.clone();
-        self.saved = Some(PreviewKey::of(&new));
-        avatar::cleanup(&new.avatar);
-        let errors = {
+        let (write_err, errors) = {
             let mut c = lock_ctl(&shared.controller);
-            c.save_settings(new);
+            let write_err = c.save_settings(new.clone());
             self.hk_suspended = false; // save_settings заново занимает сочетания
             self.capturing = None;
-            if self.d.vndb != self.orig.vndb {
+            // согласие VNDB (оно сразу запускает запросы в сеть) — только когда файл записан
+            if write_err.is_none() && self.d.vndb != self.orig.vndb {
                 if let Some(on) = self.d.vndb {
                     c.set_vndb_consent(on);
                 }
             }
-            c.hotkey_errors.clone()
+            (write_err, c.hotkey_errors.clone())
         };
+        if let Some(e) = write_err {
+            // окно остаётся открытым: можно повторить, «Отмена» откатит предпросмотр, а старый аватар на месте
+            self.warn(tf("Не удалось сохранить настройки: {}", &[&e]));
+            return;
+        }
+        self.saved = Some(PreviewKey::of(&new));
+        avatar::cleanup(&new.avatar);
         // автозапуск: ошибка не мешает остальным настройкам
         let auto_err = crate::winutil::set_autostart(self.autostart).err();
         if let Some(e) = &auto_err {
