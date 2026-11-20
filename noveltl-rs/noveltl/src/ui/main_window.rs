@@ -187,6 +187,17 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// Открыта ли страница игры после этого кадра. Сессия появилась, сохранилась или закрылась — страница
+/// сохранённой игры, иначе библиотека; пока ничего не менялось, выбор пользователя («‹ Библиотека») не трогаем.
+fn next_open_game(open: bool, changed: bool, saved: bool) -> bool {
+    if changed { saved } else { open }
+}
+
+/// «Играть» на странице игры: игра не запущена и мастер не настраивает другую.
+fn can_play(has_session: bool, other_setup: bool) -> bool {
+    !has_session && !other_setup
+}
+
 /// «Играли: вчера» и подобное.
 fn played_text(last: u64, now: u64) -> String {
     let when = if last == 0 {
@@ -310,7 +321,8 @@ pub struct MainWindow {
     profiles: Vec<Profile>,
     profiles_at: Option<Instant>,
     selected: Option<String>,
-    last_session_id: Option<String>,
+    /// сессия, как её видели в прошлый кадр: (id игры, профиль уже сохранён)
+    last_session: Option<(String, bool)>,
     notice: Option<(String, Instant)>,
     confirm_delete: Option<(String, String)>,
     pending_delete: Option<String>,
@@ -347,7 +359,7 @@ impl MainWindow {
             profiles: Vec::new(),
             profiles_at: None,
             selected: None,
-            last_session_id: None,
+            last_session: None,
             notice: None,
             confirm_delete: None,
             pending_delete: None,
@@ -471,18 +483,19 @@ impl MainWindow {
         // текстуры удалённых игр не держим
         self.art_cache.retain(|id, _| profiles.iter().any(|p| p.id == *id));
         let session_id = snap.session.as_ref().map(|s| s.profile.id.clone());
-        if let Some(s) = snap.session.as_ref().filter(|s| s.saved) {
-            if self.last_session_id.as_deref() != Some(s.profile.id.as_str()) {
-                self.selected = Some(s.profile.id.clone()); // игра только что подключилась — показываем её
+        let session_key = snap.session.as_ref().map(|s| (s.profile.id.clone(), s.saved));
+        let session_changed = self.last_session != session_key;
+        let saved_id = snap.session.as_ref().filter(|s| s.saved).map(|s| s.profile.id.clone());
+        if session_changed {
+            if let Some(id) = &saved_id {
+                self.selected = Some(id.clone()); // игра только что подключилась (или мастер её сохранил) — показываем её
             }
-        }
-        if self.last_session_id != session_id {
-            self.open_game = false; // игра запустилась или закрылась — к библиотеке/странице запущенной
             if self.launching.as_ref().is_some_and(|l| session_id.as_deref() == Some(l.0.as_str())) {
                 self.launching = None;
             }
         }
-        self.last_session_id = session_id.clone();
+        self.open_game = next_open_game(self.open_game, session_changed, saved_id.is_some());
+        self.last_session = session_key;
         if !self.selected.as_ref().is_some_and(|id| profiles.iter().any(|p| &p.id == id)) {
             self.selected = profiles.first().map(|p| p.id.clone());
         }
@@ -586,8 +599,8 @@ impl MainWindow {
         let current: Option<Profile> =
             self.selected.as_ref().and_then(|id| profiles.iter().find(|p| &p.id == id)).cloned();
 
-        // страница игры — если открыта из списка или какая-то игра подключена; иначе библиотека
-        let show_game = current.is_some() && (self.open_game || snap.session.is_some());
+        // страница игры — если открыта из списка или подключилась игра; «‹ Библиотека» возвращает к списку в любой момент
+        let show_game = current.is_some() && self.open_game;
 
         // ---------- нижняя часть страницы игры ----------
         if let Some(profile) = current.as_ref().filter(|_| show_game) {
@@ -1189,7 +1202,7 @@ impl MainWindow {
             ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, font, Color32::WHITE);
             resp
         };
-        if snap.session.is_none() && pill(ui, rect.left_top() + Vec2::new(12.0, 12.0), true, t("‹ Библиотека"), "lib").clicked() {
+        if pill(ui, rect.left_top() + Vec2::new(12.0, 12.0), true, t("‹ Библиотека"), "lib").clicked() {
             actions.push(Action::Library);
         }
         let more = pill(ui, rect.right_top() + Vec2::new(-12.0, 12.0), false, "···", "more");
@@ -1273,11 +1286,16 @@ impl MainWindow {
         // статус
         let (mut color, mut text, mut retry) =
             (p.dim, t("Игра не запущена. Запустите её — NovelTL подключится сам.").to_string(), false);
-        let play = s.is_none();
+        let setup_other = s.is_none() && snap.session.as_ref().is_some_and(|x| x.setup);
+        let play = can_play(s.is_some(), setup_other);
         let mut show_plate = false;
         if play && launching == Some(profile.id.as_str()) {
             color = p.warn;
             text = tf("Запускаю {}…", &[&profile.name]);
+        }
+        if setup_other {
+            color = p.warn;
+            text = t("Идёт настройка — закончите её в окне мастера.").to_string();
         }
         if let Some(s) = s {
             if !s.error.is_empty() {
@@ -1790,5 +1808,29 @@ impl MainWindow {
             lock_ctl(&shared.controller).delete_profile(&id);
             self.profiles_at = None;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn library_stays_open_while_game_runs() {
+        // игра подключилась — её страница
+        let mut open = next_open_game(false, true, true);
+        assert!(open);
+        // «‹ Библиотека»: открыто = false, сессия та же — остаётся библиотека
+        open = false;
+        assert!(!next_open_game(open, false, true));
+        // игра закрылась — библиотека
+        assert!(!next_open_game(true, true, false));
+    }
+
+    #[test]
+    fn play_hidden_while_other_game_is_set_up() {
+        assert!(can_play(false, false));
+        assert!(!can_play(false, true));
+        assert!(!can_play(true, false));
     }
 }
