@@ -1481,7 +1481,9 @@ impl Controller {
             self.spawn_art(vec![(profile.id.clone(), profile.name.clone())]);
         }
         let cache_path = sub_data_dir("cache").join(format!("{}.sqlite", profile.id));
-        self.cache = TranslationCache::open(&cache_path).ok().map(Arc::new);
+        let (cache, cache_notice) = open_cache(&cache_path);
+        self.cache = cache;
+        self.notices.extend(cache_notice);
         let pipeline = self.make_pipeline(profile.lang, profile.glossary.clone());
         self.worker.send(WorkerCmd::SetPipeline(Some(pipeline)));
         let lang = profile.lang;
@@ -2530,6 +2532,14 @@ fn rollback_hotkeys(new: &mut AppSettings, mut old: AppSettings, failed: &[Strin
     }
 }
 
+/// Открывает кэш переводов; если не вышло — вместе с текстом уведомления (иначе каждая реплика молча уходит в платный переводчик).
+fn open_cache(path: &Path) -> (Option<Arc<TranslationCache>>, Option<String>) {
+    match TranslationCache::open(path) {
+        Ok(c) => (Some(Arc::new(c)), None),
+        Err(e) => (None, Some(tf("Кэш переводов недоступен ({}) — переводы этой игры не сохраняются.", &[&e]))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2582,6 +2592,15 @@ mod tests {
         c.settings_path = dir.join("нет такой папки").join("settings.json");
         assert!(c.save_settings(st).is_some());
         c.shutdown();
+    }
+
+    #[test]
+    fn unopenable_cache_gives_notice() {
+        // каталог вместо файла базы — SQLite открыть его не может
+        let (cache, notice) = open_cache(&std::env::temp_dir());
+        assert!(cache.is_none());
+        assert!(notice.is_some_and(|n| n.contains("не сохраняются") || n.contains("not saved")));
+        assert!(open_cache(Path::new(":memory:")).1.is_none());
     }
 
     #[test]
