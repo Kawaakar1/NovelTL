@@ -11,6 +11,8 @@ $version = (Select-String -Path "$root\Cargo.toml" -Pattern '^version\s*=\s*"(.+
 
 cargo test -p noveltl-core --quiet
 if ($LASTEXITCODE) { throw 'тесты ядра не прошли' }
+# пути к исходникам зависимостей попадают в exe: убираем из них папку пользователя (имя учётной записи)
+$env:RUSTFLAGS = "--remap-path-prefix=$env:USERPROFILE=~"
 cargo build --release -p noveltl
 if ($LASTEXITCODE) { throw 'сборка не удалась' }
 
