@@ -213,12 +213,18 @@ fn frame_done(ok: bool, fails: &mut u32) -> bool {
     false
 }
 
+/// Знаки, между которыми пробел — артефакт OCR: ханци, кана, CJK-пунктуация, полная ширина.
+/// Хангыль и кириллица сюда не входят: там пробелы разделяют слова.
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x2000..=0x206F | 0x3000..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0xFF00..=0xFFEF)
+}
+
 /// Windows OCR для японского/китайского вставляет пробелы между знаками и рвёт реплику на строки.
 fn tidy(text: &str) -> String {
     let mut out = String::new();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if let (Some(a), Some(b)) = (out.chars().last(), line.chars().next()) {
-            if a.is_ascii() || b.is_ascii() {
+            if !is_cjk(a) || !is_cjk(b) {
                 out.push(' ');
             }
         }
@@ -234,7 +240,7 @@ fn tidy(text: &str) -> String {
             while j < chars.len() && chars[j] == ' ' {
                 j += 1;
             }
-            let between_wide = i > 0 && j < chars.len() && !chars[i - 1].is_ascii() && !chars[j].is_ascii();
+            let between_wide = i > 0 && j < chars.len() && is_cjk(chars[i - 1]) && is_cjk(chars[j]);
             if !between_wide {
                 res.push(' ');
             }
@@ -259,6 +265,14 @@ mod tests {
         );
         assert_eq!(tidy("Hello  world\nagain"), "Hello world again");
         assert_eq!(tidy("  "), "");
+    }
+
+    #[test]
+    fn tidy_keeps_spaces_for_russian_and_korean() {
+        assert_eq!(tidy("Привет, как дела?
+Хорошо"), "Привет, как дела? Хорошо");
+        assert_eq!(tidy("안녕하세요 여러분
+반갑습니다"), "안녕하세요 여러분 반갑습니다");
     }
 
     #[test]
