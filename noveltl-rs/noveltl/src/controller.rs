@@ -1147,13 +1147,13 @@ impl Controller {
         if let Some(s) = self.session.as_mut().filter(|s| s.profile.id == id) {
             let ok = f(&mut s.profile);
             if ok && s.saved {
-                let _ = self.store.save(&s.profile);
+                report_save(&mut self.notices, self.store.save(&s.profile));
             }
             ok
         } else if let Some(mut p) = self.store.get(id) {
             let ok = f(&mut p);
             if ok {
-                let _ = self.store.save(&p);
+                report_save(&mut self.notices, self.store.save(&p));
             }
             ok
         } else {
@@ -1501,7 +1501,7 @@ impl Controller {
         self.end_session();
         if saved && !setup {
             profile.last_played = now_secs() as u64;
-            let _ = self.store.save(&profile);
+            report_save(&mut self.notices, self.store.save(&profile));
         }
         self.window_lost_since = None;
         self.tracker.clear();
@@ -1620,7 +1620,7 @@ impl Controller {
         let Some(s) = self.session.take() else { return };
         if s.saved && !s.setup {
             // досохраняем статистику чтения
-            let _ = self.store.save(&s.profile);
+            report_save(&mut self.notices, self.store.save(&s.profile));
         }
         self.worker.send(WorkerCmd::SetPipeline(None));
         self.cache = None;
@@ -1762,7 +1762,7 @@ impl Controller {
         s.selected = Some(st.key());
         s.profile.set_hook(&st.hookcode, &st.hookname, st.ctx, st.ctx2);
         if s.saved {
-            let _ = self.store.save(&s.profile);
+            report_save(&mut self.notices, self.store.save(&s.profile));
         }
         self.notices.push(t("Сохранённый источник текста не нашёлся — NovelTL сам выбрал другой.").to_string());
     }
@@ -1803,7 +1803,7 @@ impl Controller {
             if s.profile.name_hook.is_none() && !s.fallback {
                 s.profile.name_hook = Some(HookRef { code: st.hookcode.clone(), name: st.hookname.clone(), ctx_lo: key.1, ctx2_lo: key.2 });
                 if s.saved {
-                    let _ = self.store.save(&s.profile);
+                    report_save(&mut self.notices, self.store.save(&s.profile));
                 }
             }
             s.name_key = Some(key);
@@ -1876,7 +1876,7 @@ impl Controller {
             append_log(&s.profile.id, &result);
             // статистику на диск — не на каждой реплике
             if s.profile.stats.lines % 10 == 0 {
-                let _ = self.store.save(&s.profile);
+                report_save(&mut self.notices, self.store.save(&s.profile));
             }
         }
         push_history(&mut s.history, result.clone());
@@ -1997,7 +1997,7 @@ impl Controller {
         let Some(s) = self.session.as_mut() else { return false };
         // пока идёт мастер, статистика не пишется, а отмена вернёт профиль с диска — сохраняем накопленное
         if s.saved && !s.setup {
-            let _ = self.store.save(&s.profile);
+            report_save(&mut self.notices, self.store.save(&s.profile));
         }
         s.setup = true;
         self.overlay.send(Cmd::Clear);
@@ -2025,7 +2025,7 @@ impl Controller {
             return;
         };
         s.profile.overlay = self.overlay_frac;
-        let _ = self.store.save(&s.profile);
+        report_save(&mut self.notices, self.store.save(&s.profile));
         s.saved = true;
         s.setup = false;
         let last = s
@@ -2109,7 +2109,7 @@ impl Controller {
         if let Some(s) = self.session.as_mut() {
             if !s.setup && s.saved {
                 s.profile.overlay = self.overlay_frac;
-                let _ = self.store.save(&s.profile);
+                report_save(&mut self.notices, self.store.save(&s.profile));
             }
         }
     }
@@ -2162,11 +2162,11 @@ impl Controller {
         if let Some(s) = self.session.as_mut().filter(|s| s.profile.id == profile_id) {
             apply(&mut s.profile);
             if s.saved {
-                let _ = self.store.save(&s.profile);
+                report_save(&mut self.notices, self.store.save(&s.profile));
             }
         } else if let Some(mut p) = self.store.get(profile_id) {
             apply(&mut p);
-            let _ = self.store.save(&p);
+            report_save(&mut self.notices, self.store.save(&p));
         }
     }
 
@@ -2177,7 +2177,7 @@ impl Controller {
             if let Some(mut p) = self.store.get(profile_id) {
                 if p.lang != lang {
                     p.lang = lang;
-                    let _ = self.store.save(&p);
+                    report_save(&mut self.notices, self.store.save(&p));
                 }
             }
             return;
@@ -2190,7 +2190,7 @@ impl Controller {
         s.profile.lang = lang;
         let (saved, connected, has_hook) = (s.saved, s.connected, s.profile.hook.is_some());
         if saved {
-            let _ = self.store.save(&s.profile);
+            report_save(&mut self.notices, self.store.save(&s.profile));
         }
         let (profile, win_pid) = (s.profile.clone(), s.pid);
         if codepage_changed && connected {
@@ -2237,7 +2237,7 @@ impl Controller {
         let Some(mut profile) = profile else { return };
         profile.glossary = entries.clone();
         profile.filters = filters.clone();
-        let _ = self.store.save(&profile);
+        report_save(&mut self.notices, self.store.save(&profile));
         if in_session {
             if let Some(s) = self.session.as_mut() {
                 s.profile.glossary = entries.clone();
@@ -2579,6 +2579,16 @@ fn rollback_hotkeys(new: &mut AppSettings, mut old: AppSettings, failed: &[Strin
     }
 }
 
+/// Ошибка записи профиля на диск не должна пропадать молча: одно уведомление (без повторов в кадре).
+fn report_save(notices: &mut Vec<String>, res: std::io::Result<()>) {
+    if let Err(e) = res {
+        let msg = tf("Не удалось сохранить профиль игры: {}", &[&e]);
+        if !notices.contains(&msg) {
+            notices.push(msg);
+        }
+    }
+}
+
 /// Открывает кэш переводов; если не вышло — вместе с текстом уведомления (иначе каждая реплика молча уходит в платный переводчик).
 fn open_cache(path: &Path) -> (Option<Arc<TranslationCache>>, Option<String>) {
     match TranslationCache::open(path) {
@@ -2912,6 +2922,17 @@ mod tests {
         assert_eq!(c.companion_name(3.0), "");
         assert_eq!(c.session.as_ref().unwrap().name_scan, first);
         c.shutdown();
+    }
+
+    #[test]
+    fn save_errors_become_one_notice() {
+        let mut n = Vec::new();
+        report_save(&mut n, Ok(()));
+        assert!(n.is_empty());
+        for _ in 0..2 {
+            report_save(&mut n, Err(std::io::Error::other("disk full")));
+        }
+        assert_eq!(n, ["Не удалось сохранить профиль игры: disk full"]);
     }
 
     #[test]
