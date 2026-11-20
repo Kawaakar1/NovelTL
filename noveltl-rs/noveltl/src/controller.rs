@@ -2920,7 +2920,7 @@ mod tests {
         c.begin_setup(&win, Lang::Auto, "Демо");
         let pid = std::process::id();
         // «Привет, как дела?» в CP1251, прочитанное как Shift-JIS
-        let garbage = crate::winutil::tests::mojibake("ПРИВЕТ, КАК ДЕЛА? СЕГОДНЯ ОТЛИЧНАЯ ПОГОДА.", 1251);
+        let garbage = crate::winutil::tests::mojibake("Привет, как дела? Сегодня отличная погода, давай погуляем.", 1251);
         let key = c.tracker.add_text("HQ-1C*0@0:g.exe", "g", 1, 5, 2, &garbage, None);
         c.choose_hook(&key);
         for _ in 0..2 {

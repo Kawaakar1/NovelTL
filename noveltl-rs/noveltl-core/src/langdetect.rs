@@ -179,12 +179,13 @@ pub fn resolve_language(profile: Lang, text: &str) -> Option<Lang> {
     }
 }
 
-/// Похоже ли на Shift-JIS-мусор от текста в другой ANSI-кодировке (1251/949/936): много полуширинной катаканы
-/// (байты 0xA1–0xDF); в настоящем японском тексте её почти нет.
+/// Похоже ли на Shift-JIS-мусор от текста в другой ANSI-кодировке (1251/949/936): не меньше 6 не-ASCII символов
+/// и ни одной каны (хирагана и полноширинная катакана, кроме «・»); в настоящей японской реплике кана почти всегда есть.
 pub fn looks_like_sjis_mojibake(text: &str) -> bool {
-    let non_ascii = text.chars().filter(|c| !c.is_ascii()).count();
-    let kana = text.chars().filter(|c| ('\u{FF61}'..='\u{FF9F}').contains(c)).count();
-    non_ascii >= 4 && kana as f32 / non_ascii as f32 > 0.25
+    let is_kana = |c: char| ('\u{3040}'..='\u{30FF}').contains(&c) && c != '\u{30FB}';
+    // полуширинная катакана — след байтов 0xA1–0xDF; без неё строка из одних иероглифов (заголовок главы) — тоже японский
+    let has_halfwidth = text.chars().any(|c| ('\u{FF61}'..='\u{FF9F}').contains(&c));
+    text.chars().filter(|c| !c.is_ascii()).count() >= 6 && has_halfwidth && !text.chars().any(is_kana)
 }
 
 #[cfg(test)]
@@ -250,7 +251,9 @@ mod tests {
     fn test_sjis_mojibake() {
         assert!(!looks_like_sjis_mojibake("「おはよう、今日はいい天気ですね。」"));
         assert!(!looks_like_sjis_mojibake("Hello"));
+        assert!(!looks_like_sjis_mojibake("第一章"), "слишком короткая строка");
+        assert!(!looks_like_sjis_mojibake("ありがとう、また明日会いましょう"));
+        assert!(!looks_like_sjis_mojibake("ＡＢＣ・・・ほんとに？"));
         assert!(looks_like_sjis_mojibake("ﾇｾﾓｷﾊﾟｯｱ"));
-        assert!(!looks_like_sjis_mojibake("ﾇｾﾓ"), "слишком короткая строка");
     }
 }

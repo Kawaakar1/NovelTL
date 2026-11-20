@@ -558,14 +558,16 @@ pub fn open_url(target: &str) {
 
 /// Байты в кодовой странице `cp` → текст; None, если байты для неё недопустимы.
 fn decode_cp(cp: u32, bytes: &[u8]) -> Option<String> {
-    use windows::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
+    use windows::Win32::Globalization::{MultiByteToWideChar, MULTI_BYTE_TO_WIDE_CHAR_FLAGS};
+    // без MB_ERR_INVALID_CHARS: мусор от LunaHook уже потерял байты («・»), строгий разбор отвергал бы почти всё
+    let flags = MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0);
     unsafe {
-        let n = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, bytes, None);
+        let n = MultiByteToWideChar(cp, flags, bytes, None);
         if n <= 0 {
             return None;
         }
         let mut buf = vec![0u16; n as usize];
-        let n = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, bytes, Some(&mut buf));
+        let n = MultiByteToWideChar(cp, flags, bytes, Some(&mut buf));
         (n > 0).then(|| String::from_utf16_lossy(&buf[..n as usize]))
     }
 }
@@ -585,23 +587,21 @@ pub fn guess_codepage(mojibake: &str) -> Option<Lang> {
         buf.truncate(n.max(0) as usize);
         buf
     };
-    // доля не-ASCII символов в ожидаемом письме; 1251 «проглатывает» почти любые байты, поэтому берём лучшего, а не первого
-    let share = |text: &str, range: std::ops::RangeInclusive<char>| {
-        let non_ascii = text.chars().filter(|c| !c.is_ascii() && !c.is_whitespace()).count();
-        let hit = text.chars().filter(|c| range.contains(c)).count();
-        if non_ascii >= 2 { hit as f32 / non_ascii as f32 } else { 0.0 }
+    // доля нужного письма среди всех не-ASCII символов (без пробелов, «・» и U+FFFD): чужие символы и знаки — признак неверной кодовой страницы
+    let share = |text: &str, ok: fn(char) -> bool| {
+        let all: Vec<char> = text.chars().filter(|c| !c.is_ascii() && !c.is_whitespace() && *c != '\u{30FB}' && *c != '\u{FFFD}').collect();
+        if all.len() >= 2 { all.iter().filter(|c| ok(**c)).count() as f32 / all.len() as f32 } else { 0.0 }
     };
-    let tries = [(Lang::Ru, '\u{0400}'..='\u{04FF}'), (Lang::Ko, '\u{AC00}'..='\u{D7A3}'), (Lang::Zh, '\u{4E00}'..='\u{9FFF}')];
-    let mut best = (0.9_f32, None);
-    for (lang, range) in tries {
-        let Some(text) = decode_cp(lang.codepage(), &bytes) else { continue };
-        let r = share(&text, range);
-        // при равенстве остаётся более ранний (1251, 949, 936)
-        if r >= best.0 && (best.1.is_none() || r > best.0) {
-            best = (r, Some(lang));
-        }
-    }
-    best.1
+    let tries: [(Lang, fn(char) -> bool); 3] = [
+        (Lang::Ru, |c| ('\u{0400}'..='\u{04FF}').contains(&c)),
+        (Lang::Ko, |c| ('\u{AC00}'..='\u{D7A3}').contains(&c)),
+        // иероглифы и китайская пунктуация
+        (Lang::Zh, |c| ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3000}'..='\u{303F}').contains(&c) || ('\u{FF00}'..='\u{FFEF}').contains(&c)),
+    ];
+    let shares = tries.map(|(lang, ok)| decode_cp(lang.codepage(), &bytes).map_or(0.0, |t| share(&t, ok)));
+    // 1251 «проглатывает» любые байты (корейский в 1251 даёт ~0.8 кириллицы), поэтому русскому нужна почти полная доля
+    let min = [0.95, 0.8, 0.6];
+    tries.into_iter().zip(shares).zip(min).find_map(|(((lang, _), s), m)| (s > m).then_some(lang))
 }
 
 #[cfg(test)]
@@ -674,24 +674,65 @@ pub(crate) mod tests {
     #[test]
     fn guesses_language_from_sjis_mojibake() {
         use noveltl_core::langdetect::looks_like_sjis_mojibake as looks;
-        let ru = mojibake("Привет, как дела? Сегодня отличная погода.", 1251);
-        assert_eq!(guess_codepage(&ru), Some(Lang::Ru), "{ru}");
-        let ko = mojibake("안녕하세요, 오늘 날씨가 정말 좋네요.", 949);
-        assert!(looks(&ko), "{ko}");
-        assert_eq!(guess_codepage(&ko), Some(Lang::Ko), "{ko}");
-        let zh = mojibake("你好，今天天气真好，我们一起去吧。", 936);
-        assert!(looks(&zh), "{zh}");
+        let samples: [(Lang, u32, &[&str]); 3] = [
+            (
+                Lang::Ru,
+                1251,
+                &[
+                    "Привет, как дела? Сегодня отличная погода, давай погуляем после уроков.",
+                    "Я не знаю, что тебе ответить. Может быть, ты просто не хочешь меня слушать?",
+                    "Хорошо, я пойду с тобой, но только если ты расскажешь мне всю правду.",
+                    "Она тихо закрыла дверь и пошла по тёмному коридору, не оглядываясь назад.",
+                ],
+            ),
+            (
+                Lang::Ko,
+                949,
+                &[
+                    "안녕하세요, 오늘 날씨가 정말 좋네요. 같이 산책하러 가실래요?",
+                    "저는 아직 잘 모르겠어요. 그냥 제 말을 듣고 싶지 않으신 건가요?",
+                    "알겠어요, 같이 갈게요. 하지만 모든 사실을 솔직하게 말해 주셔야 해요.",
+                    "그녀는 조용히 문을 닫고 어두운 복도를 따라 뒤도 돌아보지 않고 걸어갔다.",
+                ],
+            ),
+            (
+                Lang::Zh,
+                936,
+                &[
+                    "你好，今天天气真好，我们放学后一起去散步吧。我已经等了你很久。",
+                    "我不知道该怎么回答你，也许你根本不想听我说话。难道不是吗？",
+                    "好吧，我跟你一起去，但是你必须把所有的真相都告诉我。",
+                    "她轻轻地关上了门，沿着黑暗的走廊走了下去，没有回头。",
+                ],
+            ),
+        ];
+        for (lang, cp, lines) in samples {
+            let mut all = String::new();
+            for text in lines {
+                let m = mojibake(text, cp);
+                assert!(looks(&m), "{lang:?}: гейт не пропустил: {m}");
+                assert_eq!(guess_codepage(&m), Some(lang), "{lang:?} по одной реплике: {m}");
+                all.push_str(&m);
+            }
+            assert_eq!(guess_codepage(&all), Some(lang), "{lang:?} по склейке");
+        }
     }
 
-    /// Реальные провалы эвристики (см. отчёт): строчная кириллица в Shift-JIS — ведущие байты, катаканы почти нет;
-    /// у китайского SJIS-декодер теряет байты («・»), и 936 не декодируется без ошибок.
+    /// Японские реплики не проходят гейт, поэтому язык «Авто» на них никогда не меняется.
     #[test]
-    #[ignore = "известные пробелы эвристики"]
-    fn known_gaps_of_mojibake_heuristic() {
-        let ru = mojibake("Привет, как дела? Сегодня отличная погода.", 1251);
-        assert!(noveltl_core::langdetect::looks_like_sjis_mojibake(&ru), "{ru}");
-        let zh = mojibake("你好，今天天气真好，我们一起去吧。", 936);
-        assert_eq!(guess_codepage(&zh), Some(Lang::Zh), "{zh}");
+    fn japanese_lines_never_reach_guess() {
+        use noveltl_core::langdetect::looks_like_sjis_mojibake as looks;
+        for line in [
+            "「おはようございます、有地さん。今日もいい天気ですね。」",
+            "そんなこと、わたしにはわからないよ……。",
+            "ＡＢＣ・・・本当に行くのですか？",
+            "「……うん。わかった。いっしょに行こう」",
+            // строки без каны (заголовки, даты) тоже не проходят гейт
+            "生徒会長選挙立候補者演説",
+            "四月一日　入学式当日朝",
+        ] {
+            assert!(!looks(line), "{line}");
+        }
     }
 }
 
