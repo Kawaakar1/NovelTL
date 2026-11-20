@@ -138,6 +138,11 @@ pub struct TranslateResult {
 
 // ---------- DeepL ----------
 
+/// Потолок текста в одном запросе DeepL (лимит API — 128 КиБ; размер считаем после URL-кодирования, он не меньше исходного).
+const DEEPL_MAX_CHARS: usize = 100_000;
+/// То же для Microsoft Translator (лимит API — 50 000 символов).
+const MS_MAX_CHARS: usize = 50_000;
+
 pub struct DeepLTranslator {
     pub api_key: String,
     http: Arc<dyn Http>,
@@ -153,7 +158,18 @@ impl DeepLTranslator {
         format!("https://{host}/v2/translate")
     }
 
+    /// Запрос DeepL ограничен 128 КиБ: сверхдлинный текст идёт по кускам.
     pub fn translate(
+        &self,
+        text: &str,
+        src_lang: Option<Lang>,
+        target: Lang,
+        context: &str,
+    ) -> Result<String, TranslateError> {
+        translate_chunked(text, DEEPL_MAX_CHARS, target, |c| self.translate_one(c, src_lang, target, context))
+    }
+
+    fn translate_one(
         &self,
         text: &str,
         src_lang: Option<Lang>,
@@ -237,6 +253,32 @@ fn is_sentence_dot(chars: &[char], i: usize) -> bool {
     !["mr", "mrs", "ms", "dr", "st", "jr", "sr", "vs", "prof"].contains(&word.to_lowercase().as_str())
 }
 
+/// Перевод по кускам (для длинных текстов): `one` переводит один кусок, разделители возвращаются как были.
+fn translate_chunked(
+    text: &str,
+    limit: usize,
+    target: Lang,
+    mut one: impl FnMut(&str) -> Result<String, TranslateError>,
+) -> Result<String, TranslateError> {
+    if enc_len_str(text) <= limit {
+        return one(text);
+    }
+    let mut out = String::new();
+    let chunks = split_for_google(text, limit);
+    let last = chunks.len().saturating_sub(1);
+    for (i, (chunk, sep)) in chunks.into_iter().enumerate() {
+        if chunk.trim().is_empty() {
+            out.push_str(&chunk);
+        } else {
+            out.push_str(&one(&chunk)?);
+        }
+        // куски одной строки без разделителя: в нецелевом CJK-языке нужен пробел («…он.Затем»)
+        let sep = if sep.is_empty() && i < last && !matches!(target, Lang::Ja | Lang::Zh) { " " } else { sep };
+        out.push_str(sep);
+    }
+    Ok(out)
+}
+
 /// Делит текст на куски не длиннее `limit` байт после URL-кодирования. Возвращает (кусок, разделитель после него).
 /// Режем по `\n`, слишком длинную строку — по концу предложения, в крайнем случае жёстко.
 fn split_for_google(text: &str, limit: usize) -> Vec<(String, &'static str)> {
@@ -317,23 +359,7 @@ impl GoogleTranslator {
 
     /// Длинный текст режем на куски (GET с q раздувает URL), короткий — один запрос.
     pub fn translate(&self, text: &str, src_lang: Option<Lang>, target: Lang) -> Result<String, TranslateError> {
-        if enc_len_str(text) <= GOOGLE_MAX_CHARS {
-            return self.translate_one(text, src_lang, target);
-        }
-        let mut out = String::new();
-        let chunks = split_for_google(text, GOOGLE_MAX_CHARS);
-        let last = chunks.len().saturating_sub(1);
-        for (i, (chunk, sep)) in chunks.into_iter().enumerate() {
-            if chunk.trim().is_empty() {
-                out.push_str(&chunk);
-            } else {
-                out.push_str(&self.translate_one(&chunk, src_lang, target)?);
-            }
-            // куски одной строки без разделителя: в нецелевом CJK-языке нужен пробел («…он.Затем»)
-            let sep = if sep.is_empty() && i < last && !matches!(target, Lang::Ja | Lang::Zh) { " " } else { sep };
-            out.push_str(sep);
-        }
-        Ok(out)
+        translate_chunked(text, GOOGLE_MAX_CHARS, target, |c| self.translate_one(c, src_lang, target))
     }
 
     fn translate_one(&self, text: &str, src_lang: Option<Lang>, target: Lang) -> Result<String, TranslateError> {
@@ -418,6 +444,10 @@ impl MicrosoftTranslator {
     }
 
     pub fn translate(&self, text: &str, src_lang: Option<Lang>, target: Lang) -> Result<String, TranslateError> {
+        translate_chunked(text, MS_MAX_CHARS, target, |c| self.translate_one(c, src_lang, target))
+    }
+
+    fn translate_one(&self, text: &str, src_lang: Option<Lang>, target: Lang) -> Result<String, TranslateError> {
         let mut url = format!("{}?api-version=3.0&to={}", Self::URL, ms_code(target));
         if let Some(l) = src_lang.filter(|l| *l != Lang::Auto) {
             url.push_str(&format!("&from={}", ms_code(l)));
@@ -1237,6 +1267,21 @@ mod tests {
     }
 
     #[test]
+    fn deepl_splits_huge_text() {
+        let line = "a".repeat(99);
+        let text = vec![line.as_str(); 3000].join("
+"); // ~300 КБ
+        let s = FakeHttp::new(200);
+        let mut m = TranslatorManager::new("k", None, http(&s));
+        m.set_mode("deepl");
+        let res = m.translate(&text, Some(Lang::En), "", false).unwrap();
+        let posts = s.posts();
+        assert!(posts.len() >= 3);
+        assert!(posts.iter().all(|p| p.json["text"][0].as_str().unwrap().len() <= 100_000));
+        assert_eq!(res.text.replace("D:", ""), text);
+    }
+
+    #[test]
     fn google_long_text_is_split() {
         let s = FakeHttp::new(200);
         let mut m = TranslatorManager::new("", None, http(&s));
@@ -1550,6 +1595,20 @@ mod tests {
         assert!(t.is_none());
         assert_eq!(m.status_text(), "Microsoft Translator");
         assert_eq!(m.active_engine(), "microsoft");
+    }
+
+    #[test]
+    fn microsoft_splits_huge_text() {
+        let s = Script::new(ms_ok(), no_get());
+        let mut m = TranslatorManager::new("", None, s.clone());
+        m.set_mode("microsoft");
+        m.set_microsoft("k", "");
+        let text = vec!["a".repeat(99); 700].join("
+"); // ~70 000 символов
+        m.translate(&text, Some(Lang::En), "", false).unwrap();
+        let posts = s.posts();
+        assert!(posts.len() >= 2);
+        assert!(posts.iter().all(|(_, _, b, _)| b[0]["Text"].as_str().unwrap().len() <= 50_000));
     }
 
     #[test]
