@@ -864,10 +864,13 @@ impl TranslatorManager {
                 }
             }
         }
-        if self.mode == "auto" && self.active_engine() == ENGINE_DEEPL {
+        // кэш DeepL бесплатен: читаем его и после отключения DeepL (лимит, отказ ключа)
+        if self.mode == "auto" && self.deepl.is_some() {
             if let Some(hit) = self.cached(text, ENGINE_DEEPL, src_lang, use_cache) {
                 return Ok(TranslateResult { text: hit, engine: ENGINE_DEEPL, cached: true, notice });
             }
+        }
+        if self.mode == "auto" && self.active_engine() == ENGINE_DEEPL {
             let attempt = match &self.deepl {
                 Some(d) => d.translate(text, src_lang, self.target, context),
                 None => Err(TranslateError::Failed(String::new())),
@@ -1152,6 +1155,18 @@ mod tests {
     fn denied_texts() {
         assert_eq!(TranslateError::Denied(403).to_string(), "ошибка 403: ключ не принят");
         assert_eq!(TranslateError::Denied(456).to_string(), "ошибка 456: лимит символов исчерпан");
+    }
+
+    #[test]
+    fn deepl_cache_is_read_after_deepl_disabled() {
+        let s = FakeHttp::new(200);
+        let cache = Arc::new(TranslationCache::in_memory().unwrap());
+        let mut m = TranslatorManager::new("key", Some(cache), http(&s));
+        assert!(!m.translate("テスト", Some(Lang::Ja), "", true).unwrap().cached);
+        m.deepl_disabled_reason = "лимит".to_string();
+        let res = m.translate("テスト", Some(Lang::Ja), "", true).unwrap();
+        assert!(res.cached && res.engine == "deepl", "оплаченный перевод берётся из кэша DeepL");
+        assert!(s.gets().is_empty());
     }
 
     #[test]
