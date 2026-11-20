@@ -187,6 +187,18 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
+/// Смещение местного времени от UTC по времени суток (секунды), в пределах от -11 до +13 часов.
+fn offset_from_local_sod(local_sod: i64, utc_sod: i64) -> i64 {
+    (local_sod - utc_sod + 11 * 3600).rem_euclid(86400) - 11 * 3600
+}
+
+fn local_offset_secs(now: u64) -> i64 {
+    let hms = crate::controller::local_time_text("%H:%M:%S");
+    let mut p = hms.split(':').map(|x| x.parse::<i64>().unwrap_or(0));
+    let local_sod = p.next().unwrap_or(0) * 3600 + p.next().unwrap_or(0) * 60 + p.next().unwrap_or(0);
+    offset_from_local_sod(local_sod, (now % 86400) as i64)
+}
+
 /// Открыта ли страница игры после этого кадра. Сессия появилась, сохранилась или закрылась — страница
 /// сохранённой игры, иначе библиотека; пока ничего не менялось, выбор пользователя («‹ Библиотека») не трогаем.
 fn next_open_game(open: bool, changed: bool, saved: bool) -> bool {
@@ -214,11 +226,13 @@ fn merge_notice(current: Option<&str>, new: &str) -> String {
 }
 
 /// «Играли: вчера» и подобное.
-fn played_text(last: u64, now: u64) -> String {
+fn played_text(last: u64, now: u64, offset: i64) -> String {
     let when = if last == 0 {
         t("ещё не запускали").to_string()
     } else {
-        match now.saturating_sub(last) / 86400 {
+        // по календарному дню местного времени, как статистика и календарь
+        let day = |s: u64| (s as i64 + offset).div_euclid(86400);
+        match (day(now) - day(last)).max(0) {
             0 => t("сегодня").to_string(),
             1 => t("вчера").to_string(),
             n => tf("{} дн. назад", &[&n]),
@@ -1112,7 +1126,7 @@ impl MainWindow {
         let pt = ui.painter();
         let title = pt.layout_job(one_line_job(pr.name.clone(), FontId::new(14.0, theme::bold_family()), p.text, cw));
         pt.galley(egui::pos2(rect.left(), rect.top() + ch + 8.0), title, p.text);
-        let played = pt.layout_job(one_line_job(played_text(pr.last_played, now), FontId::proportional(11.5), p.dim, cw));
+        let played = pt.layout_job(one_line_job(played_text(pr.last_played, now, local_offset_secs(now)), FontId::proportional(11.5), p.dim, cw));
         pt.galley(egui::pos2(rect.left(), rect.top() + ch + 28.0), played, p.dim);
         let lines = pt.layout_job(one_line_job(tf("Реплик: {}", &[&thousands(pr.stats.lines)]), FontId::proportional(11.5), p.dim, cw));
         pt.galley(egui::pos2(rect.left(), rect.top() + ch + 44.0), lines, p.dim);
@@ -1850,6 +1864,20 @@ mod tests {
         assert_eq!(merge_notice(Some("a\nb"), "b"), "a\nb", "повтор не дублируется");
         let long = merge_notice(Some("1\n2\n3\n4"), "5");
         assert_eq!(long, "2\n3\n4\n5", "старые вытесняются, плашка не растёт бесконечно");
+    }
+
+    #[test]
+    fn played_text_counts_calendar_days() {
+        // UTC+3: 23:00 по местному вчера и 01:00 сегодня — два часа разницы, но «вчера»
+        let off = 3 * 3600;
+        let now = 20 * 86400 + 1 * 3600 - off as u64;
+        let last = now - 2 * 3600;
+        assert_eq!(played_text(last, now, off), tf("Играли: {}", &[&t("вчера")]));
+        assert_eq!(played_text(now - 600, now, off), tf("Играли: {}", &[&t("сегодня")]));
+        // смещение берётся из разницы местного и всемирного времени суток
+        assert_eq!(offset_from_local_sod(12 * 3600, 9 * 3600), 3 * 3600);
+        assert_eq!(offset_from_local_sod(1 * 3600, 23 * 3600), 2 * 3600);
+        assert_eq!(offset_from_local_sod(23 * 3600, 2 * 3600), -3 * 3600);
     }
 
     #[test]
