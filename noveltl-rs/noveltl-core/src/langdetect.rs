@@ -179,6 +179,14 @@ pub fn resolve_language(profile: Lang, text: &str) -> Option<Lang> {
     }
 }
 
+/// Похоже ли на Shift-JIS-мусор от текста в другой ANSI-кодировке (1251/949/936): много полуширинной катаканы
+/// (байты 0xA1–0xDF); в настоящем японском тексте её почти нет.
+pub fn looks_like_sjis_mojibake(text: &str) -> bool {
+    let non_ascii = text.chars().filter(|c| !c.is_ascii()).count();
+    let kana = text.chars().filter(|c| ('\u{FF61}'..='\u{FF9F}').contains(c)).count();
+    non_ascii >= 4 && kana as f32 / non_ascii as f32 > 0.25
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +244,13 @@ mod tests {
         assert_eq!(Lang::Auto.title(), "Авто");
         assert_eq!(serde_json::to_string(&Lang::Auto).unwrap(), "\"auto\"");
         assert_eq!(serde_json::from_str::<Lang>("\"zh\"").unwrap(), Lang::Zh);
+    }
+
+    #[test]
+    fn test_sjis_mojibake() {
+        assert!(!looks_like_sjis_mojibake("「おはよう、今日はいい天気ですね。」"));
+        assert!(!looks_like_sjis_mojibake("Hello"));
+        assert!(looks_like_sjis_mojibake("ﾇｾﾓｷﾊﾟｯｱ"));
+        assert!(!looks_like_sjis_mojibake("ﾇｾﾓ"), "слишком короткая строка");
     }
 }

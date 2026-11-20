@@ -412,6 +412,11 @@ pub struct Session {
     /// на сколько реплик назад от последней показана плашка (0 — последняя)
     pub back: usize,
     pub started: f64,
+    /// сколько реплик подряд выбранного потока похожи на Shift-JIS-мусор (язык «Авто»)
+    pub mojibake_run: u8,
+    pub mojibake_buf: String,
+    /// язык «Авто» уже проверен на мусор — повторно не дёргаем игру
+    pub lang_checked: bool,
 }
 
 /// Сколько реплик хранит история диалога.
@@ -1540,6 +1545,9 @@ impl Controller {
             history: VecDeque::new(),
             back: 0,
             started: now_secs(),
+            mojibake_run: 0,
+            mojibake_buf: String::new(),
+            lang_checked: false,
         });
         self.overlay.send(Cmd::Clear);
         self.overlay.send(Cmd::Target(win.hwnd, Some(frac)));
@@ -1730,6 +1738,9 @@ impl Controller {
         self.threads_dirty = true;
         let Some(s) = self.session.as_ref() else { return };
         if s.setup {
+            if s.selected.as_ref() == Some(&key) {
+                self.check_auto_lang(&text);
+            }
             return;
         }
         if s.selected.is_none() || s.fallback {
@@ -1737,9 +1748,40 @@ impl Controller {
         }
         let selected = self.session.as_ref().and_then(|s| s.selected.clone());
         if selected.as_ref() == Some(&key) {
+            self.check_auto_lang(&text);
             let t_line = self.tracker.get(&key).and_then(|st| st.lines.back().map(|l| l.0)).unwrap_or_else(now_secs);
             self.pending.push((Instant::now() + LINE_DELAY, text, t_line));
         }
+    }
+
+    /// Язык «Авто» читает текст как Shift-JIS; корейская/китайская/русская ANSI-игра приходит мусором.
+    /// Три мусорные реплики подряд выбранного потока — пробуем угадать язык и переключить кодировку (один раз за сессию).
+    fn check_auto_lang(&mut self, text: &str) {
+        #[cfg(windows)]
+        {
+            let Some(s) = self.session.as_mut() else { return };
+            // сохранённый профиль в мастере переподключать нельзя: end_session оборвал бы мастер
+            if s.profile.lang != Lang::Auto || s.lang_checked || (s.setup && s.saved) {
+                return;
+            }
+            if !noveltl_core::langdetect::looks_like_sjis_mojibake(text) {
+                s.mojibake_run = 0;
+                s.mojibake_buf.clear();
+                return;
+            }
+            s.mojibake_run += 1;
+            s.mojibake_buf.push_str(text);
+            if s.mojibake_run < 3 {
+                return;
+            }
+            s.lang_checked = true;
+            let Some(lang) = winutil::guess_codepage(&s.mojibake_buf) else { return };
+            let id = s.profile.id.clone();
+            self.notices.push(tf("Похоже, игра на языке «{}» — переключаю кодировку.", &[&lang.title_in_text()]));
+            self.set_profile_lang(&id, lang);
+        }
+        #[cfg(not(windows))]
+        let _ = text;
     }
 
     fn select_hook(&mut self) {
@@ -2862,6 +2904,34 @@ mod tests {
         let s = c.session.as_ref().unwrap();
         assert!(!s.fallback);
         assert_eq!(s.selected, Some(saved.key()));
+        c.shutdown();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn auto_lang_switches_after_three_mojibake_lines() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        set_data_dir_override(std::env::temp_dir().join(format!("noveltl_ctl3_{}_{}", std::process::id(), nanos)));
+        let waker: Waker = Arc::new(|| {});
+        let (tx, rx) = channel();
+        let src = DemoSource::new(tx, waker.clone());
+        let mut c = Controller::new(Box::new(src), rx, true, 0, waker);
+        let win = WindowInfo { hwnd: 0, pid: std::process::id(), title: DEMO_TITLE.to_string(), exe_path: String::new() };
+        c.begin_setup(&win, Lang::Auto, "Демо");
+        let pid = std::process::id();
+        // «Привет, как дела?» в CP1251, прочитанное как Shift-JIS
+        let garbage = crate::winutil::tests::mojibake("ПРИВЕТ, КАК ДЕЛА? СЕГОДНЯ ОТЛИЧНАЯ ПОГОДА.", 1251);
+        let key = c.tracker.add_text("HQ-1C*0@0:g.exe", "g", 1, 5, 2, &garbage, None);
+        c.choose_hook(&key);
+        for _ in 0..2 {
+            c.on_text("HQ-1C*0@0:g.exe", "g", pid, 1, 5, 2, garbage.clone());
+        }
+        assert_eq!(c.session.as_ref().unwrap().profile.lang, Lang::Auto, "двух реплик мало");
+        c.on_text("HQ-1C*0@0:g.exe", "g", pid, 1, 5, 2, garbage.clone());
+        let s = c.session.as_ref().unwrap();
+        assert_eq!(s.profile.lang, Lang::Ru);
+        assert!(s.lang_checked);
+        assert!(c.notices.iter().any(|n| n.contains("переключаю кодировку")), "{:?}", c.notices);
         c.shutdown();
     }
 

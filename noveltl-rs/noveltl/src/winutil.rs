@@ -2,11 +2,12 @@
 #![allow(dead_code)]
 
 use noveltl_core::i18n::{t, tf};
+use noveltl_core::langdetect::Lang;
 use std::os::windows::process::CommandExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use windows::core::{w, PCWSTR};
+use windows::core::{w, PCSTR, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::NetworkManagement::IpHelper::{
@@ -555,8 +556,56 @@ pub fn open_url(target: &str) {
     let _ = Command::new("explorer.exe").arg(target).spawn();
 }
 
+/// Байты в кодовой странице `cp` → текст; None, если байты для неё недопустимы.
+fn decode_cp(cp: u32, bytes: &[u8]) -> Option<String> {
+    use windows::Win32::Globalization::{MultiByteToWideChar, MB_ERR_INVALID_CHARS};
+    unsafe {
+        let n = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, bytes, None);
+        if n <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u16; n as usize];
+        let n = MultiByteToWideChar(cp, MB_ERR_INVALID_CHARS, bytes, Some(&mut buf));
+        (n > 0).then(|| String::from_utf16_lossy(&buf[..n as usize]))
+    }
+}
+
+/// Мусор, который LunaHook получил из Shift-JIS-декодирования чужого ANSI-текста: какой это на самом деле язык.
+/// Проверяем по очереди 1251, 949, 936; Some — только если почти весь не-ASCII результат в нужном письме.
+pub fn guess_codepage(mojibake: &str) -> Option<Lang> {
+    use windows::Win32::Globalization::WideCharToMultiByte;
+    let wide: Vec<u16> = mojibake.encode_utf16().collect();
+    let bytes = unsafe {
+        let n = WideCharToMultiByte(932, 0, &wide, None, PCSTR::null(), None);
+        if n <= 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; n as usize];
+        let n = WideCharToMultiByte(932, 0, &wide, Some(&mut buf), PCSTR::null(), None);
+        buf.truncate(n.max(0) as usize);
+        buf
+    };
+    // доля не-ASCII символов в ожидаемом письме; 1251 «проглатывает» почти любые байты, поэтому берём лучшего, а не первого
+    let share = |text: &str, range: std::ops::RangeInclusive<char>| {
+        let non_ascii = text.chars().filter(|c| !c.is_ascii() && !c.is_whitespace()).count();
+        let hit = text.chars().filter(|c| range.contains(c)).count();
+        if non_ascii >= 2 { hit as f32 / non_ascii as f32 } else { 0.0 }
+    };
+    let tries = [(Lang::Ru, '\u{0400}'..='\u{04FF}'), (Lang::Ko, '\u{AC00}'..='\u{D7A3}'), (Lang::Zh, '\u{4E00}'..='\u{9FFF}')];
+    let mut best = (0.9_f32, None);
+    for (lang, range) in tries {
+        let Some(text) = decode_cp(lang.codepage(), &bytes) else { continue };
+        let r = share(&text, range);
+        // при равенстве остаётся более ранний (1251, 949, 936)
+        if r >= best.0 && (best.1.is_none() || r > best.0) {
+            best = (r, Some(lang));
+        }
+    }
+    best.1
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -605,6 +654,44 @@ mod tests {
     #[test]
     fn run_hidden_exit_code() {
         assert_eq!(run_hidden("cmd", &["/c", "exit", "3"], 10), 3);
+    }
+
+    /// Строка → байты в `cp` → декодирование как Shift-JIS (то, что делает LunaHook при неверной кодовой странице).
+    pub(crate) fn mojibake(text: &str, cp: u32) -> String {
+        use windows::Win32::Globalization::{MultiByteToWideChar, WideCharToMultiByte, MULTI_BYTE_TO_WIDE_CHAR_FLAGS};
+        let wide: Vec<u16> = text.encode_utf16().collect();
+        unsafe {
+            let n = WideCharToMultiByte(cp, 0, &wide, None, PCSTR::null(), None);
+            let mut b = vec![0u8; n as usize];
+            WideCharToMultiByte(cp, 0, &wide, Some(&mut b), PCSTR::null(), None);
+            let n = MultiByteToWideChar(932, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), &b, None);
+            let mut w = vec![0u16; n as usize];
+            MultiByteToWideChar(932, MULTI_BYTE_TO_WIDE_CHAR_FLAGS(0), &b, Some(&mut w));
+            String::from_utf16_lossy(&w)
+        }
+    }
+
+    #[test]
+    fn guesses_language_from_sjis_mojibake() {
+        use noveltl_core::langdetect::looks_like_sjis_mojibake as looks;
+        let ru = mojibake("Привет, как дела? Сегодня отличная погода.", 1251);
+        assert_eq!(guess_codepage(&ru), Some(Lang::Ru), "{ru}");
+        let ko = mojibake("안녕하세요, 오늘 날씨가 정말 좋네요.", 949);
+        assert!(looks(&ko), "{ko}");
+        assert_eq!(guess_codepage(&ko), Some(Lang::Ko), "{ko}");
+        let zh = mojibake("你好，今天天气真好，我们一起去吧。", 936);
+        assert!(looks(&zh), "{zh}");
+    }
+
+    /// Реальные провалы эвристики (см. отчёт): строчная кириллица в Shift-JIS — ведущие байты, катаканы почти нет;
+    /// у китайского SJIS-декодер теряет байты («・»), и 936 не декодируется без ошибок.
+    #[test]
+    #[ignore = "известные пробелы эвристики"]
+    fn known_gaps_of_mojibake_heuristic() {
+        let ru = mojibake("Привет, как дела? Сегодня отличная погода.", 1251);
+        assert!(noveltl_core::langdetect::looks_like_sjis_mojibake(&ru), "{ru}");
+        let zh = mojibake("你好，今天天气真好，我们一起去吧。", 936);
+        assert_eq!(guess_codepage(&zh), Some(Lang::Zh), "{zh}");
     }
 }
 
