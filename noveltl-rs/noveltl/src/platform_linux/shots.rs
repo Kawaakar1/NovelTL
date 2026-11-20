@@ -11,6 +11,11 @@ use crate::ui::settings::SettingsWindow;
 use crate::ui::wizard::Wizard;
 use crate::ui::{Shared, Windows};
 
+/// Снимков на Linux нет: запрошенный `--shots` — это сбой.
+pub fn failed() -> bool {
+    true
+}
+
 pub struct Shots {
     started: bool,
 }

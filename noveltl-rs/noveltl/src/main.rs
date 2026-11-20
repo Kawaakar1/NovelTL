@@ -91,17 +91,30 @@ struct Args {
     theme: Option<String>,
     /// язык интерфейса для этого запуска (проверки и снимки): ru / en / ja / zh / ko
     lang: Option<noveltl_core::i18n::UiLang>,
+    /// неверные аргументы: сообщение в stderr и код выхода 2
+    error: Option<String>,
 }
 
 fn parse_args() -> Args {
-    let mut a = Args { demo: false, shots: None, only: None, selfcheck: false, theme: None, lang: None };
-    let mut it = std::env::args().skip(1);
+    parse_args_from(std::env::args().skip(1))
+}
+
+fn parse_args_from(args: impl Iterator<Item = String>) -> Args {
+    let mut a = Args { demo: false, shots: None, only: None, selfcheck: false, theme: None, lang: None, error: None };
+    let mut it = args.peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--demo" => a.demo = true,
             "--selfcheck" => a.selfcheck = true,
-            "--shots" => a.shots = it.next().map(PathBuf::from),
-            "--only" => a.only = it.next().map(|v| parse_only(&v)),
+            // следующий ключ не считаем значением: иначе `--shots --only X` создаёт папку `--only`
+            "--shots" => match it.next_if(|v| !v.starts_with("--")) {
+                Some(v) => a.shots = Some(PathBuf::from(v)),
+                None => a.error = Some("--shots: не указана папка".into()),
+            },
+            "--only" => match it.next_if(|v| !v.starts_with("--")) {
+                Some(v) => a.only = Some(parse_only(&v)),
+                None => a.error = Some("--only: не указан список кадров".into()),
+            },
             "--theme" => a.theme = it.next().filter(|t| matches!(t.as_str(), "system" | "dark" | "light")),
             "--lang" => a.lang = it.next().and_then(|l| serde_json::from_value(serde_json::Value::String(l)).ok()),
             other => {
@@ -114,6 +127,10 @@ fn parse_args() -> Args {
                 }
             }
         }
+    }
+    // пустой список — не «ноль кадров с успехом»
+    if a.only.as_ref().is_some_and(|o| o.is_empty()) {
+        a.error = Some("--only: список кадров пуст".into());
     }
     a
 }
@@ -293,6 +310,10 @@ fn main() {
         std::env::remove_var("WAYLAND_DISPLAY");
     }
     let args = parse_args();
+    if let Some(e) = &args.error {
+        eprintln!("{e}");
+        std::process::exit(2);
+    }
     let demo = args.demo || args.shots.is_some();
 
     if demo {
@@ -395,10 +416,29 @@ fn main() {
     if let Err(e) = result {
         message_box(&tf("Не удалось запустить окно: {}", &[&e]));
     }
+    // съёмка кадров: скрипт сборки должен видеть сбой
+    if args.shots.is_some() && ui::shots::failed() {
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    fn parse(a: &[&str]) -> super::Args {
+        super::parse_args_from(a.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn shots_args_errors() {
+        assert!(parse(&["--shots", "out", "--only", "01_main_empty"]).error.is_none());
+        assert!(parse(&["--shots", "out", "--only", ""]).error.is_some());
+        assert!(parse(&["--shots", "out", "--only"]).error.is_some());
+        // `--shots` не съедает `--only` как имя папки
+        let a = parse(&["--shots", "--only", "01_main_empty"]);
+        assert!(a.error.is_some() && a.shots.is_none());
+        assert!(parse(&["--shots", "out", "--only="]).error.is_some());
+    }
+
     #[test]
     fn parse_only_splits_and_cleans() {
         let got = super::parse_only(" 01_main_library.png, 08_overlay_in_game ;;,16_settings_general ");

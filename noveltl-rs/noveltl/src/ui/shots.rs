@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -278,6 +278,13 @@ const SETTINGS_SHOTS: [&str; 10] = [
     "12b_settings_plate_game", "18_settings_local_ai",
 ];
 
+/// Был сбой или не снят ни один кадр: `main` вернёт ненулевой код выхода.
+static FAILED: AtomicBool = AtomicBool::new(false);
+
+pub fn failed() -> bool {
+    FAILED.load(Ordering::SeqCst)
+}
+
 pub struct Shots {
     dir: PathBuf,
     /// `--only`: какие кадры снимать (None — все)
@@ -292,11 +299,16 @@ pub struct Shots {
     log: Vec<String>,
     /// id игры для снимков библиотеки
     lib_id: Option<String>,
+    /// сколько кадров сохранено
+    saved: u32,
 }
 
 impl Shots {
     pub fn new(dir: PathBuf, only: Option<HashSet<String>>) -> Shots {
-        let _ = std::fs::create_dir_all(&dir);
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            eprintln!("--shots: не удалось создать папку {}: {e}", dir.display());
+            FAILED.store(true, Ordering::SeqCst);
+        }
         let now = Instant::now();
         Shots {
             dir,
@@ -310,6 +322,7 @@ impl Shots {
             fronted: false,
             log: Vec::new(),
             lib_id: None,
+            saved: 0,
         }
     }
 
@@ -366,21 +379,36 @@ impl Shots {
         }
         // снимается кусок экрана — если окно игры чем-то закрыто, в снимок попадут чужие окна
         if !game_window_visible(hwnd) {
-            self.note(format!("окно игры закрыто другим окном — {name} не сохранён"));
+            self.fail_note(format!("окно игры закрыто другим окном — {name} не сохранён"));
             return;
         }
         match winutil::client_rect_on_screen(hwnd)
             .and_then(|(x, y, w, h)| capture_screen_region(x, y, w, h).map(|b| (w, h, b)))
         {
             Some((w, h, buf)) => match save_png(&self.dir.join(name), w as u32, h as u32, &buf) {
-                Ok(()) => self.note(format!("сохранён {name}")),
-                Err(e) => self.note(format!("ошибка {name}: {e}")),
+                Ok(()) => {
+                    self.saved += 1;
+                    self.note(format!("сохранён {name}"))
+                }
+                Err(e) => self.fail_note(format!("ошибка {name}: {e}")),
             },
-            None => self.note(format!("не удалось снять экран с игрой ({name})")),
+            None => self.fail_note(format!("не удалось снять экран с игрой ({name})")),
         }
     }
 
+    /// Запись о сбое: итоговый код выхода будет ненулевым.
+    fn fail_note(&mut self, text: impl Into<String>) {
+        FAILED.store(true, Ordering::SeqCst);
+        self.note(text);
+    }
+
+    /// Прерывание сценария из-за сбоя.
     fn finish(&mut self, shared: &Shared, why: &str) {
+        FAILED.store(true, Ordering::SeqCst);
+        self.end(shared, why);
+    }
+
+    fn end(&mut self, shared: &Shared, why: &str) {
         self.note(why);
         shared.quit.store(true, Ordering::SeqCst);
         shared.ctx.request_repaint();
@@ -430,8 +458,11 @@ impl Shots {
         for img in shots {
             if let Some(name) = self.awaiting.take() {
                 match save_color_image(&self.dir.join(&name), &img) {
-                    Ok(()) => self.note(format!("сохранён {name}")),
-                    Err(e) => self.note(format!("ошибка {name}: {e}")),
+                    Ok(()) => {
+                        self.saved += 1;
+                        self.note(format!("сохранён {name}"))
+                    }
+                    Err(e) => self.fail_note(format!("ошибка {name}: {e}")),
                 }
                 let next = self.after;
                 self.go(next);
@@ -882,8 +913,23 @@ impl Shots {
                     self.request(ctx, "01b_launch_settings.png", Stage::Finish);
                 }
             }
-            Stage::Finish => self.finish(shared, "готово"),
+            Stage::Finish if self.saved == 0 => self.finish(shared, "не снято ни одного кадра"),
+            Stage::Finish => self.end(shared, "готово"),
             Stage::Done => {}
         }
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unusable_folder_marks_failure() {
+        assert!(!failed());
+        let file = std::env::temp_dir().join(format!("noveltl_shots_file_{}", std::process::id()));
+        std::fs::write(&file, b"x").unwrap();
+        let _ = Shots::new(file.join("out"), None);
+        assert!(failed());
+        let _ = std::fs::remove_file(&file);
     }
 }
