@@ -55,6 +55,7 @@ pub(crate) const ROWS: &[Row] = &[
     ("Microsoft недоступен: ключ не задан (используется Google)", ["Microsoft unavailable: no key set (using Google)", "Microsoft は利用できません：キーが未設定です（Google を使用中）", "Microsoft 不可用：未设置密钥（正在使用 Google）", "Microsoft를 사용할 수 없음: 키가 설정되지 않았습니다(Google 사용 중)"]),
     ("Microsoft недоступен: ключ не подходит (используется Google)", ["Microsoft unavailable: the key is not valid (using Google)", "Microsoft は利用できません：キーが無効です（Google を使用中）", "Microsoft 不可用：密钥无效（正在使用 Google）", "Microsoft를 사용할 수 없음: 키가 올바르지 않습니다(Google 사용 중)"]),
     ("Локальный ИИ: модель не указана (используется Google)", ["Local AI: no model specified (using Google)", "ローカルAI：モデルが未指定です（Google を使用中）", "本地AI：未指定模型（正在使用 Google）", "로컬 AI: 모델이 지정되지 않았습니다(Google 사용 중)"]),
+    ("Локальный ИИ ({}) не сработал — перевод идёт через Google", ["Local AI ({}) failed — translating via Google", "ローカルAI（{}）が失敗しました — Google で翻訳中", "本地AI（{}）失败 — 正在通过 Google 翻译", "로컬 AI({}) 실패 — Google로 번역 중"]),
     ("Локальный ИИ ({})", ["Local AI ({})", "ローカルAI（{}）", "本地AI（{}）", "로컬 AI({})"]),
     ("DeepL недоступен: ключ не задан", ["DeepL unavailable: no key set", "DeepL は利用できません：キーが未設定です", "DeepL 不可用：未设置密钥", "DeepL을 사용할 수 없음: 키가 설정되지 않았습니다"]),
     ("DeepL недоступен: {}", ["DeepL unavailable: {}", "DeepL は利用できません：{}", "DeepL 不可用：{}", "DeepL을 사용할 수 없음: {}"]),

@@ -803,6 +803,8 @@ impl TranslatorManager {
             "local_ai" => {
                 if self.local_model.is_empty() {
                     t("Локальный ИИ: модель не указана (используется Google)").to_string()
+                } else if !self.selected_failure.is_empty() {
+                    tf("Локальный ИИ ({}) не сработал — перевод идёт через Google", &[&self.local_model])
                 } else {
                     tf("Локальный ИИ ({})", &[&self.local_model])
                 }
@@ -1732,6 +1734,7 @@ mod tests {
         // после смены настроек сообщение снова покажется
         m.set_local_ai("http://localhost:11434", "m");
         assert!(!m.translate("テスト3", Some(Lang::Ja), "", true).unwrap().notice.is_empty());
+        assert_eq!(m.status_text(), "Локальный ИИ (m) не сработал — перевод идёт через Google");
     }
 
     #[test]
