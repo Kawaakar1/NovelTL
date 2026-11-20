@@ -204,8 +204,16 @@ fn worker_loop(
     idle.set_mode(&mode);
     let mut pipeline: Option<TranslationPipeline> = None;
     publish(&status, idle.status_text());
+    // команда, которую вытащили из очереди, пока решали, нужен ли второй перевод
+    let mut carry: Option<WorkerCmd> = None;
     loop {
-        let Ok(first) = rx.recv() else { return };
+        let first = match carry.take() {
+            Some(c) => c,
+            None => match rx.recv() {
+                Ok(c) => c,
+                Err(_) => return,
+            },
+        };
         let mut batch = vec![first];
         while let Ok(cmd) = rx.try_recv() {
             batch.push(cmd);
@@ -300,11 +308,18 @@ fn worker_loop(
                 let _ = tx.send(msg);
                 waker();
                 // основной перевод уже ушёл на плашку; второй — отдельным сообщением
+                // shortcut: если следующая команда уже ждёт — второй перевод устарел, пропускаем его;
+                // а пока он идёт, новая реплика всё равно ждёт (отдельной очереди для него нет)
                 if let Some(engine) = second {
-                    let alt = p.translate_alt(&name, &text, use_cache, engine);
-                    if !alt.is_empty() {
-                        let _ = tx.send(WorkerMsg::Alt { seq, alt });
-                        waker();
+                    match rx.try_recv() {
+                        Ok(c) => carry = Some(c),
+                        Err(_) => {
+                            let alt = p.translate_alt(&name, &text, use_cache, engine);
+                            if !alt.is_empty() {
+                                let _ = tx.send(WorkerMsg::Alt { seq, alt });
+                                waker();
+                            }
+                        }
                     }
                 }
                 publish(&status, p.manager.status_text());
@@ -2679,6 +2694,57 @@ mod tests {
         assert!(matches!(msg_rx.recv_timeout(Duration::from_secs(5)), Ok(WorkerMsg::Done { seq: 2, .. })));
         cmd_tx.send(WorkerCmd::Stop).unwrap();
         th.join().unwrap();
+    }
+
+    /// DeepL отвечает сразу, а при первом запросе в очередь воркера встаёт следующая реплика; Google считаем.
+    struct QueueingHttp {
+        next: Mutex<Option<(Sender<WorkerCmd>, WorkerCmd)>>,
+        google_calls: AtomicU64,
+    }
+
+    impl Http for QueueingHttp {
+        fn post_json(&self, _: &str, _: &[(&str, &str)], body: &serde_json::Value) -> Result<HttpResponse, HttpError> {
+            if let Some((tx, cmd)) = self.next.lock().unwrap().take() {
+                tx.send(cmd).unwrap();
+            }
+            let t = body["text"][0].as_str().unwrap_or("");
+            Ok(HttpResponse { status: 200, body: serde_json::json!({"translations": [{"text": format!("D:{t}")}]}).to_string() })
+        }
+        fn get(&self, _: &str, query: &[(&str, &str)]) -> Result<HttpResponse, HttpError> {
+            self.google_calls.fetch_add(1, Ordering::SeqCst);
+            let q = query.iter().find(|(k, _)| *k == "q").map_or("", |(_, v)| *v);
+            Ok(HttpResponse { status: 200, body: serde_json::json!([[[format!("G:{q}"), q, null]], null, "ja"]).to_string() })
+        }
+    }
+
+    #[test]
+    fn worker_skips_second_translation_when_next_line_is_waiting() {
+        let (cmd_tx, cmd_rx) = channel();
+        let (msg_tx, msg_rx) = channel();
+        let status = Arc::new(Mutex::new(String::new()));
+        let applied = Arc::new(AtomicU64::new(0));
+        let next = WorkerCmd::Translate { seq: 2, name: String::new(), text: "悠斗".into(), use_cache: false };
+        let q = Arc::new(QueueingHttp { next: Mutex::new(Some((cmd_tx.clone(), next))), google_calls: AtomicU64::new(0) });
+        let http: Arc<dyn Http> = q.clone();
+        let mut m = TranslatorManager::new("key", None, http.clone());
+        m.set_second("google");
+        cmd_tx.send(WorkerCmd::SetPipeline(Some(TranslationPipeline::new(m, Lang::Ja, Vec::new())))).unwrap();
+        cmd_tx.send(WorkerCmd::Translate { seq: 1, name: String::new(), text: "灯里".into(), use_cache: false }).unwrap();
+        let (st, ap) = (status.clone(), applied.clone());
+        let th = std::thread::spawn(move || {
+            worker_loop(cmd_rx, msg_tx, Arc::new(|| {}), st, ap, String::new(), Lang::Ru, "auto".into(), http)
+        });
+        let mut alts = vec![];
+        while let Ok(msg) = msg_rx.recv_timeout(Duration::from_secs(5)) {
+            if let WorkerMsg::Alt { seq, .. } = msg {
+                alts.push(seq);
+                break;
+            }
+        }
+        cmd_tx.send(WorkerCmd::Stop).unwrap();
+        th.join().unwrap();
+        assert_eq!(alts, [2], "второй перевод устаревшей реплики не нужен");
+        assert_eq!(q.google_calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]
