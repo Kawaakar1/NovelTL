@@ -1749,6 +1749,8 @@ impl MainWindow {
                             c.set_cover_file(&id, &path);
                         }
                         self.profiles_at = None;
+                    } else if let Some(why) = super::avatar::pick_unavailable() {
+                        self.show_notice(why);
                     }
                 }
                 Action::CaptureBackdrop(id) => {

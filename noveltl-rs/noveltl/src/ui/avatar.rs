@@ -1,6 +1,5 @@
 //! Аватар пользователя: выбор файла (диалог Windows), обработка через WIC и хранение в папке данных.
 
-#[cfg(windows)]
 use noveltl_core::i18n::t;
 use noveltl_core::i18n::tf;
 use std::path::{Path, PathBuf};
@@ -96,6 +95,11 @@ pub(crate) fn decode_image(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
 #[cfg(not(windows))]
 pub fn pick_image() -> Option<PathBuf> {
     None
+}
+
+/// Почему выбор картинки не сработал, если диалога нет (Linux); в Windows `None` — пользователь просто отменил.
+pub fn pick_unavailable() -> Option<&'static str> {
+    (!cfg!(windows)).then(|| t("Выбор картинки недоступен в Linux-версии."))
 }
 
 /// В Linux читаем PNG и JPEG (RGBA8); арт с VNDB сохраняется как JPEG.
@@ -245,6 +249,12 @@ pub fn cleanup(keep: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_picker_is_reported_only_without_dialog() {
+        // Linux: диалога нет, пользователю говорим об этом; Windows: None значит «отмена»
+        assert_eq!(pick_unavailable().is_some(), !cfg!(windows));
+    }
 
     /// Декодер на Linux читает JPEG, как их сохраняет загрузка арта.
     #[cfg(not(windows))]

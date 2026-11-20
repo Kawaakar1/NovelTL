@@ -1100,6 +1100,8 @@ impl SettingsWindow {
                             Ok(n) => self.d.avatar = n,
                             Err(e) => self.warn(tf("Не удалось загрузить картинку: {}", &[&e])),
                         }
+                    } else if let Some(why) = avatar::pick_unavailable() {
+                        self.warn(why);
                     }
                 }
                 if !self.d.avatar.is_empty() && button(ui, t("Убрать"), BtnKind::Normal, true, None).clicked() {
