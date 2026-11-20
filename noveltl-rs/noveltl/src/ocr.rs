@@ -269,10 +269,8 @@ mod tests {
 
     #[test]
     fn tidy_keeps_spaces_for_russian_and_korean() {
-        assert_eq!(tidy("Привет, как дела?
-Хорошо"), "Привет, как дела? Хорошо");
-        assert_eq!(tidy("안녕하세요 여러분
-반갑습니다"), "안녕하세요 여러분 반갑습니다");
+        assert_eq!(tidy("Привет, как дела?\nХорошо"), "Привет, как дела? Хорошо");
+        assert_eq!(tidy("안녕하세요 여러분\n반갑습니다"), "안녕하세요 여러분 반갑습니다");
     }
 
     #[test]
