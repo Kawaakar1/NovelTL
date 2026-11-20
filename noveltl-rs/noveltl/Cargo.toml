@@ -18,6 +18,8 @@ eframe = { version = "0.31", default-features = false, features = ["glow", "defa
 arboard = { version = "3", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# JPEG-арт (обложки, портреты VNDB); PNG и так подключён через arboard
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "x11", "wayland"] }
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 

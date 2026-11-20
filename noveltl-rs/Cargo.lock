@@ -1660,6 +1660,8 @@ dependencies = [
  "num-traits",
  "png 0.18.1",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2137,6 +2139,7 @@ dependencies = [
  "arboard",
  "eframe",
  "embed-resource",
+ "image",
  "noveltl-core",
  "png 0.17.16",
  "serde_json",

@@ -98,11 +98,16 @@ pub fn pick_image() -> Option<PathBuf> {
     None
 }
 
-/// В Linux читаем только PNG (RGBA8).
+/// В Linux читаем PNG и JPEG (RGBA8); арт с VNDB сохраняется как JPEG.
 #[cfg(not(windows))]
 pub(crate) fn decode_image(src: &Path) -> Result<(u32, u32, Vec<u8>), String> {
-    let file = std::fs::File::open(src).map_err(|e| e.to_string())?;
-    let mut dec = png::Decoder::new(std::io::BufReader::new(file));
+    let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
+    if !bytes.starts_with(b"\x89PNG") {
+        let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?.to_rgba8();
+        let (w, h) = img.dimensions();
+        return Ok((w, h, img.into_raw()));
+    }
+    let mut dec = png::Decoder::new(std::io::Cursor::new(bytes));
     dec.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = dec.read_info().map_err(|_| "PNG".to_string())?;
     let mut buf = vec![0u8; reader.output_buffer_size()];
@@ -240,6 +245,19 @@ pub fn cleanup(keep: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Декодер на Linux читает JPEG, как их сохраняет загрузка арта.
+    #[cfg(not(windows))]
+    #[test]
+    fn decodes_jpeg() {
+        let dir = std::env::temp_dir().join(format!("noveltl_jpeg_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jpg");
+        image::RgbImage::from_pixel(16, 8, image::Rgb([200, 30, 30])).save(&path).unwrap();
+        let (w, h, px) = decode_image(&path).unwrap();
+        assert_eq!((w, h, px.len()), (16, 8, 16 * 8 * 4));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn store_load_cleanup() {
