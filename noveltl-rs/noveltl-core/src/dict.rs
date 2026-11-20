@@ -56,8 +56,18 @@ fn is_kana(c: char) -> bool { matches!(c, '\u{3040}'..='\u{30ff}') }
 struct Raw { forms: Vec<String>, readings: Vec<String>, en: Vec<String>, ru: Vec<String>, common: bool }
 
 impl Dictionary {
+    /// Процесс убили между «db → .bak» и «tmp → db»: базы нет, а старая лежит в .bak — возвращаем её.
+    fn restore_bak(db: &Path) {
+        let mut bak: std::ffi::OsString = db.as_os_str().to_owned();
+        bak.push(".bak");
+        if !db.exists() && Path::new(&bak).is_file() {
+            let _ = std::fs::rename(&bak, db);
+        }
+    }
+
     /// Открыть готовую базу. Err — базы нет или она повреждена.
     pub fn open(db: &Path) -> Result<Dictionary, String> {
+        Self::restore_bak(db);
         let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(e2s)?;
         conn.query_row("SELECT 1 FROM entry LIMIT 1", [], |_| Ok(())).map_err(e2s)?;
         Ok(Dictionary { conn })
@@ -78,6 +88,7 @@ impl Dictionary {
         let mut bak: std::ffi::OsString = db.as_os_str().to_owned();
         bak.push(".bak");
         let bak = PathBuf::from(bak);
+        Self::restore_bak(db);
         let res = Self::build(xml, &tmp).and_then(|n| {
             if n == 0 { return Err(t("В скачанном файле нет словаря JMdict. Попробуйте ещё раз.").to_string()); }
             // старая база уходит в .bak и возвращается, если новая не встала на место
@@ -389,6 +400,19 @@ mod tests {
         // вместо словаря пришла html-страница: базу заменять нельзя
         assert!(Dictionary::import_xml("<html>Wi-Fi login</html>".as_bytes(), &db).is_err());
         assert!(Dictionary::open(&db).unwrap().lookup_at("猫", 0, false).is_some());
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[test]
+    fn open_restores_db_from_bak() {
+        let db = tmp("restore.db");
+        assert_eq!(Dictionary::import_xml(XML.as_bytes(), &db).unwrap(), 5);
+        let mut bak = db.as_os_str().to_owned();
+        bak.push(".bak");
+        // как после kill между двумя rename: базы нет, старая лежит в .bak
+        std::fs::rename(&db, &bak).unwrap();
+        assert!(Dictionary::open(&db).is_ok());
+        assert!(!Path::new(&bak).exists());
         let _ = std::fs::remove_file(db);
     }
 
