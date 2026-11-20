@@ -150,7 +150,7 @@ pub fn title_variants(window_title: &str) -> Vec<String> {
     // подзаголовок-обрезок короче 3 знаков («ef», «Re») находит чужие игры; полное название оставляем всегда
     let mut first = true;
     out.retain(|v| {
-        let keep = (first || norm(v).chars().count() >= 3) && seen.insert(norm(v));
+        let keep = !norm(v).is_empty() && (first || norm(v).chars().count() >= 3) && seen.insert(norm(v));
         first = false;
         keep
     });
@@ -250,6 +250,7 @@ mod tests {
         assert!(hit_matches(&hit("ef", ""), "ef"));
         assert!(title_variants("ef - a fairy tale of the two.").iter().all(|v| v.chars().count() >= 3));
         assert_eq!(title_variants("Re:LieF ～親愛なるあなたへ～"), ["Re:LieF ～親愛なるあなたへ～", "Re:LieF"]);
+        assert!(title_variants("[Steam]").is_empty());
     }
 
     #[test]
