@@ -706,6 +706,22 @@ impl TranslatorManager {
         m
     }
 
+    /// Независимая копия настроек (ключи, сеть, кэш, режим) — для второго перевода в своём потоке.
+    pub fn fork(&self) -> TranslatorManager {
+        let mut m = TranslatorManager::new(self.deepl.as_ref().map_or("", |d| &d.api_key), self.cache.clone(), self.http.clone());
+        if let Some(ms) = &self.microsoft {
+            m.set_microsoft(&ms.key, &ms.region);
+        }
+        m.set_local_ai(&self.local_url, &self.local_model);
+        m.local_http = self.local_http.clone();
+        m.target = self.target;
+        m.mode = self.mode;
+        m.second = self.second;
+        m.deepl_disabled_reason = self.deepl_disabled_reason.clone();
+        m.microsoft_denied = self.microsoft_denied;
+        m
+    }
+
     /// Язык перевода.
     pub fn set_target(&mut self, lang: Lang) {
         self.target = lang;

@@ -160,9 +160,15 @@ impl TranslationPipeline {
     /// Второй перевод реплики (мелко под основным); пусто — не выбран, не нужен или не сработал.
     /// Зовётся после `process`, когда основной перевод уже показан.
     pub fn translate_alt(&mut self, name: &str, text: &str, use_cache: bool, main_engine: &str) -> String {
+        let Some((prepared, lang, context)) = self.alt_request(name, text) else { return String::new() };
+        self.manager.translate_alt(&prepared, lang, &context, use_cache, main_engine).unwrap_or_default()
+    }
+
+    /// Что нужно второму переводу: текст после глоссария, язык оригинала и контекст; None — переводить нечего.
+    pub fn alt_request(&self, name: &str, text: &str) -> Option<(String, Option<Lang>, String)> {
         let lang = resolve_language(self.lang, text);
         if lang.is_some() && lang == Some(self.manager.target()) {
-            return String::new();
+            return None;
         }
         // текущая реплика уже в контексте — как и в `process`, её из контекста убираем
         let mut context = self.context.iter().filter(|c| c.as_str() != text).cloned().collect::<Vec<_>>().join("\n");
@@ -170,8 +176,7 @@ impl TranslationPipeline {
         if !notes.is_empty() {
             context = if context.is_empty() { notes } else { format!("{notes}\n{context}") };
         }
-        let prepared = apply_glossary(text, &self.glossary);
-        self.manager.translate_alt(&prepared, lang, &context, use_cache, main_engine).unwrap_or_default()
+        Some((apply_glossary(text, &self.glossary), lang, context))
     }
 }
 
