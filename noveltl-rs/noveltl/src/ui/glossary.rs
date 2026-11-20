@@ -43,6 +43,8 @@ pub struct GlossaryWindow {
     frames: u32,
     /// состояние строк при открытии (по нему узнаём о несохранённых правках)
     baseline: String,
+    /// почему «Сохранить» не сработало (окно остаётся открытым)
+    warn: String,
 }
 
 impl GlossaryWindow {
@@ -70,6 +72,7 @@ impl GlossaryWindow {
             closed: false,
             frames: 0,
             baseline: String::new(),
+            warn: String::new(),
         };
         for e in &profile.glossary {
             w.push_row(&e.src, &e.dst, &e.note);
@@ -172,6 +175,20 @@ impl GlossaryWindow {
                     }
                 }
                 Act::Save => {
+                    let pairs: Vec<(&str, &str)> = self.rows.iter().map(|r| (r.src.trim(), r.dst.trim())).collect();
+                    if let Some(p) = check_rows(&pairs) {
+                        self.warn = match p {
+                            Problem::Half(n) => tf(
+                                "Строка {}: заполнено только одно поле. Впишите и «В игре», и «В переводе» или очистите строку.",
+                                &[&n],
+                            ),
+                            Problem::Dup(a, b) => tf(
+                                "Строки {} и {}: одно и то же слово в «В игре». Сработает только первая — удалите лишнюю.",
+                                &[&a, &b],
+                            ),
+                        };
+                        continue;
+                    }
                     // пустые строки отбрасываются
                     let entries: Vec<GlossaryEntry> = self
                         .rows
@@ -207,6 +224,9 @@ impl GlossaryWindow {
             .show_separator_line(false)
             .frame(Frame::new().fill(p.bg).inner_margin(Margin { left: 24, right: 24, top: 6, bottom: 20 }))
             .show(ctx, |ui| {
+                if !self.warn.is_empty() {
+                    ui.label(RichText::new(&self.warn).size(13.0).color(p.warn));
+                }
                 ui.horizontal(|ui| {
                     if button(ui, t("＋ Добавить"), BtnKind::Normal, true, None).clicked() {
                         acts.push(Act::Add);
@@ -359,5 +379,47 @@ impl GlossaryWindow {
         if clicked.is_some() {
             self.selected = clicked;
         }
+    }
+}
+
+/// Что мешает сохранить глоссарий (строки уже без пробелов по краям).
+#[derive(Debug, PartialEq)]
+enum Problem {
+    /// заполнено только одно из двух полей — номер строки с 1
+    Half(usize),
+    /// одинаковое «В игре» в двух строках — их номера с 1
+    Dup(usize, usize),
+}
+
+fn check_rows(rows: &[(&str, &str)]) -> Option<Problem> {
+    if let Some(i) = rows.iter().position(|(s, d)| s.is_empty() != d.is_empty()) {
+        return Some(Problem::Half(i + 1));
+    }
+    for (j, (s, _)) in rows.iter().enumerate() {
+        if s.is_empty() {
+            continue;
+        }
+        if let Some(i) = rows[..j].iter().position(|(o, _)| o == s) {
+            return Some(Problem::Dup(i + 1, j + 1));
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn half_filled_row_is_reported() {
+        assert_eq!(check_rows(&[("a", "b"), ("芳乃", "")]), Some(Problem::Half(2)));
+        assert_eq!(check_rows(&[("", "Yoshino")]), Some(Problem::Half(1)));
+        assert_eq!(check_rows(&[("a", "b"), ("", "")]), None);
+    }
+
+    #[test]
+    fn duplicate_src_is_reported() {
+        assert_eq!(check_rows(&[("芳乃", "Yoshino"), ("x", "y"), ("芳乃", "Yoshi")]), Some(Problem::Dup(1, 3)));
+        assert_eq!(check_rows(&[("a", "b"), ("c", "b")]), None);
     }
 }
