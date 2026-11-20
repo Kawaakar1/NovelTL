@@ -128,10 +128,16 @@ pub fn is_process_64bit(pid: u32) -> bool {
     }
 }
 
+/// Процесса нет только при ERROR_INVALID_PARAMETER; «нет доступа» (защищённый процесс, другой пользователь) — он жив.
+fn open_error_means_dead(e: &windows::core::Error) -> bool {
+    e.code() == windows::core::HRESULT::from_win32(87)
+}
+
 pub fn is_process_alive(pid: u32) -> bool {
     unsafe {
-        let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) else {
-            return false;
+        let h = match OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
+            Ok(h) => h,
+            Err(e) => return !open_error_means_dead(&e),
         };
         let r = WaitForSingleObject(h, 0);
         let _ = CloseHandle(h);
@@ -574,6 +580,9 @@ mod tests {
         assert!(process_exe_path(pid).to_lowercase().ends_with(".exe"));
         assert!(is_process_alive(pid));
         assert!(!is_process_alive(0xFFFF_FFF0));
+        // System Idle/System: открыть нельзя (доступ запрещён), но процесс есть
+        assert!(is_process_alive(4));
+        assert!(!open_error_means_dead(&windows::core::Error::from(windows::core::HRESULT::from_win32(5))));
         assert!(is_process_64bit(pid));
     }
 
