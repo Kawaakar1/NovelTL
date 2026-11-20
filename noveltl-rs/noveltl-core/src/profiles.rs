@@ -217,20 +217,34 @@ pub fn make_profile_id(exe_name: &str, version: &str) -> String {
 
 /// Читает JSON-объект; нет файла / битый JSON / не объект -> None.
 fn load_json<T: DeserializeOwned>(path: &Path) -> Option<T> {
-    let text = fs::read_to_string(path).ok()?;
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => {
+            // файл есть, но не читается (например, UTF-16) — тоже не теряем
+            if e.kind() != std::io::ErrorKind::NotFound {
+                keep_broken(path);
+            }
+            return None;
+        }
+    };
     // BOM на всякий случай
     match serde_json::from_str(text.trim_start_matches('\u{feff}')) {
         Ok(v) => Some(v),
         Err(_) => {
-            // битый файл не теряем молча: копия рядом (уже существующую .broken не трогаем)
-            let mut bak = path.as_os_str().to_owned();
-            bak.push(".broken");
-            let bak = PathBuf::from(bak);
-            if !bak.exists() {
-                let _ = fs::copy(path, &bak);
-            }
+            keep_broken(path);
             None
         }
+    }
+}
+
+/// Копия файла рядом как `<имя>.broken`, чтобы следующее сохранение не стёрло её содержимое
+/// (уже существующую копию не трогаем).
+fn keep_broken(path: &Path) {
+    let mut bak = path.as_os_str().to_owned();
+    bak.push(".broken");
+    let bak = PathBuf::from(bak);
+    if !bak.exists() {
+        let _ = fs::copy(path, &bak);
     }
 }
 
@@ -459,11 +473,15 @@ pub struct AppSettings {
     pub anki_added: u64,
     /// Согласие на запросы к VNDB (обложки, картинки, портреты); None — ещё не спрашивали.
     pub vndb: Option<bool>,
+    /// Файл настроек не прочитался целиком (копия сохранена как .broken); на диск не пишется.
+    #[serde(skip)]
+    pub load_problem: bool,
 }
 
 impl Default for AppSettings {
     fn default() -> Self {
         AppSettings {
+            load_problem: false,
             deepl_key: String::new(),
             theme: "system".into(),
             net_mode: "system".into(),
@@ -524,8 +542,19 @@ impl AppSettings {
     /// Нет файла / битый JSON -> значения по умолчанию. Поле неверного типа заменяется
     /// значением по умолчанию только само — остальные настройки (ключ DeepL и т.п.) сохраняются.
     pub fn load(path: &Path) -> Self {
-        let Some(serde_json::Value::Object(file)) = load_json::<serde_json::Value>(path) else {
-            return Self::default();
+        let file = match load_json::<serde_json::Value>(path) {
+            Some(serde_json::Value::Object(f)) => f,
+            other => {
+                // нет файла — не проблема; иначе (битый, нечитаемый, не объект) пользователю скажем
+                let mut s = Self::default();
+                if path.exists() {
+                    if other.is_some() {
+                        keep_broken(path);
+                    }
+                    s.load_problem = true;
+                }
+                return s;
+            }
         };
         let Ok(serde_json::Value::Object(mut merged)) = serde_json::to_value(Self::default()) else {
             return Self::default();
@@ -543,9 +572,16 @@ impl AppSettings {
             }
         }
         let mut s: Self = serde_json::from_value(serde_json::Value::Object(merged)).unwrap_or_default();
+        let stored = [s.deepl_key.clone(), s.proxy_pass.clone(), s.ms_key.clone()];
         s.deepl_key = secret::unprotect(&s.deepl_key);
         s.proxy_pass = secret::unprotect(&s.proxy_pass);
         s.ms_key = secret::unprotect(&s.ms_key);
+        // ключ не расшифровался (файл с другого компьютера): сохраняем зашифрованную копию до перезаписи
+        let plain = [&s.deepl_key, &s.proxy_pass, &s.ms_key];
+        if stored.iter().zip(plain).any(|(was, now)| !was.is_empty() && now.is_empty()) {
+            keep_broken(path);
+            s.load_problem = true;
+        }
         if !had_accent {
             s.migrate_theme();
         }
@@ -760,7 +796,7 @@ mod tests {
         let dir = tmp_dir("broken");
         let path = dir.join("settings.json");
         fs::write(&path, "{не json").unwrap();
-        assert_eq!(AppSettings::load(&path), AppSettings::default());
+        assert_eq!(AppSettings::load(&path), AppSettings { load_problem: true, ..Default::default() });
         let bak = dir.join("settings.json.broken");
         assert_eq!(fs::read_to_string(&bak).unwrap(), "{не json");
         // существующую копию не перезаписываем
@@ -850,6 +886,54 @@ mod tests {
         let s = AppSettings::load(&path);
         assert_eq!(s.deepl_key, "");
         assert_eq!(s.font_size, 30);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn broken_of(path: &Path) -> PathBuf {
+        let mut b = path.as_os_str().to_owned();
+        b.push(".broken");
+        PathBuf::from(b)
+    }
+
+    #[test]
+    fn settings_unreadable_file_is_kept() {
+        let dir = tmp_dir("u16");
+        let path = dir.join("settings.json");
+        // UTF-16 с BOM: read_to_string отказывается, но файл надо сохранить
+        let bytes: Vec<u8> = [0xFEFFu16].into_iter().chain(r#"{"deepl_key":"k"}"#.encode_utf16()).flat_map(u16::to_le_bytes).collect();
+        fs::write(&path, bytes).unwrap();
+        let s = AppSettings::load(&path);
+        assert!(s.load_problem && broken_of(&path).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_non_object_is_kept() {
+        let dir = tmp_dir("arr");
+        let path = dir.join("settings.json");
+        fs::write(&path, "[1,2]").unwrap();
+        let s = AppSettings::load(&path);
+        assert!(s.load_problem && broken_of(&path).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_undecryptable_secret_is_kept() {
+        let dir = tmp_dir("badsec");
+        let path = dir.join("settings.json");
+        fs::write(&path, r#"{"deepl_key": "dpapi:!!!не base64", "font_size": 30}"#).unwrap();
+        let s = AppSettings::load(&path);
+        assert!(s.load_problem && broken_of(&path).exists());
+        assert_eq!(s.font_size, 30);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn settings_missing_file_is_not_a_problem() {
+        let dir = tmp_dir("nofile");
+        let path = dir.join("settings.json");
+        let s = AppSettings::load(&path);
+        assert!(!s.load_problem && !broken_of(&path).exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -966,7 +1050,7 @@ mod tests {
         let dir = tmp_dir("set");
         let path = dir.join("settings.json");
         fs::write(&path, "{не json").unwrap();
-        assert_eq!(AppSettings::load(&path), AppSettings::default());
+        assert_eq!(AppSettings::load(&path), AppSettings { load_problem: true, ..Default::default() });
         fs::write(&path, r#"{"font_size": 31, "unknown_field": [1, 2]}"#).unwrap();
         assert_eq!(AppSettings::load(&path).font_size, 31);
         let _ = fs::remove_dir_all(&dir);

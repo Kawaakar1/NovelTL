@@ -755,6 +755,9 @@ impl Controller {
         apply_ui_lang(&settings);
         let store = ProfileStore::new(sub_data_dir("profiles"));
         let mut notices = Vec::new();
+        if settings.load_problem {
+            notices.push(t("Не удалось прочитать часть настроек — копия старого файла сохранена как settings.json.broken.").to_string());
+        }
         let http: Arc<dyn Http> = if demo {
             Arc::new(DemoHttp::new())
         } else {
