@@ -40,7 +40,10 @@ pub fn add_note(http: &dyn Http, front: &str, back: &str) -> Result<(), String> 
     let candidates = models.iter().filter(|m| *m == "Basic").chain(models.iter().filter(|m| *m != "Basic" && !m.to_lowercase().contains("cloze")));
     let mut chosen = None;
     for m in candidates {
-        let fields = strings(&call(http, "modelFieldNames", json!({"modelName": m}))?);
+        // сбой у одного типа заметки (удалён, битый) не должен рвать перебор остальных
+        let Ok(fields) = call(http, "modelFieldNames", json!({"modelName": m})).map(|v| strings(&v)) else {
+            continue;
+        };
         if fields.len() >= 2 {
             chosen = Some((m.clone(), fields));
             break;
@@ -117,6 +120,19 @@ mod tests {
             let h = Fake::new(vec![ok(json!(1)), ok(json!(["Basic"])), ok(json!(["Front", "Back"])), Ok(reply)]);
             assert!(add_note(&h, "a", "b").is_err(), "чужой ответ на порту — не добавленная карточка");
         }
+    }
+
+    #[test]
+    fn field_names_error_skips_candidate() {
+        let h = Fake::new(vec![
+            ok(json!(1)),
+            ok(json!(["Сломанная", "Вторая"])),
+            Ok(json!({"result": null, "error": "model was not found"})),
+            ok(json!(["Front", "Back"])),
+            ok(json!(1)),
+        ]);
+        add_note(&h, "a", "b").unwrap();
+        assert_eq!(h.sent.lock().unwrap()[4]["params"]["note"]["modelName"], "Вторая");
     }
 
     #[test]
