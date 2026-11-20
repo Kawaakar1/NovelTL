@@ -67,7 +67,7 @@ fn slot_hint(i: usize) -> &'static str {
     }
 }
 
-/// Семейства шрифтов: имя -> файлы в `C:\Windows\Fonts` (в список попадают те, у которых файл есть).
+/// Семейства шрифтов: имя -> файлы в системной папке шрифтов (в список попадают те, у которых файл есть).
 const FONT_FILES: &[(&str, &[&str])] = &[
     ("Segoe UI", &["segoeui.ttf"]),
     ("Arial", &["arial.ttf"]),
@@ -106,7 +106,7 @@ fn installed_fonts() -> Vec<String> {
 
 #[cfg(windows)]
 fn installed_fonts() -> Vec<String> {
-    let dir = std::path::PathBuf::from(r"C:\Windows\Fonts");
+    let dir = crate::paths::windows_fonts_dir();
     FONT_FILES
         .iter()
         .filter(|(_, files)| files.iter().any(|f| dir.join(f).is_file()))

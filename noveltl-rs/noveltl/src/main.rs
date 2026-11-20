@@ -159,7 +159,7 @@ fn message_box(text: &str) {
 /// шрифтов Windows — Noto Sans CJK (покрывает и китайский, и корейский) или запасные.
 fn font_paths(file: &str) -> Vec<PathBuf> {
     if cfg!(windows) {
-        return vec![PathBuf::from(r"C:\Windows\Fonts").join(file)];
+        return vec![paths::windows_fonts_dir().join(file)];
     }
     let list: &[&str] = match file {
         "YuGothM.ttc" => &[
