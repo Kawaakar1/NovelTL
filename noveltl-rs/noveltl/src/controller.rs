@@ -1659,7 +1659,23 @@ impl Controller {
                     self.threads_dirty = true;
                 }
             }
-            HookEvent::ThreadRemoved(_) => {}
+            HookEvent::ThreadRemoved(info) => {
+                if self.is_mine(info.pid) {
+                    let key = noveltl_core::scorer::make_key(&info.code, info.ctx, info.ctx2);
+                    self.tracker.remove(&key);
+                    self.threads_dirty = true;
+                    // иначе выбранный поток-призрак молчит, а select_hook больше не вызывается
+                    if let Some(s) = self.session.as_mut() {
+                        if s.selected.as_ref() == Some(&key) {
+                            s.selected = None;
+                            s.fallback = false;
+                        }
+                        if s.name_key.as_ref() == Some(&key) {
+                            s.name_key = None;
+                        }
+                    }
+                }
+            }
             HookEvent::Text(info, text) => self.on_text(&info.code, &info.name, info.pid, info.addr, info.ctx, info.ctx2, text),
         }
     }
@@ -2663,6 +2679,37 @@ mod tests {
         let s = c.session.as_ref().unwrap();
         assert!(!s.fallback);
         assert_eq!(s.selected, Some(saved.key()));
+        c.shutdown();
+    }
+
+    #[test]
+    fn removed_thread_is_deselected() {
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        set_data_dir_override(std::env::temp_dir().join(format!("noveltl_ctl3_{}_{}", std::process::id(), nanos)));
+        let waker: Waker = Arc::new(|| {});
+        let (tx, rx) = channel();
+        let src = DemoSource::new(tx, waker.clone());
+        let mut c = Controller::new(Box::new(src), rx, true, 0, waker);
+        let pid = std::process::id();
+        let win = WindowInfo { hwnd: 0, pid, title: DEMO_TITLE.to_string(), exe_path: String::new() };
+        c.begin_setup(&win, Lang::Ja, "Демо");
+        let b = HookRef { code: "HB".into(), name: "n".into(), ctx_lo: 2, ctx2_lo: 0 };
+        let a_key = c.tracker.add_text("HA", "n", 1, 1, 0, "一", Some(1.0));
+        {
+            let s = c.session.as_mut().unwrap();
+            s.setup = false;
+            s.saved = false;
+            s.selected = Some(a_key.clone());
+            s.fallback = false;
+            s.profile.hook = Some(b.clone());
+        }
+        let info = crate::source::ThreadInfo { code: "HA".into(), name: "n".into(), pid, addr: 1, ctx: 1, ctx2: 0 };
+        c.on_hook_event(HookEvent::ThreadRemoved(info));
+        assert!(c.tracker.get(&a_key).is_none());
+        assert!(c.session.as_ref().unwrap().selected.is_none());
+        // игра удалила поток: следующая реплика другого потока выбирает новый источник
+        c.on_text("HB", "n", pid, 1, 2, 0, "「おはようございます」".to_string());
+        assert_eq!(c.session.as_ref().unwrap().selected, Some(b.key()));
         c.shutdown();
     }
 

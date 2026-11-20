@@ -469,6 +469,19 @@ impl ThreadTracker {
         st.key()
     }
 
+    /// Убирает поток (игра его удалила); индексы остальных сдвигаются.
+    pub fn remove(&mut self, key: &HookKey) -> bool {
+        let Some(i) = self.index.remove(key) else { return false };
+        self.list.remove(i);
+        for v in self.index.values_mut() {
+            if *v > i {
+                *v -= 1;
+            }
+        }
+        self.invalidate();
+        true
+    }
+
     pub fn get(&self, key: &HookKey) -> Option<&ThreadStats> {
         self.index.get(key).map(|&i| &self.list[i])
     }
@@ -611,6 +624,20 @@ mod tests {
         let other = HookRef { code: "OTHER".into(), name: String::new(), ctx_lo: 0x1234, ctx2_lo: 0 };
         assert_eq!(t.find_saved(Some(&other)), None);
         assert_eq!(t.find_saved(None), None);
+    }
+
+    #[test]
+    fn remove_thread_shifts_indexes() {
+        let mut t = ThreadTracker::default();
+        let a = t.add_text("A", "n", 0, 0x10, 0, "один", Some(0.0));
+        let b = t.add_text("B", "n", 0, 0x20, 0, "два", Some(1.0));
+        assert!(t.remove(&a));
+        assert!(!t.remove(&a));
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.get(&b).map(|s| s.hookcode.as_str()), Some("B"));
+        assert!(t.get(&a).is_none());
+        let saved = HookRef { code: "A".into(), name: String::new(), ctx_lo: 0x10, ctx2_lo: 0 };
+        assert_eq!(t.find_saved(Some(&saved)), None);
     }
 
     #[test]
