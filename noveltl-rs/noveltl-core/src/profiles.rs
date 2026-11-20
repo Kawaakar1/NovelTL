@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
+use crate::i18n::tf;
 use crate::langdetect::Lang;
 use crate::scorer::HookRef;
 use crate::secret;
@@ -294,19 +295,25 @@ impl ProfileStore {
     }
 
     pub fn all(&self) -> Vec<Profile> {
+        self.try_all().unwrap_or_default()
+    }
+
+    /// Как `all`, но если папку не прочитать (кроме «папки нет») — текст уведомления для пользователя.
+    pub fn try_all(&self) -> Result<Vec<Profile>, String> {
         let mut names: Vec<String> = match fs::read_dir(&self.dir) {
             Ok(rd) => rd
                 .filter_map(|e| e.ok())
                 .filter_map(|e| e.file_name().into_string().ok())
                 .filter(|n| n.ends_with(".json"))
                 .collect(),
-            Err(_) => return Vec::new(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(tf("Не удалось прочитать папку профилей {}: {}", &[&self.dir.display(), &e])),
         };
         names.sort();
-        names
+        Ok(names
             .iter()
             .filter_map(|n| Self::load_profile(&self.dir.join(n)))
-            .collect()
+            .collect())
     }
 
     pub fn get(&self, id: &str) -> Option<Profile> {
@@ -730,6 +737,19 @@ mod tests {
         ));
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn unreadable_profiles_dir_is_reported() {
+        let dir = tmp_dir("unreadable");
+        // папки профилей нет — это не ошибка
+        assert!(ProfileStore::new(dir.join("profiles")).try_all().unwrap().is_empty());
+        // вместо папки — файл: прочитать нельзя, и библиотека не должна молча выглядеть пустой
+        let file = dir.join("file");
+        fs::write(&file, "x").unwrap();
+        let store = ProfileStore { dir: file };
+        assert!(store.try_all().unwrap_err().starts_with("Не удалось прочитать папку профилей"));
+        assert!(store.all().is_empty());
     }
 
     #[test]

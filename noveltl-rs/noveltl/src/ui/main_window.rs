@@ -349,6 +349,8 @@ pub struct MainWindow {
     store: ProfileStore,
     profiles: Vec<Profile>,
     profiles_at: Option<Instant>,
+    /// последняя ошибка чтения папки профилей, о которой уже сказали (чтобы не повторять каждые полсекунды)
+    profiles_err: String,
     selected: Option<String>,
     /// сессия, как её видели в прошлый кадр: (id игры, профиль уже сохранён)
     last_session: Option<(String, bool)>,
@@ -387,6 +389,7 @@ impl MainWindow {
             store: ProfileStore::new(sub_data_dir("profiles")),
             profiles: Vec::new(),
             profiles_at: None,
+            profiles_err: String::new(),
             selected: None,
             last_session: None,
             notice: None,
@@ -495,7 +498,19 @@ impl MainWindow {
         let mut snap = Self::snapshot(shared);
 
         if self.profiles_at.map_or(true, |t| t.elapsed() >= PROFILES_REFRESH) {
-            self.profiles = self.store.all();
+            match self.store.try_all() {
+                Ok(p) => {
+                    self.profiles = p;
+                    self.profiles_err.clear();
+                }
+                Err(msg) => {
+                    self.profiles = Vec::new();
+                    if self.profiles_err != msg {
+                        shared.push_notices(vec![msg.clone()]);
+                        self.profiles_err = msg;
+                    }
+                }
+            }
             self.profiles_at = Some(Instant::now());
         }
         // профили на диске + профиль текущей сессии, если он уже сохранён

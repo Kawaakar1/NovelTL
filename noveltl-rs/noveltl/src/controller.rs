@@ -958,7 +958,7 @@ impl Controller {
             self.settings.last_update_check = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
-            let _ = self.save_settings_file();
+            self.persist_settings();
         }
         while let Ok(msg) = self.art_rx.try_recv() {
             self.on_art_msg(msg);
@@ -978,7 +978,7 @@ impl Controller {
                 }
                 LearnMsg::Anki(Ok(())) => {
                     self.settings.anki_added += 1;
-                    let _ = self.save_settings_file();
+                    self.persist_settings();
                     self.notice(t("Карточка добавлена в Anki."));
                 }
                 LearnMsg::Anki(Err(e)) => self.notice(e),
@@ -1224,7 +1224,7 @@ impl Controller {
     pub fn set_vndb_consent(&mut self, on: bool) {
         self.settings.vndb = Some(on);
         self.sync_vndb_flag();
-        let _ = self.save_settings_file();
+        self.persist_settings();
         if on {
             self.auto_art_all();
         }
@@ -2328,7 +2328,8 @@ impl Controller {
 
     /// Записать текущие настройки в файл как есть (после отката предпросмотра в окне настроек).
     pub fn persist_settings(&mut self) {
-        let _ = self.save_settings_file();
+        let res = self.save_settings_file();
+        report_settings_save(&mut self.notices, res);
     }
 
     /// Возвращает текст ошибки, если настройки не удалось записать в файл (в памяти они всё равно применены).
@@ -2647,6 +2648,16 @@ fn rollback_hotkeys(new: &mut AppSettings, mut old: AppSettings, failed: &[Strin
     if dup {
         for (n, o) in hotkey_slots(new).into_iter().zip(hotkey_slots(&mut old)) {
             *n = o.clone();
+        }
+    }
+}
+
+/// Ошибка записи общих настроек: одно уведомление, без повторов.
+fn report_settings_save(notices: &mut Vec<String>, res: std::io::Result<bool>) {
+    if let Err(e) = res {
+        let msg = tf("Не удалось сохранить настройки: {}", &[&e]);
+        if !notices.contains(&msg) {
+            notices.push(msg);
         }
     }
 }
@@ -3046,6 +3057,17 @@ mod tests {
             report_save(&mut n, Err(std::io::Error::other("disk full")));
         }
         assert_eq!(n, ["Не удалось сохранить профиль игры: disk full"]);
+    }
+
+    #[test]
+    fn settings_save_errors_become_one_notice() {
+        let mut n = Vec::new();
+        report_settings_save(&mut n, Ok(false));
+        assert!(n.is_empty());
+        for _ in 0..2 {
+            report_settings_save(&mut n, Err(std::io::Error::other("disk full")));
+        }
+        assert_eq!(n, ["Не удалось сохранить настройки: disk full"]);
     }
 
     #[test]
