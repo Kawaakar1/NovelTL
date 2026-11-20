@@ -262,6 +262,11 @@ fn save_json<T: Serialize>(path: &Path, data: &T) -> std::io::Result<()> {
     fs::rename(&tmp, path)
 }
 
+/// Id попадает в имя файла: только буквы/цифры (в т.ч. кириллица из `make_profile_id`), `_` и `-` — без путей и точек.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty() && id.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+}
+
 pub struct ProfileStore {
     dir: PathBuf,
 }
@@ -277,8 +282,15 @@ impl ProfileStore {
         self.dir.join(format!("{id}.json"))
     }
 
+    /// Id профиля — имя файла без `.json`; id из тела файла игнорируется (копия `backup.json` — отдельный профиль).
     fn load_profile(path: &Path) -> Option<Profile> {
-        load_json::<Profile>(path).filter(|p| !p.id.is_empty())
+        let id = path.file_name()?.to_str()?.strip_suffix(".json")?.to_string();
+        if !valid_id(&id) {
+            return None;
+        }
+        let mut p = load_json::<Profile>(path).filter(|p| !p.id.is_empty())?;
+        p.id = id;
+        Some(p)
     }
 
     pub fn all(&self) -> Vec<Profile> {
@@ -298,15 +310,23 @@ impl ProfileStore {
     }
 
     pub fn get(&self, id: &str) -> Option<Profile> {
+        if !valid_id(id) {
+            return None;
+        }
         Self::load_profile(&self.path(id))
     }
 
     pub fn save(&self, p: &Profile) -> std::io::Result<()> {
+        if !valid_id(&p.id) {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid profile id"));
+        }
         save_json(&self.path(&p.id), p)
     }
 
     pub fn delete(&self, id: &str) {
-        let _ = fs::remove_file(self.path(id));
+        if valid_id(id) {
+            let _ = fs::remove_file(self.path(id));
+        }
     }
 
     /// Id для нового профиля; занятый (та же программа в другой папке) получает суффикс _2, _3…
@@ -692,6 +712,24 @@ mod tests {
         ));
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn profile_id_comes_from_file_name() {
+        let dir = tmp_dir("pid");
+        let store = ProfileStore::new(dir.join("profiles"));
+        let p = Profile { id: "Game_64".into(), name: "G".into(), ..Default::default() };
+        store.save(&p).unwrap();
+        fs::copy(store.path("Game_64"), store.path("backup")).unwrap();
+        let ids: Vec<String> = store.all().into_iter().map(|p| p.id).collect();
+        assert_eq!(ids, vec!["Game_64", "backup"]);
+        store.delete("Game_64");
+        assert!(store.get("Game_64").is_none());
+        // id вне папки профилей не принимается
+        let evil = Profile { id: "../x".into(), ..Default::default() };
+        assert!(store.save(&evil).is_err());
+        assert!(!dir.join("x.json").exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
