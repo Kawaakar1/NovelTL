@@ -10,9 +10,9 @@ use crate::langdetect::has_cjk;
 // %f$ll; %p-1; %fSourceHanSans; и т. п.
 static TAG_PERCENT: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"%[^;%\s「」『』（）。、]{1,40};").unwrap());
-// [r] [l] [p] [np] [ruby text="..."] [/b]
+// [r] [l] [p] [np] [ruby text="..."] [/b]; одиночные слова («[sighs]») — это ремарка, не тег
 static TAG_BRACKET: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[/?[a-z_][a-z0-9_]*(?:[=,][^\[\]]*|\s[^\[\]]*[=,][^\[\]]*)?\]").unwrap());
+    LazyLock::new(|| Regex::new(r"\[/?(?:l|r|p|s|np|cm|er|ct|nl|br|b|i|u|nowait|endnowait|wait|click)\]|\[/?[a-z_][a-z0-9_]*(?:[=,][^\[\]]*|\s[^\[\]]*[=,][^\[\]]*)\]").unwrap());
 static TAG_ANGLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s[^<>]*)?>").unwrap());
 static CONTROL: LazyLock<Regex> = LazyLock::new(|| {
@@ -340,6 +340,8 @@ mod tests {
     #[test]
     fn test_bracket_phrases_are_kept() {
         assert_eq!(strip_tags("[good end]"), "[good end]");
+        assert_eq!(strip_tags("[sighs]"), "[sighs]");
+        assert_eq!(strip_tags("[whisper]「うん」"), "[whisper]「うん」");
         assert_eq!(strip_tags("[to be continued]"), "[to be continued]");
         assert_eq!(strip_tags("[ruby text=\"よ\"]芳"), "芳");
         assert_eq!(strip_tags("[font size=3,color=red]赤"), "赤");
