@@ -136,6 +136,16 @@ fn luma(c: Color32) -> f32 {
     (0.299 * c.r() as f32 + 0.587 * c.g() as f32 + 0.114 * c.b() as f32) / 255.0
 }
 
+/// Цвет текста на заливке `accent`: тёмный на светлом акценте (в тёмной теме он белый), иначе белый.
+fn on_color(accent: Color32) -> Color32 {
+    if luma(accent) > 0.55 { rgb(0x0B0B0C) } else { Color32::WHITE }
+}
+
+/// Заливка кнопки под курсором: светлый акцент темнеет, тёмный светлеет.
+fn hover_color(accent: Color32) -> Color32 {
+    if luma(accent) > 0.5 { mix(accent, Color32::BLACK, 0.15) } else { mix(accent, Color32::WHITE, 0.2) }
+}
+
 /// Тёмная ли палитра — по яркости фона.
 pub fn is_dark(p: &Palette) -> bool {
     luma(p.bg) < 0.5
@@ -144,8 +154,8 @@ pub fn is_dark(p: &Palette) -> bool {
 /// Перекрашивает в `accent` всё, что от него зависит (фон, текст и карточки остаются).
 pub fn with_accent(p: Palette, accent: Color32) -> Palette {
     let bg = p.bg;
-    let accent_hover = if luma(accent) > 0.5 { mix(accent, Color32::BLACK, 0.15) } else { mix(accent, Color32::WHITE, 0.2) };
-    let on_accent = if luma(accent) > 0.55 { rgb(0x0B0B0C) } else { Color32::WHITE };
+    let accent_hover = hover_color(accent);
+    let on_accent = on_color(accent);
     Palette {
         accent,
         accent_hover,
@@ -718,7 +728,7 @@ pub fn anim(ctx: &egui::Context, id: egui::Id, on: bool, secs: f32) -> f32 {
     ctx.animate_bool_with_time(id, on, secs)
 }
 
-/// Кнопка с заливкой цветом акцента страницы игры (белый текст).
+/// Кнопка с заливкой цветом акцента страницы игры (текст контрастный).
 pub fn accent_button(ui: &mut Ui, text: &str, accent: Color32, enabled: bool, width: Option<f32>) -> Response {
     let p = pal();
     let font = FontId::new(14.0, bold_family());
@@ -729,9 +739,9 @@ pub fn accent_button(ui: &mut Ui, text: &str, accent: Color32, enabled: bool, wi
     let (fill, col) = if !enabled {
         (p.primary_disabled, p.primary_disabled_text)
     } else if resp.hovered() {
-        (mix(accent, Color32::WHITE, 0.15), Color32::WHITE)
+        (hover_color(accent), on_color(accent))
     } else {
-        (accent, Color32::WHITE)
+        (accent, on_color(accent))
     };
     ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
     ui.painter().text(rect.center(), Align2::CENTER_CENTER, text, font, col);
@@ -981,6 +991,12 @@ pub fn reading_calendar(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_on_accent_contrasts() {
+        assert_eq!(on_color(Color32::WHITE), rgb(0x0B0B0C));
+        assert_eq!(on_color(rgb(0x202020)), Color32::WHITE);
+    }
 
     #[test]
     fn shrink_keeps_aspect_and_small_images() {
