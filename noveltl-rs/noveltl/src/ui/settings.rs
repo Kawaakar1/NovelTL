@@ -114,15 +114,21 @@ fn installed_fonts() -> Vec<String> {
         .collect()
 }
 
-/// Высота рабочей области экрана в пикселях (в Linux — обычная высота экрана ноутбука).
+/// Высота экрана в пикселях по размеру монитора в точках egui; размер неизвестен — обычный экран ноутбука.
+#[cfg_attr(windows, allow(dead_code))]
+fn screen_height_px(monitor_points: Option<f32>, ppp: f32) -> f32 {
+    monitor_points.filter(|h| *h > 0.0).map_or(1000.0, |h| h * ppp)
+}
+
+/// Высота экрана в пикселях (в Linux рабочую область без панелей не узнать — запас в `limit` ниже).
 #[cfg(not(windows))]
-pub(crate) fn work_area_height_px() -> f32 {
-    1000.0
+pub(crate) fn work_area_height_px(ctx: &egui::Context) -> f32 {
+    screen_height_px(ctx.input(|i| i.viewport().monitor_size.map(|s| s.y)), ctx.pixels_per_point())
 }
 
 /// Высота рабочей области экрана в пикселях.
 #[cfg(windows)]
-pub(crate) fn work_area_height_px() -> f32 {
+pub(crate) fn work_area_height_px(_ctx: &egui::Context) -> f32 {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::UI::WindowsAndMessaging::{
         SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
@@ -375,7 +381,7 @@ impl SettingsWindow {
             fonts.insert(0, orig.font_family.clone());
         }
         let ppp = shared.ctx.pixels_per_point().max(0.5);
-        let mut limit = (work_area_height_px() / ppp - 60.0).max(420.0);
+        let mut limit = (work_area_height_px(&shared.ctx) / ppp - 60.0).max(420.0);
         // при проверках окно должно целиком помещаться в тестовую область (иначе снимок обрезан)
         if let Some([_, _, _, h]) = crate::winutil::test_area() {
             limit = limit.min(h - 80.0).max(420.0);
@@ -2048,6 +2054,13 @@ fn key_name(k: egui::Key) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn screen_height_follows_monitor() {
+        assert_eq!(screen_height_px(Some(768.0), 1.0), 768.0);
+        assert_eq!(screen_height_px(Some(540.0), 2.0), 1080.0);
+        assert_eq!(screen_height_px(None, 1.0), 1000.0);
+    }
 
     #[test]
     fn duplicate_hotkeys_are_found_by_meaning() {

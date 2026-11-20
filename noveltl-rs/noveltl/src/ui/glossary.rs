@@ -143,7 +143,7 @@ impl GlossaryWindow {
     pub fn show(&mut self, ctx: &egui::Context, shared: &Shared) -> bool {
         self.frames += 1;
         // высота не больше рабочей области (как у настроек)
-        let mut h = (super::settings::work_area_height_px() / ctx.pixels_per_point().max(0.5) - 60.0).clamp(420.0, 620.0);
+        let mut h = (super::settings::work_area_height_px(ctx) / ctx.pixels_per_point().max(0.5) - 60.0).clamp(420.0, 620.0);
         if let Some([_, _, _, th]) = crate::winutil::test_area() {
             h = h.min(th - 80.0).max(420.0);
         }

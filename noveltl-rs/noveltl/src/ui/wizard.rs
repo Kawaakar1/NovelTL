@@ -326,7 +326,7 @@ impl Wizard {
         self.target_title = lock_ctl(&shared.controller).settings.target_lang.title_in_text();
 
         // высота не больше рабочей области (как у настроек): на ноутбуках кнопки внизу не уходят за край
-        let mut h = (super::settings::work_area_height_px() / ctx.pixels_per_point().max(0.5) - 60.0).clamp(420.0, 720.0);
+        let mut h = (super::settings::work_area_height_px(ctx) / ctx.pixels_per_point().max(0.5) - 60.0).clamp(420.0, 720.0);
         if let Some([_, _, _, th]) = crate::winutil::test_area() {
             h = h.min(th - 80.0).max(420.0);
         }
