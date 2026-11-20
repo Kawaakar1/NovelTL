@@ -222,6 +222,12 @@ impl PreviewKey {
 }
 
 /// К чему откатывать превью при закрытии: к последнему сохранённому, а без сохранений — к исходному.
+/// Два действия на одном сочетании. Сравниваем разобранные сочетания: «Ctrl+Alt+H» и «ctrl + alt + h» — одно и то же.
+fn has_dup_hotkeys(combos: &[String]) -> bool {
+    let keys: Vec<_> = combos.iter().filter(|c| !c.is_empty()).map(|c| parse_hotkey(c)).collect();
+    (0..keys.len()).any(|i| keys[i + 1..].contains(&keys[i]))
+}
+
 fn rollback_key(orig: &AppSettings, saved: Option<&PreviewKey>) -> PreviewKey {
     saved.cloned().unwrap_or_else(|| PreviewKey::of(orig))
 }
@@ -707,8 +713,7 @@ impl SettingsWindow {
                 return;
             }
         }
-        let dup = (0..combos.len()).any(|i| !combos[i].is_empty() && combos[i + 1..].contains(&combos[i]));
-        if dup {
+        if has_dup_hotkeys(&combos) {
             self.warn(t("Для двух действий выбрано одно и то же сочетание."));
             return;
         }
@@ -2037,6 +2042,13 @@ fn key_name(k: egui::Key) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duplicate_hotkeys_are_found_by_meaning() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert!(has_dup_hotkeys(&v(&["Ctrl+Alt+H", "Ctrl+Alt+R", "ctrl + alt + h"])));
+        assert!(!has_dup_hotkeys(&v(&["Ctrl+Alt+H", "", ""])));
+    }
 
     #[test]
     fn key_names_parse_back() {

@@ -23,7 +23,7 @@ use noveltl_core::translators::{Http, HttpError, HttpResponse, TranslatorManager
 use noveltl_core::vndb::{self, VnChar, VnHit};
 
 use crate::clipboard::CLIPBOARD_PID;
-use crate::hotkeys::{HotkeyEvent, Hotkeys};
+use crate::hotkeys::{parse_hotkey, HotkeyEvent, Hotkeys};
 use crate::overlay::{self, parse_color, Cmd, Frac, OrigSeg, Overlay, Style};
 use crate::paths::{data_dir, sub_data_dir};
 use crate::source::{HookEvent, HookSource, Waker};
@@ -2224,27 +2224,16 @@ impl Controller {
         apply_ui_lang(&self.settings);
         self.register_hotkeys();
         // занятые другой программой сочетания откатываем на прежние, чтобы они продолжали работать
-        let attempted = std::mem::take(&mut self.hotkey_errors);
+        let mut attempted = std::mem::take(&mut self.hotkey_errors);
         if !attempted.is_empty() {
-            if attempted.contains(&self.settings.hotkey_toggle) {
-                self.settings.hotkey_toggle = old.hotkey_toggle.clone();
-            }
-            if attempted.contains(&self.settings.hotkey_retranslate) {
-                self.settings.hotkey_retranslate = old.hotkey_retranslate.clone();
-            }
-            if attempted.contains(&self.settings.hotkey_settings) {
-                self.settings.hotkey_settings = old.hotkey_settings.clone();
-            }
-            if attempted.contains(&self.settings.hotkey_prev) {
-                self.settings.hotkey_prev = old.hotkey_prev.clone();
-            }
-            if attempted.contains(&self.settings.hotkey_next) {
-                self.settings.hotkey_next = old.hotkey_next.clone();
-            }
-            if attempted.contains(&self.settings.hotkey_peek) {
-                self.settings.hotkey_peek = old.hotkey_peek.clone();
-            }
+            rollback_hotkeys(&mut self.settings, old.clone(), &attempted);
             self.register_hotkeys();
+            // ошибки повторной регистрации не теряем: окно должно их показать
+            for e in std::mem::take(&mut self.hotkey_errors) {
+                if !attempted.contains(&e) {
+                    attempted.push(e);
+                }
+            }
         }
         self.hotkey_errors = attempted;
         match self.save_settings_file() {
@@ -2514,6 +2503,30 @@ pub(crate) fn local_time_text(fmt: &str) -> String {
         .replace("%S", &format!("{:02}", t.wSecond))
 }
 
+fn hotkey_slots(s: &mut AppSettings) -> [&mut String; 6] {
+    [&mut s.hotkey_toggle, &mut s.hotkey_retranslate, &mut s.hotkey_settings, &mut s.hotkey_prev, &mut s.hotkey_next, &mut s.hotkey_peek]
+}
+
+/// Занятые другой программой сочетания возвращаем на прежние. Если после отката два действия делят одно
+/// сочетание, возвращаем все прежние: дубль в `settings.json` попасть не должен.
+fn rollback_hotkeys(new: &mut AppSettings, mut old: AppSettings, failed: &[String]) {
+    for (n, o) in hotkey_slots(new).into_iter().zip(hotkey_slots(&mut old)) {
+        if failed.contains(n) {
+            *n = o.clone();
+        }
+    }
+    let mut combos: Vec<Option<(u32, u32)>> = Vec::new();
+    for c in hotkey_slots(new) {
+        combos.push(parse_hotkey(c));
+    }
+    let dup = (0..combos.len()).any(|i| combos[i].is_some() && combos[i + 1..].contains(&combos[i]));
+    if dup {
+        for (n, o) in hotkey_slots(new).into_iter().zip(hotkey_slots(&mut old)) {
+            *n = o.clone();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2533,6 +2546,22 @@ mod tests {
         s.theme = "auto".into();
         assert_eq!(settings_for_disk(&s, Some(&ov)).theme, "auto");
         assert_eq!(settings_for_disk(&s, None).ui_lang, Some(UiLang::En));
+    }
+
+    #[test]
+    fn hotkey_rollback_never_leaves_duplicates() {
+        let old = AppSettings::default(); // toggle Ctrl+Alt+H, retranslate Ctrl+Alt+R
+        let mut new = old.clone();
+        new.hotkey_toggle = "Ctrl+Alt+J".into(); // занято другой программой
+        new.hotkey_retranslate = "ctrl + alt + h".into(); // сочетание, которое освободил toggle
+        rollback_hotkeys(&mut new, old.clone(), &["Ctrl+Alt+J".to_string()]);
+        assert_eq!((new.hotkey_toggle.as_str(), new.hotkey_retranslate.as_str()), ("Ctrl+Alt+H", "Ctrl+Alt+R"));
+        // без дубля откатывается только занятое
+        let mut new = old.clone();
+        new.hotkey_toggle = "Ctrl+Alt+J".into();
+        new.hotkey_peek = "Ctrl+Alt+P".into();
+        rollback_hotkeys(&mut new, old.clone(), &["Ctrl+Alt+J".to_string()]);
+        assert_eq!((new.hotkey_toggle.as_str(), new.hotkey_peek.as_str()), ("Ctrl+Alt+H", "Ctrl+Alt+P"));
     }
 
     #[test]
