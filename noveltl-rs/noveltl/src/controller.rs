@@ -2335,8 +2335,7 @@ impl Controller {
     pub fn save_settings(&mut self, new: AppSettings) -> Option<String> {
         let old = self.settings.clone();
         self.settings = new;
-        self.sync_vndb_flag();
-        apply_ui_lang(&self.settings);
+        // хоткеи регистрируем до записи (занятые откатываем); остальное применяем только после успешной записи
         self.register_hotkeys();
         // занятые другой программой сочетания откатываем на прежние, чтобы они продолжали работать
         let mut attempted = std::mem::take(&mut self.hotkey_errors);
@@ -2351,13 +2350,21 @@ impl Controller {
             }
         }
         self.hotkey_errors = attempted;
-        let mut write_err = None;
-        match self.save_settings_file() {
-            Ok(true) => self.notice(
+        let plain_keys = match self.save_settings_file() {
+            Ok(p) => p,
+            Err(e) => {
+                // окно настроек покажет сообщение и останется открытым; в памяти — прежние настройки
+                self.settings = old;
+                self.register_hotkeys();
+                return Some(e.to_string());
+            }
+        };
+        self.sync_vndb_flag();
+        apply_ui_lang(&self.settings);
+        if plain_keys {
+            self.notice(
                 t("Не удалось зашифровать ключ DeepL или пароль прокси — они сохранены открытым текстом в data\\settings.json."),
-            ),
-            Ok(false) => {}
-            Err(e) => write_err = Some(e.to_string()), // окно настроек покажет сообщение и останется открытым
+            );
         }
         self.worker.send(WorkerCmd::SetDeeplKey(self.settings.deepl_key.clone()));
         self.worker.send(WorkerCmd::SetTarget(self.settings.target_lang));
@@ -2385,7 +2392,7 @@ impl Controller {
         {
             self.retranslate();
         }
-        write_err
+        None
     }
 
     /// Кнопка «копировать» на плашке: последний перевод — в буфер обмена (и не переводится заново).
@@ -2719,7 +2726,13 @@ mod tests {
         assert_eq!(c.save_settings(st.clone()), None);
         // папки нет — записать нельзя: окно настроек должно узнать об этом и не закрываться
         c.settings_path = dir.join("нет такой папки").join("settings.json");
-        assert!(c.save_settings(st).is_some());
+        assert!(c.save_settings(st.clone()).is_some());
+        // не записалось — в памяти остаются прежние настройки
+        let mut changed = st.clone();
+        changed.deepl_key = "новый-ключ".into();
+        changed.target_lang = if st.target_lang == Lang::En { Lang::Ru } else { Lang::En };
+        assert!(c.save_settings(changed).is_some());
+        assert_eq!(c.settings, st);
         c.shutdown();
     }
 
