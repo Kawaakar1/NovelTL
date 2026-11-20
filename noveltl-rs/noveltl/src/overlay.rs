@@ -831,11 +831,13 @@ impl State {
                     SourceConstantAlpha: 255,
                     AlphaFormat: AC_SRC_ALPHA as u8,
                 };
-                let _ = UpdateLayeredWindow(
+                // кадр не показан — не считаем нарисованным, следующий тик попробует снова
+                if UpdateLayeredWindow(
                     self.hwnd, screen, Some(&pos), Some(&size), mem, Some(&src),
                     COLORREF(0), Some(&blend), ULW_ALPHA,
-                );
-                self.drawn = Some((w, h, fp));
+                ).is_ok() {
+                    self.drawn = Some((w, h, fp));
+                }
             }
             SelectObject(mem, old);
             let _ = DeleteObject(dib);
