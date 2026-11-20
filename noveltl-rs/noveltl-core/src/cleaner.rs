@@ -138,11 +138,15 @@ fn looks_like_name(name: &str, limit: usize) -> bool {
 }
 
 /// «母は», «彼は言った» — оборот с частицей, то есть повествование, а не имя.
-fn is_narration(name: &str) -> bool {
+/// strict (путь «имя「…」»): любая частица в конце — повествование («それは»); иначе частица после хираганы
+/// («あきと», «ゆうと») — это имя, повествованием считается только «母は», «ハルは».
+fn is_narration(name: &str, strict: bool) -> bool {
     let chars: Vec<char> = name.trim().chars().collect();
     let kanji = |c: char| ('\u{4E00}'..='\u{9FFF}').contains(&c);
-    chars.last().is_some_and(|c| "はがをにでとものへ".contains(*c))
-        || chars.windows(2).any(|w| kanji(w[0]) && "はがを".contains(w[1]))
+    let hiragana = |c: char| ('\u{3041}'..='\u{309F}').contains(&c);
+    let particle_end = chars.last().is_some_and(|c| "はがをにでとものへ".contains(*c))
+        && (strict || chars.len() < 2 || !hiragana(chars[chars.len() - 2]));
+    particle_end || chars.windows(2).any(|w| kanji(w[0]) && "はがを".contains(w[1]))
 }
 
 /// Отделяет имя говорящего. Возвращает (имя, текст); имя может быть пустым.
@@ -157,14 +161,14 @@ pub fn split_name(text: &str) -> (String, String) {
     if let Some((first, rest)) = s.split_once('\n') {
         let rest = rest.trim();
         if let Some(c0) = rest.chars().next() {
-            if OPEN_QUOTES.contains(c0) && looks_like_name(first, 16) && !is_narration(first) {
+            if OPEN_QUOTES.contains(c0) && looks_like_name(first, 16) && !is_narration(first, false) {
                 return (first.trim().to_string(), rest.to_string());
             }
         }
     }
 
     if let Some(m) = RE_QUOTE_NAME.captures(s) {
-        if looks_like_name(&m[1], 12) && !is_narration(&m[1]) {
+        if looks_like_name(&m[1], 12) && !is_narration(&m[1], true) {
             return (m[1].trim().to_string(), m[2].trim().to_string());
         }
     }
@@ -177,7 +181,7 @@ pub fn split_name(text: &str) -> (String, String) {
             && (m[2].chars().next().is_some_and(|c| c.is_ascii_lowercase())
                 || COLON_STOP_WORDS.contains(&name.trim().to_lowercase().as_str()));
         if looks_like_name(name, 25)
-            && !is_narration(name)
+            && !is_narration(name, false)
             && !latin_reject
             && !name.chars().all(|c| c.is_numeric())
             && !m[2].starts_with("//")
@@ -295,6 +299,15 @@ mod tests {
         ] {
             assert_eq!(split_name(src).0, "", "{src}");
         }
+    }
+
+    #[test]
+    fn test_hiragana_names_ending_in_particle_are_names() {
+        for (src, name) in [("あきと\n「おはよう」", "あきと"), ("ゆうと：「うん」", "ゆうと"), ("かなで：「うん」", "かなで")] {
+            assert_eq!(split_name(src).0, name, "{src}");
+        }
+        assert_eq!(split_name("それは「そうだ」").0, "");
+        assert_eq!(split_name("ハルは：「うん」").0, "");
     }
 
     #[test]
