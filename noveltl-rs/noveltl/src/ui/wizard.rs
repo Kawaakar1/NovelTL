@@ -14,6 +14,7 @@ use noveltl_core::scorer::{is_confident, HookKey, CONFIDENT_DISTINCT};
 
 use super::theme::{self, button, pal, BtnKind};
 use super::{lock_ctl, Shared, WizardMode};
+use crate::clipboard::CLIPBOARD_HWND;
 use crate::winutil::{self, WindowInfo};
 
 const WINDOWS_REFRESH: Duration = Duration::from_secs(2);
@@ -229,8 +230,9 @@ impl Wizard {
         if !self.selected.is_some_and(|h| self.windows.iter().any(|w| w.hwnd == h)) {
             self.selected = None;
         }
-        if self.windows.len() == 1 {
-            self.selected = Some(self.windows[0].hwnd);
+        let hwnds: Vec<isize> = self.windows.iter().map(|w| w.hwnd).collect();
+        if let Some(h) = auto_pick(&hwnds) {
+            self.selected = Some(h);
         }
     }
 
@@ -476,9 +478,9 @@ impl Wizard {
                 t("Выберите игру"),
                 t("Запустите игру в оконном режиме и выберите её в списке. Браузеры и системные окна скрыты."),
             );
-            if self.windows.is_empty() {
+            if self.windows.iter().all(|w| w.hwnd == CLIPBOARD_HWND) {
+                // псевдо-окно «Буфер обмена» есть всегда — подсказку показываем над ним
                 wrap(ui, theme::dim(t("Не вижу запущенных игр. Запустите игру — она появится здесь сама.")));
-                return;
             }
             let mut picked: Option<isize> = None;
             let mut start = false;
@@ -701,6 +703,15 @@ impl Wizard {
     }
 }
 
+/// Окно, которое выбирается само: единственная настоящая игра (псевдо-окно «Буфер обмена» не в счёт).
+fn auto_pick(hwnds: &[isize]) -> Option<isize> {
+    let mut real = hwnds.iter().copied().filter(|&h| h != CLIPBOARD_HWND);
+    match (real.next(), real.next()) {
+        (Some(h), None) => Some(h),
+        _ => None,
+    }
+}
+
 /// Две ссылки в подвале шага 2 (справа налево: отчёт, затем OCR).
 fn step2_links(ui: &mut Ui, acts: &mut Vec<Act>) {
     if button(ui, t("Текст не находится? Сохранить отчёт"), BtnKind::Link, true, None).clicked() {
@@ -713,5 +724,20 @@ fn step2_links(ui: &mut Ui, acts: &mut Vec<Act>) {
             .clicked()
     {
         acts.push(Act::Ocr);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_pick_ignores_clipboard() {
+        // игр нет, есть только «Буфер обмена» — сам не выбирается
+        assert_eq!(auto_pick(&[CLIPBOARD_HWND]), None);
+        // одна игра и «Буфер обмена» — выбирается игра
+        assert_eq!(auto_pick(&[42, CLIPBOARD_HWND]), Some(42));
+        // две игры — выбор за пользователем
+        assert_eq!(auto_pick(&[42, 43, CLIPBOARD_HWND]), None);
     }
 }
