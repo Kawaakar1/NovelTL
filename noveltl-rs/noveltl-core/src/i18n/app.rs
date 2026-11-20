@@ -21,6 +21,7 @@ pub(crate) const ROWS: &[Row] = &[
     ("Лимит DeepL почти исчерпан: использовано {} из {} символов в этом месяце.", ["DeepL limit almost reached: {} of {} characters used this month.", "DeepL の上限に近づいています：今月は {} / {} 文字を使用しました。", "DeepL 额度即将用尽：本月已用 {} / {} 个字符。", "DeepL 한도가 거의 찼습니다: 이번 달 {} / {}자를 사용했습니다."]),
     ("NovelTL — {}", ["NovelTL — {}", "NovelTL — {}", "NovelTL — {}", "NovelTL — {}"]),
     ("NovelTL — ищу текст…", ["NovelTL — looking for text…", "NovelTL — テキストを探しています…", "NovelTL — 正在查找文本…", "NovelTL — 텍스트를 찾는 중…"]),
+    ("NovelTL — не удалось подключиться", ["NovelTL — could not connect", "NovelTL — 接続できませんでした", "NovelTL — 无法连接", "NovelTL — 연결하지 못했습니다"]),
     ("Копировать перевод", ["Copy translation", "翻訳をコピー", "复制译文", "번역 복사"]),
     ("Показать оригинал", ["Show original", "原文を表示", "显示原文", "원문 표시"]),
     ("Режим чтения", ["Reading mode", "読書モード", "阅读模式", "읽기 모드"]),

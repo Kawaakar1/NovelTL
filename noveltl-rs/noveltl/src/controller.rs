@@ -37,6 +37,13 @@ const SAVED_HOOK_WAIT: f64 = 90.0;
 const SCAN_INTERVAL: Duration = Duration::from_millis(1500);
 /// сколько ждём запоздалый `Disconnected` после собственного снятия хука
 const DETACH_GRACE: Duration = Duration::from_secs(5);
+/// сколько раз подряд завершаем сессию после сбоя внедрения, чтобы `scan` попробовал снова
+const MAX_ATTACH_RETRIES: u32 = 3;
+
+/// После `n` неудач подряд пробуем подключиться ещё раз, пока не исчерпан лимит.
+fn attach_retry_allowed(failures: u32) -> bool {
+    failures < MAX_ATTACH_RETRIES
+}
 
 fn now_secs() -> f64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
@@ -551,6 +558,8 @@ pub struct Controller {
     stale_caches: Vec<PathBuf>,
     /// pid, которые мы сами отсоединили: их запоздалый `Disconnected` не должен убивать новую сессию
     detached: Vec<(u32, Instant)>,
+    /// (pid, число сбоев внедрения подряд)
+    attach_failures: (u32, u32),
     /// пункты меню, выбранные на плашке; их выполняет поток движка (`tray::handle_menu`)
     menu_requests: Vec<&'static str>,
     #[cfg(windows)]
@@ -853,6 +862,7 @@ impl Controller {
             window_lost_since: None,
             stale_caches: Vec::new(),
             detached: Vec::new(),
+            attach_failures: (0, 0),
             menu_requests: Vec::new(),
             #[cfg(windows)]
             ocr,
@@ -990,6 +1000,7 @@ impl Controller {
     pub fn tray_state(&self) -> (u8, String) {
         match self.session.as_ref() {
             None => (0, "NovelTL".to_string()),
+            Some(s) if !s.setup && !s.connected && !s.error.is_empty() => (1, t("NovelTL — не удалось подключиться").to_string()),
             Some(s) if s.setup || !s.connected => (1, t("NovelTL — ищу текст…").to_string()),
             Some(s) => (2, tf("NovelTL — {}", &[&s.profile.name])),
         }
@@ -1648,6 +1659,7 @@ impl Controller {
                 if let Some(s) = self.session.as_mut().filter(|s| s.pid == pid) {
                     s.connected = true;
                     s.error.clear();
+                    self.attach_failures = (0, 0);
                 }
             }
             HookEvent::Disconnected(pid) => {
@@ -1658,7 +1670,16 @@ impl Controller {
             HookEvent::AttachFailed(pid, message) => {
                 if let Some(s) = self.session.as_mut().filter(|s| s.pid == pid) {
                     s.error = message.clone();
+                    let retry = !s.setup && pid != CLIPBOARD_PID;
                     self.notice(message);
+                    // завершаем сессию: `scan` через обычный интервал найдёт игру и попробует снова
+                    if retry {
+                        let n = if self.attach_failures.0 == pid { self.attach_failures.1 } else { 0 };
+                        if attach_retry_allowed(n) {
+                            self.attach_failures = (pid, n + 1);
+                            self.end_session();
+                        }
+                    }
                 }
             }
             HookEvent::HostInfo(kind, text) => {
@@ -2560,6 +2581,13 @@ mod tests {
     use super::*;
     use crate::demo::{demo_translations, DemoSource, DEMO_TITLE, SCRIPT};
     use crate::paths::set_data_dir_override;
+
+    #[test]
+    fn attach_retries_are_limited() {
+        assert!(attach_retry_allowed(0));
+        assert!(attach_retry_allowed(MAX_ATTACH_RETRIES - 1));
+        assert!(!attach_retry_allowed(MAX_ATTACH_RETRIES));
+    }
 
     #[test]
     fn cli_override_is_not_written_to_disk() {
