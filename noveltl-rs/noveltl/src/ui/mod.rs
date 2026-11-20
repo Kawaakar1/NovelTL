@@ -97,6 +97,11 @@ impl Shared {
     }
 }
 
+/// Крестик главного окна прячет его в трей, только если значок трея есть.
+fn hide_to_tray(is_windows: bool, close_requested: bool, quitting: bool, has_tray: bool) -> bool {
+    is_windows && close_requested && !quitting && has_tray
+}
+
 /// Поток-движок: каждые 30 мс вызывает `poll()` контроллера, пока не поднят флаг остановки.
 pub fn start_engine(shared: Arc<Shared>) -> JoinHandle<()> {
     std::thread::Builder::new()
@@ -414,7 +419,9 @@ impl eframe::App for App {
 
         // крестик — в трей, а не выход
         // в Linux трея нет — крестик закрывает программу
-        if cfg!(windows) && ctx.input(|i| i.viewport().close_requested()) && !self.shared.quit.load(Ordering::SeqCst) {
+        // нет значка (например, перезапускается explorer) — вернуть окно из трея было бы нечем: крестик закрывает программу
+        let close = ctx.input(|i| i.viewport().close_requested());
+        if hide_to_tray(cfg!(windows), close, self.shared.quit.load(Ordering::SeqCst), self._tray.is_some()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             self.shared.visible.store(false, Ordering::SeqCst);
@@ -490,5 +497,20 @@ impl eframe::App for App {
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.stop_engine();
         tray::remove_icon();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_hides_to_tray_only_with_tray_icon() {
+        assert!(hide_to_tray(true, true, false, true));
+        // значка нет — крестик закрывает программу, а не прячет окно навсегда
+        assert!(!hide_to_tray(true, true, false, false));
+        assert!(!hide_to_tray(true, false, false, true));
+        assert!(!hide_to_tray(true, true, true, true), "выход уже запрошен");
+        assert!(!hide_to_tray(false, true, false, true), "в Linux трея нет");
     }
 }
