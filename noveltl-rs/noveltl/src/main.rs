@@ -302,6 +302,12 @@ fn selfcheck(data_dir: &std::path::Path) -> i32 {
     }
 }
 
+/// Код выхода при уже запущенном экземпляре: самопроверка не пройдена, обычный запуск — не ошибка.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn already_running_code(selfcheck: bool) -> i32 {
+    if selfcheck { 3 } else { 0 }
+}
+
 fn main() {
     // Linux: под Wayland окно не может само встать в нужное место и поверх игры. Если есть X11
     // (XWayland), работаем через него — тогда плашка встаёт куда задано. NOVELTL_WAYLAND=1 — не трогать.
@@ -351,8 +357,13 @@ fn main() {
         let mutex = unsafe { CreateMutexW(None, false, w!("NovelTL_Running")) };
         let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
         if already {
-            message_box(t("NovelTL уже запущен — посмотрите значок в трее."));
-            return;
+            // самопроверка идёт из скрипта: окно с сообщением её повесит, а код 0 сказал бы «всё в порядке»
+            if args.selfcheck {
+                eprintln!("{}", t("NovelTL уже запущен — посмотрите значок в трее."));
+            } else {
+                message_box(t("NovelTL уже запущен — посмотрите значок в трее."));
+            }
+            std::process::exit(already_running_code(args.selfcheck));
         }
         Some(mutex)
     };
@@ -426,6 +437,12 @@ fn main() {
 mod tests {
     fn parse(a: &[&str]) -> super::Args {
         super::parse_args_from(a.iter().map(|s| s.to_string()))
+    }
+
+    #[test]
+    fn selfcheck_fails_when_already_running() {
+        assert_ne!(super::already_running_code(true), 0);
+        assert_eq!(super::already_running_code(false), 0);
     }
 
     #[test]
