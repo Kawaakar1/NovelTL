@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 
 use windows::core::{w, HSTRING, PCWSTR};
-use windows::Win32::Foundation::{BOOL, COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{BOOL, COLORREF, D2DERR_RECREATE_TARGET, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_COLOR_F, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_OPEN,
     D2D1_PIXEL_FORMAT, D2D_POINT_2F, D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U,
@@ -86,6 +86,27 @@ impl Overlay {
 const EDGE_DIP: f32 = 10.0;
 const MIN_W_DIP: f32 = 240.0;
 const MIN_H_DIP: f32 = 70.0;
+
+/// Таргет для рисования в DC; создаётся и при старте, и после потери устройства.
+fn make_rt(d2d: &ID2D1Factory) -> windows::core::Result<ID2D1DCRenderTarget> {
+    let props = D2D1_RENDER_TARGET_PROPERTIES {
+        r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+        pixelFormat: D2D1_PIXEL_FORMAT {
+            format: DXGI_FORMAT_B8G8R8A8_UNORM,
+            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+        },
+        dpiX: 96.0, // реальный DPI окна выставляется в draw()
+        dpiY: 96.0,
+        usage: D2D1_RENDER_TARGET_USAGE_NONE,
+        minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+    };
+    unsafe { d2d.CreateDCRenderTarget(&props) }
+}
+
+/// Первая буква имени заглавной; пусто, если в имени одни пробелы (trim убирает и U+3000).
+fn initial(name: &str) -> String {
+    name.trim().chars().next().into_iter().flat_map(char::to_uppercase).collect()
+}
 
 fn px(dip: f32, k: f32) -> i32 {
     (dip * k).round() as i32
@@ -213,18 +234,7 @@ fn run(rx: Receiver<Cmd>, events: Sender<Event>, out: Arc<AtomicIsize>) {
             Ok(f) => f,
             Err(e) => bail!(format!("DirectWrite: {e}")),
         };
-        let props = D2D1_RENDER_TARGET_PROPERTIES {
-            r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
-            pixelFormat: D2D1_PIXEL_FORMAT {
-                format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-            },
-            dpiX: 96.0, // реальный DPI окна выставляется в draw()
-            dpiY: 96.0,
-            usage: D2D1_RENDER_TARGET_USAGE_NONE,
-            minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-        };
-        let rt = match d2d.CreateDCRenderTarget(&props) {
+        let rt = match make_rt(&d2d) {
             Ok(r) => r,
             Err(e) => bail!(format!("CreateDCRenderTarget: {e}")),
         };
@@ -801,7 +811,17 @@ impl State {
                 return;
             };
             let old = SelectObject(mem, dib);
-            if self.draw(mem, w, h).is_ok() {
+            let res = self.draw(mem, w, h);
+            if let Err(e) = &res {
+                if e.code() == D2DERR_RECREATE_TARGET {
+                    // устройство потеряно: таргет и битмап портрета (он привязан к старому таргету) делаем заново
+                    if let Ok(rt) = make_rt(&self.d2d) {
+                        self.rt = rt;
+                        *self.portrait_bmp.borrow_mut() = None;
+                    }
+                }
+            }
+            if res.is_ok() {
                 let pos = POINT { x: wr.left, y: wr.top };
                 let size = SIZE { cx: w, cy: h };
                 let src = POINT { x: 0, y: 0 };
@@ -832,7 +852,17 @@ impl State {
             self.rt.SetDpi(96.0 * k, 96.0 * k);
             let (w, h) = ((w as f32 / k).round() as i32, (h as f32 / k).round() as i32);
             let rt: &ID2D1RenderTarget = &self.rt;
+            // EndDraw нужен и при ошибке рисования, иначе таргет остаётся в «рисовании» навсегда
             rt.BeginDraw();
+            let body = self.draw_content(rt, w, h);
+            let end = rt.EndDraw(None, None);
+            body.and(end)
+        }
+    }
+
+    /// Всё содержимое плашки между BeginDraw и EndDraw; `w`, `h` — в DIP.
+    fn draw_content(&self, rt: &ID2D1RenderTarget, w: i32, h: i32) -> windows::core::Result<()> {
+        unsafe {
             rt.Clear(Some(&color(0, 0.0)));
             let s = &self.style;
             let full = D2D_RECT_F { left: 1.0, top: 1.0, right: w as f32 - 1.0, bottom: h as f32 - 1.0 };
@@ -983,7 +1013,7 @@ impl State {
                     rt.FillEllipse(&D2D1_ELLIPSE { point: D2D_POINT_2F { x, y }, radiusX: 5.0, radiusY: 5.0 }, &accent);
                 }
             }
-            rt.EndDraw(None, None)
+            Ok(())
         }
     }
 
@@ -1036,14 +1066,17 @@ impl State {
                 rt.FillEllipse(&ell, &brush);
             } else {
                 rt.FillEllipse(&ell, &rt.CreateSolidColorBrush(&color(rgb, 0.3 * alpha), None)?);
-                let letter: String = name.trim().chars().next().into_iter().flat_map(char::to_uppercase).collect();
-                let l = self.layout(&letter, d * 0.5, true, d, d)?;
-                l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
-                l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
-                // layout растянут по высоте в 4 раза (см. layout), поэтому центрируем по реальной высоте
-                let m = metrics(&l)?;
-                l.SetMaxHeight(m.height)?;
-                self.outlined(rt, &l, x, y + (d - m.height) / 2.0, rgb, d * 0.5, alpha, None)?;
+                let letter = initial(name);
+                // пустая строка в CreateTextLayout падает (имя из одних пробелов): буквы нет — рисуем только круг
+                if !letter.is_empty() {
+                    let l = self.layout(&letter, d * 0.5, true, d, d)?;
+                    l.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+                    l.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+                    // layout растянут по высоте в 4 раза (см. layout), поэтому центрируем по реальной высоте
+                    let m = metrics(&l)?;
+                    l.SetMaxHeight(m.height)?;
+                    self.outlined(rt, &l, x, y + (d - m.height) / 2.0, rgb, d * 0.5, alpha, None)?;
+                }
             }
             rt.DrawEllipse(&ell, &rt.CreateSolidColorBrush(&color(rgb, alpha), None)?, 2.0, None);
         }
@@ -1346,3 +1379,17 @@ fn color(rgb: u32, a: f32) -> D2D1_COLOR_F {
 
 #[allow(dead_code)]
 fn _unused(_: PCWSTR, _: BOOL) {}
+
+#[cfg(test)]
+mod tests {
+    use super::initial;
+
+    #[test]
+    fn initial_is_empty_for_blank_names() {
+        // пустая буква не должна доходить до CreateTextLayout
+        assert_eq!(initial("\u{3000}"), "");
+        assert_eq!(initial("  "), "");
+        assert_eq!(initial("芳乃"), "芳");
+        assert_eq!(initial("lena"), "L");
+    }
+}
