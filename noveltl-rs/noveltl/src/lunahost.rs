@@ -82,6 +82,20 @@ struct Shared {
     /// поколение подключения для каждого pid: поздние сигналы старого воркера игнорируются
     gens: HashMap<u32, u64>,
     next_gen: u64,
+    /// pid, которые мы сами отсоединили: их запоздалый `Disconnected` не должен стирать более новое подключение
+    expected_disconnects: Vec<(u32, std::time::Instant)>,
+}
+
+/// `true`, если `Disconnected` для `pid` — отклик на наше собственное снятие хука (расходует одну запись).
+fn take_expected_disconnect(list: &mut Vec<(u32, std::time::Instant)>, pid: u32, now: std::time::Instant) -> bool {
+    list.retain(|(_, t)| now.saturating_duration_since(*t) < Duration::from_secs(5));
+    match list.iter().position(|(p, _)| *p == pid) {
+        Some(i) => {
+            list.remove(i);
+            true
+        }
+        None => false,
+    }
 }
 
 static SHARED: Mutex<Option<Shared>> = Mutex::new(None);
@@ -145,9 +159,12 @@ extern "C" fn on_connect(pid: u32) {
 extern "C" fn on_disconnect(pid: u32) {
     let _ = catch_unwind(|| {
         if let Some(s) = lock_shared().as_mut() {
-            s.attached.remove(&pid);
-            s.connected.remove(&pid);
-            s.gens.remove(&pid);
+            // отклик на наш `detach`: состояние уже снято там, а запись могла завести новая попытка
+            if !take_expected_disconnect(&mut s.expected_disconnects, pid, std::time::Instant::now()) {
+                s.attached.remove(&pid);
+                s.connected.remove(&pid);
+                s.gens.remove(&pid);
+            }
         }
         emit(HookEvent::Disconnected(pid));
     });
@@ -207,6 +224,7 @@ impl LunaHost {
             attached: HashSet::new(),
             gens: HashMap::new(),
             next_gen: 0,
+            expected_disconnects: Vec::new(),
         });
         match Self::load() {
             Ok(api) => LunaHost { api: Some(api), error: String::new(), workers: Vec::new() },
@@ -351,7 +369,11 @@ impl HookSource for LunaHost {
                 // поколение и сигнал убираем: поздние сигналы старого воркера станут пустыми
                 s.gens.remove(&pid);
                 s.connected.remove(&pid);
-                s.attached.remove(&pid)
+                let was = s.attached.remove(&pid);
+                if was {
+                    s.expected_disconnects.push((pid, std::time::Instant::now()));
+                }
+                was
             })
             .unwrap_or(false);
         if was {
@@ -386,6 +408,17 @@ mod tests {
     use super::*;
     use std::sync::mpsc::channel;
     use std::time::Instant;
+
+    #[test]
+    fn own_disconnect_is_consumed_once_and_expires() {
+        let t0 = Instant::now();
+        let mut l = vec![(7, t0)];
+        assert!(!take_expected_disconnect(&mut l, 8, t0));
+        assert!(take_expected_disconnect(&mut l, 7, t0));
+        assert!(!take_expected_disconnect(&mut l, 7, t0));
+        l.push((7, t0));
+        assert!(!take_expected_disconnect(&mut l, 7, t0 + Duration::from_secs(6)));
+    }
 
     /// Python с tkinter для живого теста: переменная NOVELTL_TEST_PYTHON или `python` из PATH.
     fn python() -> String {
