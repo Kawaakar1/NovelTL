@@ -16,7 +16,9 @@ pub fn parse_latest(json: &str) -> Option<(String, String)> {
 }
 
 fn parse_ver(s: &str) -> Option<Vec<u64>> {
-    let parts: Option<Vec<u64>> = s.trim().trim_start_matches('v').split('.').map(|p| p.parse().ok()).collect();
+    // суффикс «-rc1» / «+build» отбрасываем: сравниваем только числа x.y.z
+    let core = s.trim().trim_start_matches('v').split(['-', '+']).next().unwrap_or("");
+    let parts: Option<Vec<u64>> = core.split('.').map(|p| p.parse().ok()).collect();
     parts.filter(|p| !p.is_empty())
 }
 
@@ -55,6 +57,8 @@ mod tests {
         assert!(!is_newer("0.6.1", "0.6.1"));
         assert!(!is_newer("0.6.0", "0.6.1"));
         assert!(!is_newer("abc", "0.6.1"));
+        assert!(is_newer("v0.9.0-rc1", "0.8.0"));
+        assert!(!is_newer("0.9.0-rc1", "0.9.0+build5"));
         assert!(!is_newer("0.7.0", ""));
     }
 
