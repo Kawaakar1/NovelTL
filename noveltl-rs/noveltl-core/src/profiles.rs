@@ -384,6 +384,10 @@ impl ProfileStore {
         if same_game.is_empty() {
             return None;
         }
+        // размер exe не прочитать — версию не угадать: отдаём известный профиль, нового «_0» не плодим
+        if fs::metadata(exe_path).is_err() {
+            return same_game.first().map(|p| (*p).clone());
+        }
         let version = exe_version(exe_path);
         let exe_path_str = exe_path.to_string_lossy().into_owned();
         if let Some(p) = same_game.iter().find(|p| p.version == version) {
@@ -765,6 +769,19 @@ mod tests {
         );
         assert_eq!(found.glossary, vec![GlossaryEntry { src: "芳乃".into(), dst: "Ёсино".into(), note: String::new(), color: String::new() }]);
         assert!(found.overlay.w > 0.0 && found.overlay.w <= 1.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unreadable_exe_does_not_make_profile() {
+        let dir = tmp_dir("prof");
+        let exe = dir.join("game.exe");
+        fs::write(&exe, vec![b'x'; 100]).unwrap();
+        let store = ProfileStore::new(dir.join("profiles"));
+        let p = store.create("Game", &exe, Lang::Ja).unwrap();
+        fs::remove_file(&exe).unwrap(); // размер не прочитать
+        assert_eq!(store.find_for_exe(&exe).unwrap().id, p.id);
+        assert_eq!(store.all().len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 
