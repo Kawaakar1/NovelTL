@@ -5,6 +5,7 @@ use std::io::BufRead;
 use std::path::{Path, PathBuf};
 
 use crate::deinflect::deinflect;
+use crate::i18n::t;
 
 pub const JMDICT_URL: &str = "https://www.edrdg.org/pub/Nihongo/JMdict.gz";
 pub const ATTRIBUTION: &str = "JMdict © Electronic Dictionary Research and Development Group, CC BY-SA 4.0";
@@ -78,6 +79,7 @@ impl Dictionary {
         bak.push(".bak");
         let bak = PathBuf::from(bak);
         let res = Self::build(xml, &tmp).and_then(|n| {
+            if n == 0 { return Err(t("В скачанном файле нет словаря JMdict. Попробуйте ещё раз.").to_string()); }
             // старая база уходит в .bak и возвращается, если новая не встала на место
             match std::fs::remove_file(&bak) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e2s(e)),
@@ -377,6 +379,16 @@ mod tests {
         assert!(Dictionary::import_xml(XML.as_bytes(), &db).is_err());
         assert!(Dictionary::open(&db).unwrap().lookup_at("あ", 0, false).is_some());
         let _ = std::fs::remove_dir(&bak);
+        let _ = std::fs::remove_file(db);
+    }
+
+    #[test]
+    fn empty_download_keeps_old_db() {
+        let (d, db) = setup("empty.db");
+        drop(d);
+        // вместо словаря пришла html-страница: базу заменять нельзя
+        assert!(Dictionary::import_xml("<html>Wi-Fi login</html>".as_bytes(), &db).is_err());
+        assert!(Dictionary::open(&db).unwrap().lookup_at("猫", 0, false).is_some());
         let _ = std::fs::remove_file(db);
     }
 
