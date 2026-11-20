@@ -31,6 +31,19 @@ fn auth_error() -> &'static str {
 }
 const USER_AGENT: &str = concat!("NovelTL/", env!("CARGO_PKG_VERSION"));
 const TIMEOUT: Duration = Duration::from_secs(12);
+/// Потолок размера скачиваемого файла (словарь ~22 МБ, картинки — единицы МБ).
+const MAX_DOWNLOAD: u64 = 256 * 1024 * 1024;
+
+/// Читает не больше `max` байт; если данных больше — ошибка, а не рост памяти без предела.
+fn read_limited(r: impl std::io::Read, max: u64) -> Result<Vec<u8>, HttpError> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    r.take(max + 1).read_to_end(&mut buf).map_err(|_| HttpError::Other("read".to_string()))?;
+    if buf.len() as u64 > max {
+        return Err(HttpError::Other("too large".to_string()));
+    }
+    Ok(buf)
+}
 
 fn scheme_map(s: &str) -> Option<&'static str> {
     Some(match s {
@@ -275,7 +288,7 @@ impl Http for ReqwestHttp {
         if status.as_u16() != 200 {
             return Err(HttpError::Other(format!("HTTP {status}")));
         }
-        resp.bytes().map(|b| b.to_vec()).map_err(|e| map_error(&e, self.uses_proxy))
+        read_limited(resp, MAX_DOWNLOAD)
     }
 }
 
@@ -371,6 +384,12 @@ mod tests {
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn read_limited_caps_size() {
+        assert_eq!(read_limited(&[7u8; 10][..], 10).unwrap().len(), 10);
+        assert!(read_limited(&[7u8; 11][..], 10).is_err());
+    }
 
     #[test]
     fn normalize_proxy_ok() {
