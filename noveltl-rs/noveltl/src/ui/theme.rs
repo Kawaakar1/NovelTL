@@ -341,6 +341,25 @@ pub fn icon_family() -> FontFamily {
     FontFamily::Name("icons".into())
 }
 
+/// Семейство шрифта плашки на Linux (выбор из настроек), если он загрузился; иначе обычный Proportional.
+#[cfg(not(windows))]
+pub fn overlay_family_name() -> FontFamily {
+    FontFamily::Name("overlay".into())
+}
+
+#[cfg(not(windows))]
+static OVERLAY_FONT: AtomicBool = AtomicBool::new(false);
+
+#[cfg(not(windows))]
+pub fn set_overlay_font(loaded: bool) {
+    OVERLAY_FONT.store(loaded, Ordering::Relaxed);
+}
+
+#[cfg(not(windows))]
+pub fn overlay_family() -> FontFamily {
+    if OVERLAY_FONT.load(Ordering::Relaxed) { overlay_family_name() } else { FontFamily::Proportional }
+}
+
 static ICON_FONT: AtomicBool = AtomicBool::new(false);
 
 pub fn set_icon_font(loaded: bool) {

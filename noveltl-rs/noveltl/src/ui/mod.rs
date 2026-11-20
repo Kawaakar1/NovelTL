@@ -196,6 +196,8 @@ pub struct App {
     close_sent: bool,
     /// какие восточные шрифты уже загружены
     fonts_loaded: FontNeeds,
+    /// Linux: для какого шрифта плашки собран набор шрифтов
+    overlay_font: String,
     /// текстура аватара: (имя файла, текстура или None, если нет/не загрузилась)
     avatar_tex: Option<(String, Option<egui::TextureHandle>)>,
 }
@@ -246,6 +248,7 @@ impl App {
             tray_hint_shown: false,
             close_sent: false,
             fonts_loaded: FontNeeds::default(),
+            overlay_font: String::new(),
             avatar_tex: None,
         }
     }
@@ -339,13 +342,15 @@ impl eframe::App for App {
         self.find_windows();
 
         // восточные шрифты — только когда на экране может появиться текст этого письма
-        let want = self.fonts_loaded.union(self.font_needs());
-        if want != self.fonts_loaded {
-            crate::install_fonts(ctx, want);
-            self.fonts_loaded = want;
-        }
-
         let settings = lock_ctl(&self.shared.controller).settings.clone();
+        let want = self.fonts_loaded.union(self.font_needs());
+        // шрифт плашки (только Linux) пересобирает набор шрифтов лишь при смене имени
+        let overlay_changed = cfg!(not(windows)) && settings.font_family != self.overlay_font;
+        if want != self.fonts_loaded || overlay_changed {
+            crate::install_fonts(ctx, want, &settings.font_family);
+            self.fonts_loaded = want;
+            self.overlay_font = settings.font_family.clone();
+        }
         theme::apply(ctx, &settings);
 
         // аватар перезагружаем только при смене имени файла

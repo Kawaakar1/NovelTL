@@ -425,7 +425,7 @@ fn draw_plate(p: &Painter, rect: Rect, s: &State) -> Option<Rect> {
         let mut size = st.font_size.max(MIN_FONT);
         loop {
             let name_size = (size * 0.8).max(MIN_FONT);
-            let font = |sz: f32| FontId::new(sz, FontFamily::Proportional);
+            let font = |sz: f32| FontId::new(sz, crate::ui::theme::overlay_family());
             let name_g = (!name.is_empty()).then(|| p.layout(name.to_string(), font(name_size), rgba(name_rgb, 1.0), inner_w));
             // режим чтения: оригинал крупно сверху, перевод мельче под ним
             let reading = st.reading && !s.edit && !s.orig.is_empty();

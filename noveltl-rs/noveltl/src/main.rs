@@ -180,6 +180,24 @@ fn font_paths(file: &str) -> Vec<PathBuf> {
     list.iter().map(PathBuf::from).collect()
 }
 
+/// Разбор вывода `fc-match -f '%{file}'`: путь к существующему .ttf/.otf/.ttc, иначе None.
+#[cfg_attr(windows, allow(dead_code))]
+fn parse_fc_match(out: &str) -> Option<PathBuf> {
+    let p = PathBuf::from(out.trim());
+    let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+    (matches!(ext.as_str(), "ttf" | "otf" | "ttc") && p.is_file()).then_some(p)
+}
+
+/// Файл шрифта по имени семейства через `fc-match`; нет программы/шрифта — None (остаётся стандартный).
+#[cfg(not(windows))]
+fn overlay_font_file(family: &str) -> Option<PathBuf> {
+    if family.is_empty() {
+        return None;
+    }
+    let out = std::process::Command::new("fc-match").args(["-f", "%{file}", family]).output().ok()?;
+    parse_fc_match(&String::from_utf8_lossy(&out.stdout))
+}
+
 /// Какие письма нужны на экране (шрифты грузятся лениво, чтобы не раздувать память).
 #[derive(Clone, Copy, PartialEq, Eq, Default, Debug)]
 pub struct FontNeeds {
@@ -201,7 +219,9 @@ impl FontNeeds {
 /// Microsoft YaHei — для китайского, Segoe UI Bold — семейство «bold».
 /// Восточные шрифты занимают десятки МБ памяти, поэтому грузятся только когда нужны (`needs`);
 /// они стоят в конце цепочки, так что латиница и кириллица остаются Segoe UI.
-fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
+fn install_fonts(ctx: &egui::Context, needs: FontNeeds, overlay_font: &str) {
+    #[cfg(windows)]
+    let _ = overlay_font;
     // в Linux один шрифт CJK на все три письма — грузим его как «японский»
     #[cfg(not(windows))]
     let needs = FontNeeds { ja: needs.ja || needs.zh || needs.ko, zh: false, ko: false, zh_first: false };
@@ -270,6 +290,18 @@ fn install_fonts(ctx: &egui::Context, needs: FontNeeds) {
     let mut jp_names = east(needs.zh_first);
     jp_names.push(("segoe", segoe));
     let jp = compose(pick(&jp_names));
+    // Linux: шрифт плашки из настроек — отдельное семейство «overlay», запасные шрифты после него
+    #[cfg(not(windows))]
+    {
+        let loaded = overlay_font_file(overlay_font).and_then(|p| std::fs::read(p).ok()).map(|bytes| {
+            // shortcut: .ttc (коллекция) egui читает как первую гарнитуру, upgrade — выбирать индекс по имени
+            fonts.font_data.insert("overlay".to_string(), Arc::new(FontData::from_owned(bytes)));
+            let mut v = vec!["overlay".to_string()];
+            v.extend(prop.iter().cloned());
+            fonts.families.insert(theme::overlay_family_name(), v);
+        });
+        theme::set_overlay_font(loaded.is_some());
+    }
     fonts.families.insert(FontFamily::Proportional, prop);
     fonts.families.insert(theme::bold_family(), bold);
     fonts.families.insert(theme::jp_family(), jp);
@@ -392,7 +424,7 @@ fn main() {
         ui::APP_NAME,
         options,
         Box::new(move |cc| {
-            install_fonts(&cc.egui_ctx, FontNeeds::default());
+            install_fonts(&cc.egui_ctx, FontNeeds::default(), "");
             let ctx = cc.egui_ctx.clone();
             let waker: Waker = {
                 let ctx = ctx.clone();
@@ -454,6 +486,20 @@ mod tests {
         let a = parse(&["--shots", "--only", "01_main_empty"]);
         assert!(a.error.is_some() && a.shots.is_none());
         assert!(parse(&["--shots", "out", "--only="]).error.is_some());
+    }
+
+    #[test]
+    fn parse_fc_match_accepts_only_existing_font_files() {
+        let dir = std::env::temp_dir().join("noveltl_fc_match_test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ttf = dir.join("a.TTF");
+        let txt = dir.join("a.txt");
+        std::fs::write(&ttf, b"x").unwrap();
+        std::fs::write(&txt, b"x").unwrap();
+        assert_eq!(super::parse_fc_match(&format!("{}\n", ttf.display())), Some(ttf));
+        assert_eq!(super::parse_fc_match(&txt.display().to_string()), None);
+        assert_eq!(super::parse_fc_match(""), None);
+        assert_eq!(super::parse_fc_match(&dir.join("missing.ttf").display().to_string()), None);
     }
 
     #[test]
