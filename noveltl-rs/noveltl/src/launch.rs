@@ -27,6 +27,10 @@ fn split_command(cmd: &str) -> (String, String) {
 }
 
 fn parent_dir(path: &str) -> String {
+    // URL-схема (`dmm://game`) — не путь, рабочего каталога у неё нет
+    if path.contains("://") {
+        return String::new();
+    }
     path.rfind(['\\', '/']).map(|i| path[..i].to_string()).unwrap_or_default()
 }
 
@@ -124,6 +128,12 @@ mod tests {
             how,
             LaunchHow::Custom { program: "dmm://game".into(), args: "--x".into(), dir: r"D:\g".into() }
         );
+    }
+
+    #[test]
+    fn custom_url_scheme_has_no_working_dir() {
+        let how = plan(&prof("", "dmm://game")).unwrap();
+        assert_eq!(how, LaunchHow::Custom { program: "dmm://game".into(), args: String::new(), dir: String::new() });
     }
 
     #[test]
